@@ -20,6 +20,7 @@ import com.kooo.evcam.v2.settings.V2KeepAliveSettings
 import com.kooo.evcam.v2.settings.V2StartupSettings
 import com.kooo.evcam.v2.ui.V2BlindSpotOverlay
 import com.kooo.evcam.v2.ui.V2MainActivity
+import java.util.Locale
 
 class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     companion object {
@@ -88,6 +89,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     private val previewSurfaces = arrayOfNulls<Surface>(4)
     @Volatile private var displayPowerOn = true
     private var watchdogLastSnapshot: V2CameraEngine.HealthSnapshot? = null
+    private var watchdogLastSnapshotMs = 0L
     private var watchdogFailureCount = 0
     private var watchdogLastResetMs = 0L
 
@@ -587,6 +589,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         mainHandler.removeCallbacks(watchdogRunnable)
         watchdogLastResetMs = android.os.SystemClock.elapsedRealtime()
         watchdogLastSnapshot = engine.healthSnapshot()
+        watchdogLastSnapshotMs = watchdogLastResetMs
         watchdogFailureCount = 0
         mainHandler.postDelayed(watchdogRunnable, WATCHDOG_CHECK_INTERVAL_MS)
         V2AppLog.i("V2CameraService", "watchdog started interval=${WATCHDOG_CHECK_INTERVAL_MS}ms")
@@ -612,7 +615,10 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         val now = android.os.SystemClock.elapsedRealtime()
         val snapshot = engine.healthSnapshot()
         val previous = watchdogLastSnapshot
+        val previousMs = watchdogLastSnapshotMs
+        logPerformanceSnapshot(snapshot, previous, (now - previousMs).coerceAtLeast(1L))
         watchdogLastSnapshot = snapshot
+        watchdogLastSnapshotMs = now
         if (now - watchdogLastResetMs < WATCHDOG_GRACE_MS) return
 
         val issues = mutableListOf<String>()
@@ -684,8 +690,45 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         watchdogLastResetMs = android.os.SystemClock.elapsedRealtime()
         watchdogFailureCount = 0
         watchdogLastSnapshot = if (::engine.isInitialized) engine.healthSnapshot() else null
+        watchdogLastSnapshotMs = watchdogLastResetMs
         V2AppLog.i("V2CameraService", "watchdog reset reason=$reason")
     }
+
+    private fun logPerformanceSnapshot(
+        snapshot: V2CameraEngine.HealthSnapshot,
+        previous: V2CameraEngine.HealthSnapshot?,
+        deltaMs: Long
+    ) {
+        val slotText = snapshot.slots.joinToString(prefix = "[", postfix = "]", separator = " ") { slot ->
+            val prev = previous?.slots?.firstOrNull { it.index == slot.index }
+            val signalFps = ratePerSecond(slot.frameSignals - (prev?.frameSignals ?: slot.frameSignals), deltaMs)
+            val renderFps = ratePerSecond(slot.renderedFrames - (prev?.renderedFrames ?: slot.renderedFrames), deltaMs)
+            "${slot.label}{open=${slot.deviceOpen && slot.sessionOpen} preview=${slot.previewAttached} sig=${formatRate(signalFps)} view=${formatRate(renderFps)} fail=${slot.renderFailures} last=${slot.lastRenderMs}ms err=${slot.lastError}}"
+        }
+
+        val metrics = snapshot.recordingMetrics
+        val prevMetrics = previous?.recordingMetrics
+        val recordingText = if (snapshot.recording && metrics != null) {
+            val requestFps = ratePerSecond(metrics.requestedFrames - (prevMetrics?.requestedFrames ?: metrics.requestedFrames), deltaMs)
+            val renderFps = ratePerSecond(metrics.renderedFrames - (prevMetrics?.renderedFrames ?: metrics.renderedFrames), deltaMs)
+            val encodeFps = ratePerSecond(metrics.encodedSamples - (prevMetrics?.encodedSamples ?: metrics.encodedSamples), deltaMs)
+            val dropDelta = (metrics.droppedFrames - (prevMetrics?.droppedFrames ?: metrics.droppedFrames)).coerceAtLeast(0L)
+            "rec=ON req=${formatRate(requestFps)} render=${formatRate(renderFps)} enc=${formatRate(encodeFps)} drop=$dropDelta totalDrop=${metrics.droppedFrames} seg=${metrics.segmentIndex} switch=${metrics.segmentSwitchMs}ms first=${metrics.firstSampleLatencyMs}ms err=${metrics.lastError}"
+        } else {
+            "rec=OFF"
+        }
+
+        V2AppLog.i(
+            "V2Perf",
+            "dt=${deltaMs}ms display=$displayPowerOn failures=$watchdogFailureCount $recordingText slots=$slotText"
+        )
+    }
+
+    private fun ratePerSecond(delta: Long, deltaMs: Long): Float {
+        return delta.coerceAtLeast(0L) * 1000f / deltaMs.coerceAtLeast(1L)
+    }
+
+    private fun formatRate(value: Float): String = String.format(Locale.US, "%.1f", value)
 
     private fun showServiceToast(message: String) {
         val now = android.os.SystemClock.elapsedRealtime()
