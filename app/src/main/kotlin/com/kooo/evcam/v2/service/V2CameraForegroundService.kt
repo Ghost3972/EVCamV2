@@ -82,6 +82,9 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     private var activeAvoidanceTarget: String? = null
     private var lastToastText: String? = null
     private var lastToastMs = 0L
+    private var lastNotificationText: String? = null
+    private var lastNotificationMs = 0L
+    private var lastNotificationRecording: Boolean? = null
     private val previewSurfaces = arrayOfNulls<Surface>(4)
     @Volatile private var displayPowerOn = true
     private var watchdogLastSnapshot: V2CameraEngine.HealthSnapshot? = null
@@ -717,7 +720,29 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     private fun releaseWakeLock() = wakeLockHolder.release()
 
     override fun onStatusChanged(status: String) {
-        notificationHelper.update(status)
         uiStatusListener?.invoke(status)
+        if (shouldUpdateNotification(status)) {
+            notificationHelper.update(status)
+            lastNotificationText = status
+            lastNotificationMs = System.currentTimeMillis()
+            lastNotificationRecording = parseRecordingState(status)
+        }
+    }
+
+    private fun shouldUpdateNotification(status: String): Boolean {
+        val now = System.currentTimeMillis()
+        val recording = parseRecordingState(status)
+        val recordingChanged = recording != null && lastNotificationRecording != recording
+        val textChanged = lastNotificationText != status
+        return recordingChanged || lastNotificationText == null || textChanged && now - lastNotificationMs >= 15_000L
+    }
+
+    private fun parseRecordingState(status: String): Boolean? {
+        val prefix = status.lineSequence().firstOrNull()?.trim().orEmpty()
+        return when {
+            prefix.startsWith("rec=ON") -> true
+            prefix.startsWith("rec=OFF") -> false
+            else -> null
+        }
     }
 }

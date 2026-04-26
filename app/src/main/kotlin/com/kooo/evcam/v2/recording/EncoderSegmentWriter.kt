@@ -37,13 +37,14 @@ class EncoderSegmentWriter(
     private var tempFile: File? = null
     private val drainExecutor = Executors.newSingleThreadExecutor()
     private val drainPending = AtomicBoolean(false)
+    private val bufferInfo = MediaCodec.BufferInfo()
     @Volatile private var finishing = false
 
     val surface: android.view.Surface? get() = inputSurface
 
     fun startSegment(segmentIndex: Int, segmentWallClockMs: Long): File {
         V2AppLog.i("EncoderSegmentWriter", "startSegment index=$segmentIndex size=${width}x${height} fps=$fps bitrate=$bitrate mime=$mimeType")
-        releaseInternal()
+        releaseInternal(generateThumbnail = false)
         finishing = false
         drainPending.set(false)
         segmentStartedAtMs = SystemClock.elapsedRealtime()
@@ -93,9 +94,8 @@ class EncoderSegmentWriter(
     private fun drainInternal(endOfStream: Boolean) {
         val codec = codec ?: return
         val muxer = muxer ?: return
-        val info = MediaCodec.BufferInfo()
         while (true) {
-            val outIndex = codec.dequeueOutputBuffer(info, if (endOfStream) 10_000 else 0)
+            val outIndex = codec.dequeueOutputBuffer(bufferInfo, if (endOfStream) 10_000 else 0)
             when {
                 outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream) return
                 outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -107,11 +107,11 @@ class EncoderSegmentWriter(
                 }
                 outIndex >= 0 -> {
                     val encoded = codec.getOutputBuffer(outIndex)
-                    val codecConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-                    if (encoded != null && info.size > 0 && muxerStarted && !codecConfig) {
-                        encoded.position(info.offset)
-                        encoded.limit(info.offset + info.size)
-                        muxer.writeSampleData(trackIndex, encoded, info)
+                    val codecConfig = bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+                    if (encoded != null && bufferInfo.size > 0 && muxerStarted && !codecConfig) {
+                        encoded.position(bufferInfo.offset)
+                        encoded.limit(bufferInfo.offset + bufferInfo.size)
+                        muxer.writeSampleData(trackIndex, encoded, bufferInfo)
                         writtenSamples += 1
                         metrics.encodedSamples += 1
                         if (metrics.firstSampleLatencyMs < 0) {
@@ -119,13 +119,13 @@ class EncoderSegmentWriter(
                         }
                     }
                     codec.releaseOutputBuffer(outIndex, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
+                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
                 }
             }
         }
     }
 
-    fun finishAndReleaseBlocking(timeoutMs: Long = 10_000L) {
+    fun finishAndReleaseBlocking(generateThumbnail: Boolean = true, timeoutMs: Long = 10_000L) {
         finishing = true
         val latch = CountDownLatch(1)
         drainExecutor.execute {
@@ -135,7 +135,7 @@ class EncoderSegmentWriter(
                     .isSuccess
                 runCatching { drainInternal(eosSignaled) }
                     .onFailure { V2AppLog.e("EncoderSegmentWriter", "final drain failed file=${currentFile?.name}", it) }
-                releaseInternal()
+                releaseInternal(generateThumbnail)
             } finally {
                 latch.countDown()
             }
@@ -144,12 +144,12 @@ class EncoderSegmentWriter(
         drainExecutor.shutdown()
     }
 
-    fun releaseBlocking(timeoutMs: Long = 1500L) {
+    fun releaseBlocking(generateThumbnail: Boolean = false, timeoutMs: Long = 1500L) {
         finishing = true
         val latch = CountDownLatch(1)
         drainExecutor.execute {
             try {
-                releaseInternal()
+                releaseInternal(generateThumbnail)
             } finally {
                 latch.countDown()
             }
@@ -158,7 +158,7 @@ class EncoderSegmentWriter(
         drainExecutor.shutdown()
     }
 
-    private fun releaseInternal() {
+    private fun releaseInternal(generateThumbnail: Boolean) {
         val muxerStopOk = if (muxerStarted && writtenSamples > 0L) {
             runCatching { muxer?.stop() }
                 .onFailure {
@@ -178,7 +178,7 @@ class EncoderSegmentWriter(
         inputSurface = null
         val finishedFile = finalizeTempFile(muxerStopOk)
         V2AppLog.i("EncoderSegmentWriter", "release complete file=${currentFile?.name} temp=${tempFile?.name} muxerStopOk=$muxerStopOk samples=$writtenSamples final=${finishedFile?.name}")
-        finishedFile?.let { RecordingThumbnailer.generateFirstFrameAsync(it) }
+        if (generateThumbnail) finishedFile?.let { RecordingThumbnailer.generateFirstFrameAsync(it) }
     }
 
     fun currentFile(): File? = currentFile

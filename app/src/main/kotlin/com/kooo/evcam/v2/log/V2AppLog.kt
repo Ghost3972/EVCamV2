@@ -18,6 +18,7 @@ object V2AppLog {
     private val buffer = ArrayList<String>()
     @Volatile private var appContext: Context? = null
     @Volatile private var initialized = false
+    @Volatile var debugLoggingEnabled: Boolean = false
     private var defaultCrashHandler: Thread.UncaughtExceptionHandler? = null
 
     fun init(context: Context) {
@@ -58,12 +59,14 @@ object V2AppLog {
     }
 
     private fun log(level: Int, tag: String, message: String, throwable: Throwable?) {
+        if (level == Log.DEBUG && !isDebugLoggingEnabled()) return
         val fullMessage = if (throwable == null) message else message + "\n" + Log.getStackTraceString(throwable)
         Log.println(level, tag, fullMessage)
-        addToBuffer(level, tag, fullMessage)
+        addToBuffer(level, tag, fullMessage, level != Log.DEBUG || isDebugLoggingEnabled())
     }
 
-    private fun addToBuffer(level: Int, tag: String, message: String) {
+    private fun addToBuffer(level: Int, tag: String, message: String, shouldBuffer: Boolean) {
+        if (!shouldBuffer) return
         val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
         val line = "$timestamp ${levelLabel(level)}/$tag: $message"
         synchronized(lock) {
@@ -116,4 +119,7 @@ object V2AppLog {
         Log.DEBUG -> "D"
         else -> level.toString()
     }
+
+    private fun isDebugLoggingEnabled(): Boolean = debugLoggingEnabled ||
+        runCatching { System.getProperty("evcam.v2.debug_logs") == "true" }.getOrDefault(false)
 }

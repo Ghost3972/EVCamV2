@@ -9,12 +9,16 @@ import androidx.core.app.NotificationCompat
 import com.kooo.evcam.R
 
 internal class V2CameraNotificationHelper(private val service: V2CameraForegroundService) {
+    private val notificationManager by lazy {
+        service.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    }
+    private var channelCreated = false
+
     fun startForeground(text: String) {
         service.startForeground(NOTIFICATION_ID, build(text))
     }
 
     fun update(text: String) {
-        val notificationManager = service.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID, build(text))
     }
 
@@ -29,11 +33,11 @@ internal class V2CameraNotificationHelper(private val service: V2CameraForegroun
     }
 
     private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val notificationManager = service.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || channelCreated) return
         notificationManager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "V2 Camera", NotificationManager.IMPORTANCE_LOW)
         )
+        channelCreated = true
     }
 
     private companion object {

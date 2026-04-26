@@ -414,7 +414,8 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             val builder = slot.device?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW) ?: return
             val inputSurface = slot.inputSurface ?: return
             builder.addTarget(inputSurface)
-            chooseFpsRange(slot.spec.cameraId)?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+            val desiredFps = desiredCameraFps()
+            chooseFpsRange(slot.spec.cameraId, desiredFps)?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
             createSession(slot.device ?: return, listOf(inputSurface), object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     if (released || !cameraAccessAllowed || slot.device == null || slot.inputSurface == null) {
@@ -468,14 +469,24 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
                 .maxWithOrNull(compareBy<Size> { it.width * it.height }.thenBy { it.width })
             ?: sizes.minByOrNull { kotlin.math.abs(it.width - targetWidth) + kotlin.math.abs(it.height - targetHeight) }
     }.onFailure { V2AppLog.e("V2CameraEngine", "choosePreviewSize failed camera=$cameraId", it) }.getOrNull()
-    private fun chooseFpsRange(cameraId: String): Range<Int>? = runCatching {
+    private fun desiredCameraFps(): Int = if (recording) {
+        recordingFps.coerceAtMost(RECORDING_PREVIEW_MAX_FPS)
+    } else {
+        recordingFps.coerceAtMost(PREVIEW_MAX_FPS)
+    }.coerceAtLeast(1)
+
+    private fun chooseFpsRange(cameraId: String, desiredFps: Int): Range<Int>? = runCatching {
         val ranges = cameraManager.getCameraCharacteristics(cameraId)
             .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?.toList()
             .orEmpty()
-        ranges.firstOrNull { it.lower == 30 && it.upper == 30 }
-            ?: ranges.firstOrNull { it.lower == it.upper }
-            ?: ranges.maxByOrNull { it.upper }
+        if (ranges.isEmpty()) return@runCatching null
+        ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }
+            ?: ranges.filter { it.lower == it.upper && it.upper <= desiredFps }
+                .maxWithOrNull(compareBy<Range<Int>> { it.upper }.thenBy { it.lower })
+            ?: ranges.filter { it.lower <= desiredFps && it.upper >= desiredFps }
+                .minWithOrNull(compareBy<Range<Int>> { it.upper }.thenBy { it.lower })
+            ?: ranges.minWithOrNull(compareBy<Range<Int>> { kotlin.math.abs(it.upper - desiredFps) }.thenBy { kotlin.math.abs(it.lower - desiredFps) })
     }.getOrNull()
     private fun cameraIds(): List<String> = try { cameraManager.cameraIdList.toList() } catch (error: CameraAccessException) { V2AppLog.e("V2CameraEngine", "read cameraIdList failed", error); emptyList() }
     private fun status(): String {

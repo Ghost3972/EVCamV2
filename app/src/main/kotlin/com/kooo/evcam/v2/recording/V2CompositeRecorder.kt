@@ -99,7 +99,7 @@ class V2CompositeRecorder(
             } finally {
                 latch.countDown()
                 writerToStop?.let {
-                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true)
+                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, generateThumbnail = true)
                 }
                 releasePreparedSegmentAsync()
                 releaseExecutor.shutdown()
@@ -110,7 +110,7 @@ class V2CompositeRecorder(
                 V2AppLog.e("V2CompositeRecorder", "stop timed out; release writer without final render")
                 generation += 1
                 writerToStop?.let {
-                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true)
+                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, generateThumbnail = true)
                 }
                 releasePreparedSegmentAsync()
                 releaseExecutor.shutdown()
@@ -135,7 +135,7 @@ class V2CompositeRecorder(
         if (newWriter == null && oldWriter != null) {
             runCatching { VulkanNative.detachEncoderSurface(nativeHandle) }
                 .onFailure { V2AppLog.e("V2CompositeRecorder", "detach encoder surface before sync segment switch failed", it) }
-            releaseWriterAsync(oldWriter, finish = true)
+            releaseWriterAsync(oldWriter, finish = true, generateThumbnail = false)
             writer = null
         }
         val segmentWriter = newWriter
@@ -147,12 +147,12 @@ class V2CompositeRecorder(
             if (nativeHandle == 0L) throw java.lang.IllegalStateException(VulkanNative.getLastError())
             if (!VulkanNative.attachEncoderSurface(nativeHandle, surface)) throw java.lang.IllegalStateException(VulkanNative.getLastError())
         } catch (t: Throwable) {
-            releaseWriterAsync(segmentWriter, finish = false)
+            releaseWriterAsync(segmentWriter, finish = false, generateThumbnail = false)
             throw t
         }
         segmentWriter.markAttached(segmentIndex)
         writer = segmentWriter
-        if (newWriter != null) oldWriter?.let { releaseWriterAsync(it, finish = true) }
+        if (newWriter != null) oldWriter?.let { releaseWriterAsync(it, finish = true, generateThumbnail = false) }
         metrics.segmentIndex = segmentIndex
         V2AppLog.i("V2CompositeRecorder", "segment attached index=$segmentIndex file=${segmentWriter.currentFile()?.name} prepared=${newWriter != null} switchSetupMs=${SystemClock.elapsedRealtime() - segmentStartMs}")
         prepareNextSegment(segmentIndex + 1, segmentWallClockMs + segmentDurationMs)
@@ -208,7 +208,7 @@ class V2CompositeRecorder(
         preparedSegmentWallClockMs = 0L
         releaseExecutor.execute {
             runCatching {
-                future.get().releaseBlocking()
+                future.get().releaseBlocking(generateThumbnail = false)
             }.onFailure { V2AppLog.w("V2CompositeRecorder", "release prepared segment failed", it) }
         }
     }
@@ -264,7 +264,7 @@ class V2CompositeRecorder(
             .onFailure { V2AppLog.e("V2CompositeRecorder", "stop native after render failure failed", it) }
         runCatching { VulkanNative.detachEncoderSurface(nativeHandle) }
             .onFailure { V2AppLog.e("V2CompositeRecorder", "detach encoder after render failure failed", it) }
-        writer?.let { releaseWriterAsync(it, finish = false) }
+        writer?.let { releaseWriterAsync(it, finish = false, generateThumbnail = false) }
         releasePreparedSegmentAsync()
         writer = null
     }
@@ -301,10 +301,11 @@ class V2CompositeRecorder(
         }
     }
 
-    private fun releaseWriterAsync(writer: EncoderSegmentWriter, finish: Boolean) {
+    private fun releaseWriterAsync(writer: EncoderSegmentWriter, finish: Boolean, generateThumbnail: Boolean) {
         releaseExecutor.execute {
-            V2AppLog.i("V2CompositeRecorder", "release writer finish=$finish file=${writer.currentFile()?.name}")
-            if (finish) writer.finishAndReleaseBlocking() else writer.releaseBlocking()
+            V2AppLog.i("V2CompositeRecorder", "release writer finish=$finish thumbnail=$generateThumbnail file=${writer.currentFile()?.name}")
+            if (finish) writer.finishAndReleaseBlocking(generateThumbnail = generateThumbnail)
+            else writer.releaseBlocking(generateThumbnail = generateThumbnail)
         }
     }
 
