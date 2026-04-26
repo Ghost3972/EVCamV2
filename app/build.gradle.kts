@@ -27,7 +27,11 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = 75
-        versionName = "2.0.0-test-04261245"
+        versionName = "2.0.0-test-04261303"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
 
         externalNativeBuild {
             cmake {
