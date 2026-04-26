@@ -31,7 +31,6 @@ object VulkanNative {
     external fun createCompositor(width: Int, height: Int): Long
     external fun createOesTexture(handle: Long, index: Int): Int
     external fun attachEncoderSurface(handle: Long, surface: Surface): Boolean
-    external fun setCompositeConfig(handle: Long, width: Int, height: Int, sideLeftRotation: Int, sideRightRotation: Int, layoutMode: Int): Boolean
     external fun setCompositorRuntimeConfig(
         handle: Long,
         width: Int,
@@ -49,30 +48,22 @@ object VulkanNative {
         centerY: FloatArray
     ): Boolean
     external fun setPreviewMaxFps(handle: Long, fps: Int): Boolean
-    external fun setEncoderFps(handle: Long, fps: Int): Boolean
     external fun startRecordingSession(handle: Long, fps: Int, segmentDurationMs: Long, wallClockMs: Long): Long
     external fun stopRecordingSession(handle: Long): Boolean
-    external fun requestRecordingTick(handle: Long, wallClockMs: Long): Long
+    external fun recordingTickAndRender(handle: Long, wallClockMs: Long): Long
     external fun getRecordingNextTickDelayMs(handle: Long): Long
     external fun beginNextRecordingSegment(handle: Long): Long
     external fun completeRecordingSegmentSwitch(handle: Long, success: Boolean): Boolean
-    external fun markRecordingFrameRendered(handle: Long): Boolean
     external fun createOesInput(handle: Long, index: Int, surfaceTexture: android.graphics.SurfaceTexture): Boolean
     external fun attachPreviewSurface(handle: Long, index: Int, surface: Surface): Boolean
     external fun detachPreviewSurface(handle: Long, index: Int): Boolean
     external fun setFisheyeCorrection(handle: Long, enabled: Boolean, k1: Float, k2: Float, zoom: Float, centerX: Float, centerY: Float): Boolean
     external fun setFisheyeCorrectionForCamera(handle: Long, index: Int, enabled: Boolean, k1: Float, k2: Float, zoom: Float, centerX: Float, centerY: Float): Boolean
     external fun detachEncoderSurface(handle: Long): Boolean
-    external fun renderPreview(handle: Long, index: Int): Boolean
-    external fun requestPreviewRender(handle: Long, index: Int): Long
     external fun signalPreviewFrame(handle: Long, index: Int): Long
     external fun renderScheduledPreview(handle: Long, index: Int): Boolean
-    external fun requestEncoderRender(handle: Long): Boolean
-    external fun renderScheduledEncoder(handle: Long): Boolean
-    external fun renderScheduledEncoderResult(handle: Long): Int
     external fun renderCompositor(handle: Long): Boolean
     external fun releaseCompositor(handle: Long)
-    external fun getMetrics(handle: Long): String
     external fun getMetricsSnapshot(handle: Long): LongArray
     external fun getLastError(): String
 

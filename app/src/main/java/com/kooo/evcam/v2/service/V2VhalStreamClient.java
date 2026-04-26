@@ -14,6 +14,7 @@ import io.grpc.CallOptions;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.Status;
 import io.grpc.okhttp.OkHttpChannelBuilder;
 import io.grpc.stub.ClientCalls;
 import io.grpc.stub.MetadataUtils;
@@ -38,6 +39,7 @@ final class V2VhalStreamClient {
     private static final long STREAM_TIMEOUT_MS = 120_000;
     private static final int MAX_RETRIES = 3;
     private static final long FIRST_SEND_ALL_DELAY_MS = 500L;
+    private static final long SEND_ALL_DEADLINE_MS = 3000L;
 
     private final String tag;
     private final String connectedLog;
@@ -107,11 +109,12 @@ final class V2VhalStreamClient {
                             .setRequestMarshaller(ByteMarshaller.INSTANCE)
                             .setResponseMarshaller(ByteMarshaller.INSTANCE)
                             .build();
-                    ClientCalls.blockingUnaryCall(active.newCall(method, CallOptions.DEFAULT), new byte[0]);
+                    ClientCalls.blockingUnaryCall(active.newCall(method, CallOptions.DEFAULT.withWaitForReady().withDeadlineAfter(SEND_ALL_DEADLINE_MS, TimeUnit.MILLISECONDS)), new byte[0]);
                     Log.d(tag, sendAllSuccessLog + attempt);
                     return;
                 } catch (Throwable error) {
-                    Log.w(tag, "SendAll attempt " + attempt + "/" + MAX_RETRIES + " failed: " + error.getMessage());
+                    Status status = Status.fromThrowable(error);
+                    Log.w(tag, "SendAll attempt " + attempt + "/" + MAX_RETRIES + " failed status=" + status.getCode() + " desc=" + status.getDescription() + " msg=" + error.getMessage());
                 }
             }
             Log.e(tag, sendAllExhaustedLog);

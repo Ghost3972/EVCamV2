@@ -30,6 +30,8 @@ public final class V2VhalCustomKeyObserver {
     private Thread thread;
     private volatile boolean running;
     private volatile int lastButtonState = -1;
+    private volatile long batchCount;
+    private volatile long customKeyEventCount;
 
     public V2VhalCustomKeyObserver(int buttonPropId, Listener listener) {
         this.buttonPropId = buttonPropId;
@@ -44,6 +46,8 @@ public final class V2VhalCustomKeyObserver {
         }
         running = true;
         lastButtonState = -1;
+        batchCount = 0;
+        customKeyEventCount = 0;
         Log.d(TAG, "configure custom key buttonPropId=" + buttonPropId);
         VhalNative.configureCustomKey(DEFAULT_SPEED_PROP_ID, buttonPropId, 0f);
         thread = new Thread(this::connectLoop, "V2VhalCustomKey");
@@ -114,8 +118,13 @@ public final class V2VhalCustomKeyObserver {
         }
         int[] events;
         try { events = VhalNative.decode(data); } catch (Throwable error) { Log.e(TAG, "Failed to decode property batch: " + error.getMessage(), error); return; }
-        if (events == null || events.length < 1) return;
+        batchCount++;
+        if (events == null || events.length < 1) {
+            Log.w(TAG, "Decoded empty custom key batch count=" + batchCount + " bytes=" + data.length);
+            return;
+        }
         int count = events[0];
+        if (count <= 0 && batchCount <= 5) Log.d(TAG, "Decoded custom key batch without events bytes=" + data.length);
         for (int i = 0; i < count; i++) {
             int offset = 1 + i * 3;
             if (offset + 2 >= events.length) break;
@@ -123,16 +132,19 @@ public final class V2VhalCustomKeyObserver {
             int p1 = events[offset + 1];
             int p2 = events[offset + 2];
             if (type == VhalNative.EVT_CUSTOM_KEY) {
-                Log.d(TAG, "Decoded custom key event p1=" + p1 + " p2=" + p2);
-                handleButtonState(p1);
+                customKeyEventCount++;
+                Log.d(TAG, "Decoded custom key event count=" + customKeyEventCount + " p1=" + p1 + " p2=" + p2 + " last=" + lastButtonState);
+                handleButtonState(p1, p2);
             }
         }
     }
 
-    private void handleButtonState(int state) {
+    private void handleButtonState(int state, int extra) {
         if (state == LONG_PRESS_VALUE && lastButtonState != LONG_PRESS_VALUE) {
-            Log.d(TAG, "Custom key long press triggered, value=" + state);
+            Log.d(TAG, "Custom key long press triggered, value=" + state + " extra=" + extra + " events=" + customKeyEventCount);
             mainHandler.post(listener::onCustomKeyLongPress);
+        } else if (state != lastButtonState) {
+            Log.d(TAG, "Custom key state changed " + lastButtonState + " -> " + state + " extra=" + extra);
         }
         lastButtonState = state;
     }

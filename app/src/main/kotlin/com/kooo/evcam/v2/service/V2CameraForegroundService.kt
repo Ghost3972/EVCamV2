@@ -409,7 +409,8 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             blindSpotOverlay = V2BlindSpotOverlay(
                 this,
                 attachPreview = { cameraIndex, surface -> engine.attachPreviewSurface(cameraIndex, surface) },
-                detachPreview = { cameraIndex -> engine.detachPreviewSurface(cameraIndex) }
+                detachPreview = { cameraIndex -> engine.detachPreviewSurface(cameraIndex) },
+                renderedFrames = { cameraIndex -> engine.previewRenderedFrames(cameraIndex) }
             )
         }
         V2AppLog.i("V2CameraService", "blind spot show side=$side ${engine.previewDescription(index)}")

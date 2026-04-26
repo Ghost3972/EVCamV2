@@ -2,8 +2,8 @@ package com.kooo.evcam.v2.ui
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.graphics.SurfaceTexture
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.SystemClock
 import android.view.Gravity
@@ -22,6 +22,7 @@ class V2BlindSpotOverlay(
     private val context: Context,
     private val attachPreview: (Int, Surface) -> Unit,
     private val detachPreview: (Int) -> Unit,
+    private val renderedFrames: (Int) -> Long,
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var root: FrameLayout? = null
@@ -34,8 +35,18 @@ class V2BlindSpotOverlay(
     private var cameraIndex: Int = -1
     private var attachedPreviewIndex: Int = -1
     private var layoutUpdatePending = false
-    private var fpsFrames = 0
+    private var lastLayoutX = Int.MIN_VALUE
+    private var lastLayoutY = Int.MIN_VALUE
+    private var lastLayoutWidth = Int.MIN_VALUE
+    private var lastLayoutHeight = Int.MIN_VALUE
+    private var lastFpsFrames = 0L
     private var fpsWindowStartedMs = 0L
+    private val fpsRunnable = object : Runnable {
+        override fun run() {
+            updateFps()
+            root?.postDelayed(this, FPS_UPDATE_INTERVAL_MS)
+        }
+    }
 
     fun show(side: String, index: Int) {
         if (root != null) {
@@ -50,7 +61,10 @@ class V2BlindSpotOverlay(
         }
         hide()
         cameraIndex = index
-        val texture = TextureView(context).apply { setOnTouchListener(DragTouchListener()) }
+        val texture = TextureView(context).apply {
+            isOpaque = true
+            setOnTouchListener(DragTouchListener())
+        }
         textureView = texture
         resetFpsCounter()
         val title = TextView(context).apply {
@@ -73,12 +87,7 @@ class V2BlindSpotOverlay(
         }
         fpsView = fps
         root = FrameLayout(context).apply {
-            background = GradientDrawable().apply {
-                setColor(Color.BLACK)
-                cornerRadius = 28f
-            }
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
-            clipToOutline = Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
+            setBackgroundColor(Color.BLACK)
             addView(texture, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(title, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
             addView(fps, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.START).apply {
@@ -99,7 +108,7 @@ class V2BlindSpotOverlay(
                 attachSurface(index, surfaceTexture)
             }
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) = Unit
-            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) { updateFps() }
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
             override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
                 detachCurrentSurface()
                 return true
@@ -116,11 +125,13 @@ class V2BlindSpotOverlay(
                 return
             }
         if (texture.isAvailable && texture.surfaceTexture != null) attachSurface(index, texture.surfaceTexture!!)
+        root?.post(fpsRunnable)
         V2AppLog.i("V2BlindSpotOverlay", "show side=$side index=$index")
     }
 
     fun hide() {
         val oldRoot = root ?: return
+        oldRoot.removeCallbacks(fpsRunnable)
         detachCurrentSurface()
         runCatching { windowManager.removeView(oldRoot) }
             .onFailure { V2AppLog.e("V2BlindSpotOverlay", "remove overlay failed", it) }
@@ -163,19 +174,21 @@ class V2BlindSpotOverlay(
     private fun titleText(side: String): String = if (side == "left") "左侧补盲" else "右侧补盲"
 
     private fun resetFpsCounter() {
-        fpsFrames = 0
+        lastFpsFrames = if (cameraIndex >= 0) renderedFrames(cameraIndex) else 0L
         fpsWindowStartedMs = SystemClock.elapsedRealtime()
         fpsView?.text = "0.0 fps"
     }
 
     private fun updateFps() {
-        fpsFrames += 1
+        val index = cameraIndex
+        if (index < 0) return
         val now = SystemClock.elapsedRealtime()
         val elapsed = now - fpsWindowStartedMs
-        if (elapsed < 900L) return
-        val fps = fpsFrames * 1000f / elapsed.coerceAtLeast(1L)
+        if (elapsed <= 0L) return
+        val frames = renderedFrames(index)
+        val fps = (frames - lastFpsFrames).coerceAtLeast(0L) * 1000f / elapsed
         fpsView?.text = String.format(java.util.Locale.US, "%.1f fps", fps)
-        fpsFrames = 0
+        lastFpsFrames = frames
         fpsWindowStartedMs = now
     }
 
@@ -192,7 +205,7 @@ class V2BlindSpotOverlay(
             height,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            android.graphics.PixelFormat.TRANSLUCENT
+            PixelFormat.OPAQUE
         ).apply {
             gravity = Gravity.START or Gravity.TOP
             x = clampX(V2BlindSpotSettings.overlayX(context, defaultX), width)
@@ -218,9 +231,13 @@ class V2BlindSpotOverlay(
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = clampX(startX + (event.rawX - startRawX).toInt(), params.width)
-                    params.y = clampY(startY + (event.rawY - startRawY).toInt(), params.height)
-                    requestWindowLayoutUpdate(view)
+                    val nextX = clampX(startX + (event.rawX - startRawX).toInt(), params.width)
+                    val nextY = clampY(startY + (event.rawY - startRawY).toInt(), params.height)
+                    if (kotlin.math.abs(nextX - params.x) >= MOVE_UPDATE_THRESHOLD_PX || kotlin.math.abs(nextY - params.y) >= MOVE_UPDATE_THRESHOLD_PX) {
+                        params.x = nextX
+                        params.y = nextY
+                        requestWindowLayoutUpdate(view)
+                    }
                     return true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -251,11 +268,15 @@ class V2BlindSpotOverlay(
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.width = clampWidth(startWidth + (event.rawX - startRawX).toInt())
-                    params.height = clampHeight(startHeight + (event.rawY - startRawY).toInt())
-                    params.x = clampX(params.x, params.width)
-                    params.y = clampY(params.y, params.height)
-                    requestWindowLayoutUpdate(view)
+                    val nextWidth = clampWidth(startWidth + (event.rawX - startRawX).toInt())
+                    val nextHeight = clampHeight(startHeight + (event.rawY - startRawY).toInt())
+                    if (kotlin.math.abs(nextWidth - params.width) >= RESIZE_UPDATE_THRESHOLD_PX || kotlin.math.abs(nextHeight - params.height) >= RESIZE_UPDATE_THRESHOLD_PX) {
+                        params.width = nextWidth
+                        params.height = nextHeight
+                        params.x = clampX(params.x, params.width)
+                        params.y = clampY(params.y, params.height)
+                        requestWindowLayoutUpdate(view)
+                    }
                     return true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -289,6 +310,8 @@ class V2BlindSpotOverlay(
     }
 
     private fun requestWindowLayoutUpdate(view: View) {
+        val params = windowParams ?: return
+        if (params.x == lastLayoutX && params.y == lastLayoutY && params.width == lastLayoutWidth && params.height == lastLayoutHeight) return
         if (layoutUpdatePending) return
         layoutUpdatePending = true
         view.postOnAnimation {
@@ -299,7 +322,18 @@ class V2BlindSpotOverlay(
 
     private fun updateWindowLayoutNow(view: View) {
         val params = windowParams ?: return
+        if (params.x == lastLayoutX && params.y == lastLayoutY && params.width == lastLayoutWidth && params.height == lastLayoutHeight) return
+        lastLayoutX = params.x
+        lastLayoutY = params.y
+        lastLayoutWidth = params.width
+        lastLayoutHeight = params.height
         runCatching { windowManager.updateViewLayout(view, params) }
             .onFailure { V2AppLog.w("V2BlindSpotOverlay", "update overlay layout failed", it) }
+    }
+
+    companion object {
+        private const val MOVE_UPDATE_THRESHOLD_PX = 3
+        private const val RESIZE_UPDATE_THRESHOLD_PX = 6
+        private const val FPS_UPDATE_INTERVAL_MS = 1_000L
     }
 }

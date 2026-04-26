@@ -46,7 +46,6 @@ class EncoderSegmentWriter(
         releaseInternal()
         finishing = false
         drainPending.set(false)
-        metrics.segmentIndex = segmentIndex
         segmentStartedAtMs = SystemClock.elapsedRealtime()
         val formatStamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(segmentWallClockMs))
         currentFile = uniqueFile(formatStamp)
@@ -69,6 +68,11 @@ class EncoderSegmentWriter(
         writtenSamples = 0L
         V2AppLog.i("EncoderSegmentWriter", "segment ready temp=${tempFile?.absolutePath} final=${currentFile?.absolutePath}")
         return currentFile!!
+    }
+
+    fun markAttached(segmentIndex: Int) {
+        metrics.segmentIndex = segmentIndex
+        segmentStartedAtMs = SystemClock.elapsedRealtime()
     }
 
     fun requestDrain() {

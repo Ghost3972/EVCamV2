@@ -30,7 +30,7 @@ import com.kooo.evcam.v2.recording.V2CompositeRecorder
 import java.io.File
 import java.util.concurrent.Executor
 
-class V2CameraEngine(private val context: Context, private val listener: Listener? = null) : V2CompositeRecorder.DebugListener {
+class V2CameraEngine(private val context: Context, private val listener: Listener? = null) {
     interface Listener { fun onStatusChanged(status: String) }
 
     companion object {
@@ -53,7 +53,6 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     private var recording = false
     private var recordingStartedAtMs = 0L
     private var compositor: V2CompositeRecorder? = null
-    private var recorderDebug = "draw=0 enc=0 0s | 无 0KB | err=无"
     private var cachedSlotFpsDebug = "前 -- sig=0.0 view=0.0 0ms  后 -- sig=0.0 view=0.0 0ms\n左 -- sig=0.0 view=0.0 0ms  右 -- sig=0.0 view=0.0 0ms"
     private var lastSlotFpsDebugMs = 0L
     private var lastRecordingFpsDebugMs = 0L
@@ -183,6 +182,8 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         return "${slot.spec.name}/${slot.spec.label}/cameraId=${slot.spec.cameraId}/slot=$index"
     }
 
+    fun previewRenderedFrames(index: Int): Long = slot(index)?.renderedFrames ?: 0L
+
     fun previewInputSizeLabel(index: Int): String {
         val size = slot(index)?.inputSize ?: recordingSize
         return "${size.width}×${size.height}"
@@ -202,19 +203,20 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             return
         }
 
-        V2AppLog.i("V2CameraEngine", "startRecording size=${recordingSize.width}x${recordingSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$segmentDurationMs")
+        val segmentPrecreate = V2RecordingSettings.segmentPrecreateEnabled(context)
+        V2AppLog.i("V2CameraEngine", "startRecording size=${recordingSize.width}x${recordingSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$segmentDurationMs precreate=$segmentPrecreate")
         VulkanNative.setPreviewMaxFps(pipelineHandle, RECORDING_PREVIEW_MAX_FPS)
         val next = V2CompositeRecorder(
             context = context,
             outputDir = outputDir(),
-            debugListener = this,
             nativeHandle = pipelineHandle,
             renderHandler = renderHandler,
             outputWidth = recordingSize.width,
             outputHeight = recordingSize.height,
             videoBitrate = recordingBitrate,
             recordingFps = recordingFps,
-            segmentDurationMs = segmentDurationMs
+            segmentDurationMs = segmentDurationMs,
+            segmentPrecreateEnabled = segmentPrecreate
         )
         if (!next.start()) {
             V2AppLog.e("V2CameraEngine", "startRecording failed: compositor start returned false")
@@ -237,7 +239,6 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         compositor?.stop()
         compositor = null
         VulkanNative.setPreviewMaxFps(pipelineHandle, PREVIEW_MAX_FPS)
-        recorderDebug = "draw=0 enc=0 0s | 无 0KB | err=已停止"
         slots.forEach { if (it.previewAttached) restartPreviewAfterRecordingStop(it) }
         publishStatus()
     }
@@ -279,8 +280,6 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         runCatching { VulkanNative.releaseCompositor(pipelineHandle) }
         runCatching { renderThread.quitSafely() }
     }
-
-    override fun onCompositeDebug(message: String) { recorderDebug = message; publishStatus() }
 
     private fun slot(index: Int) = slots.getOrNull(index)
     private fun outputDir() = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES), "EVCamV2").apply { mkdirs() }
@@ -516,11 +515,6 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         val seconds = totalSeconds % 60L
         return if (hours > 0L) String.format(java.util.Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
         else String.format(java.util.Locale.US, "%02d:%02d", minutes, seconds)
-    }
-
-    private fun nativeMetricsDebug(values: LongArray): String {
-        if (values.size < 48) return "metrics=short"
-        return "native preview=${values[0]} req=${values[5]} render=${values[6]} drop=${values[7]} seg=${values[8]} enc=${values[12]}/${values[13]}/${values[14]} cfg=${values[17]}"
     }
 
     private fun slotFpsDebug(): String {

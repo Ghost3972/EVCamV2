@@ -138,6 +138,10 @@ std::string EglError(const char* what) {
 }
 
 std::string GlError(const char* what) {
+#ifdef NDEBUG
+    static int sampleCounter = 0;
+    if ((++sampleCounter % 30) != 0) return std::string();
+#endif
     GLenum err = glGetError();
     if (err == GL_NO_ERROR) return std::string();
     char buf[128];
@@ -550,19 +554,6 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanN
     return env->NewStringUTF("GLES/OES native compositor");
 }
 
-extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setCompositeConfig(JNIEnv*, jobject, jlong handle, jint width, jint height, jint sideLeftRotation, jint sideRightRotation, jint layoutMode) {
-    std::lock_guard<std::mutex> lock(gLock);
-    Pipe* p = Get(handle);
-    if (!p) return JNI_FALSE;
-    p->width = width;
-    p->height = height;
-    p->sideLeftRotation = sideLeftRotation;
-    p->sideRightRotation = sideRightRotation;
-    p->layoutMode = layoutMode;
-    UpdateEncoderLayout(*p);
-    return JNI_TRUE;
-}
-
 extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setCompositorRuntimeConfig(JNIEnv* env, jobject, jlong handle, jint width, jint height, jint previewFps, jint encoderFps, jint sideLeftRotation, jint sideRightRotation, jint layoutMode, jbooleanArray fisheyeEnabled, jfloatArray k1, jfloatArray k2, jfloatArray zoom, jfloatArray centerX, jfloatArray centerY) {
     std::lock_guard<std::mutex> lock(gLock);
     Pipe* p = Get(handle);
@@ -629,15 +620,6 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_Vulkan
     return JNI_TRUE;
 }
 
-extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setEncoderFps(JNIEnv*, jobject, jlong handle, jint fps) {
-    std::lock_guard<std::mutex> lock(gLock);
-    Pipe* p = Get(handle);
-    if (!p) return JNI_FALSE;
-    p->encoderFps = fps < 1 ? 1 : (fps > 120 ? 120 : fps);
-    LOGD("encoder fps=%d", p->encoderFps);
-    return JNI_TRUE;
-}
-
 extern "C" JNIEXPORT jlong JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_startRecordingSession(JNIEnv*, jobject, jlong handle, jint fps, jlong segmentDurationMs, jlong wallClockMs) {
     std::lock_guard<std::mutex> lock(gLock);
     Pipe* p = Get(handle);
@@ -677,7 +659,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_Vulkan
     return JNI_TRUE;
 }
 
-extern "C" JNIEXPORT jlong JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestRecordingTick(JNIEnv*, jobject, jlong handle, jlong wallClockMs) {
+extern "C" JNIEXPORT jlong JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_recordingTickAndRender(JNIEnv* env, jobject, jlong handle, jlong wallClockMs) {
     std::lock_guard<std::mutex> lock(gLock);
     Pipe* p = Get(handle);
     if (!p || !p->recording.recording) return 0;
@@ -685,7 +667,17 @@ extern "C" JNIEXPORT jlong JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNat
     p->recording.requestedFrames += 1;
     jlong flags = 0;
     if (RequestEncoderRenderLocked(*p)) {
-        flags |= 1L;
+        bool rendered = false;
+        bool ok = RenderEncoderLocked(env, *p, true, &rendered);
+        p->encoderPending = false;
+        if (!ok) return -1;
+        if (rendered) {
+            p->recording.renderedFrames += 1;
+            flags |= 1L;
+        } else {
+            p->recording.droppedFrames += 1;
+            flags |= 2L;
+        }
     } else {
         p->recording.droppedFrames += 1;
         flags |= 2L;
@@ -731,33 +723,6 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_Vulkan
     p->recording.pendingSegmentIndex = 0;
     p->recording.pendingSegmentWallClockMs = 0;
     return JNI_TRUE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_markRecordingFrameRendered(JNIEnv*, jobject, jlong handle) {
-    std::lock_guard<std::mutex> lock(gLock);
-    Pipe* p = Get(handle);
-    if (!p) return JNI_FALSE;
-    p->recording.renderedFrames += 1;
-    return JNI_TRUE;
-}
-
-
-extern "C" JNIEXPORT jstring JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getMetrics(JNIEnv* env, jobject, jlong handle) {
-    std::lock_guard<std::mutex> lock(gLock);
-    Pipe* p = Get(handle);
-    if (!p) return env->NewStringUTF("invalid");
-    char buf[1024];
-    snprintf(buf, sizeof(buf), "r=%lld p=%lld e=%lld ed=%lld ns=%lld ms=%lld rec[%lld/%lld/%lld/%d] enc[%lld/%lld/%lld] pfps=%d/%lld cfg=%lld err=%s i0[%lld/%lld/%lld/%lld/%lld/%lld/%lld] i1[%lld/%lld/%lld/%lld/%lld/%lld/%lld] i2[%lld/%lld/%lld/%lld/%lld/%lld/%lld] i3[%lld/%lld/%lld/%lld/%lld/%lld/%lld]",
-             (long long)p->renderCount, (long long)p->previewRenderCount, (long long)p->encoderRenderCount,
-             (long long)p->encoderDropCount, (long long)p->noSurfaceCount, (long long)p->lastRenderMs,
-             (long long)p->recording.requestedFrames, (long long)p->recording.renderedFrames, (long long)p->recording.droppedFrames, p->recording.segmentIndex,
-             (long long)p->encoderSignalCount, (long long)p->encoderScheduledCount, (long long)p->encoderCoalescedCount,
-             p->previewMaxFps, (long long)p->previewMinIntervalMs, (long long)p->configVersion, p->lastRenderError.c_str(),
-             (long long)p->input[0].frameSignalCount, (long long)p->input[0].previewScheduledCount, (long long)p->input[0].previewDelayedCount, (long long)p->input[0].previewCoalescedCount, (long long)p->input[0].updateCount, (long long)p->input[0].previewRenderCount, (long long)p->input[0].previewDropCount,
-             (long long)p->input[1].frameSignalCount, (long long)p->input[1].previewScheduledCount, (long long)p->input[1].previewDelayedCount, (long long)p->input[1].previewCoalescedCount, (long long)p->input[1].updateCount, (long long)p->input[1].previewRenderCount, (long long)p->input[1].previewDropCount,
-             (long long)p->input[2].frameSignalCount, (long long)p->input[2].previewScheduledCount, (long long)p->input[2].previewDelayedCount, (long long)p->input[2].previewCoalescedCount, (long long)p->input[2].updateCount, (long long)p->input[2].previewRenderCount, (long long)p->input[2].previewDropCount,
-             (long long)p->input[3].frameSignalCount, (long long)p->input[3].previewScheduledCount, (long long)p->input[3].previewDelayedCount, (long long)p->input[3].previewCoalescedCount, (long long)p->input[3].updateCount, (long long)p->input[3].previewRenderCount, (long long)p->input[3].previewDropCount);
-    return env->NewStringUTF(buf);
 }
 
 extern "C" JNIEXPORT jlongArray JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getMetricsSnapshot(JNIEnv* env, jobject, jlong handle) {
@@ -916,17 +881,21 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_Vulkan
     std::lock_guard<std::mutex> lock(gLock);
     Pipe* p = Get(handle);
     if (!p || !InitEgl(*p)) return JNI_FALSE;
-    if (p->encoderSurface != EGL_NO_SURFACE) { eglDestroySurface(p->display, p->encoderSurface); p->encoderSurface = EGL_NO_SURFACE; }
-    if (p->encoderWindow) ANativeWindow_release(p->encoderWindow);
-    p->encoderWindow = ANativeWindow_fromSurface(env, surface);
-    if (!p->encoderWindow) { SetError("encoder window unavailable"); return JNI_FALSE; }
-    p->encoderSurface = eglCreateWindowSurface(p->display, p->config, p->encoderWindow, nullptr);
-    if (p->encoderSurface == EGL_NO_SURFACE) {
+    ANativeWindow* newWindow = ANativeWindow_fromSurface(env, surface);
+    if (!newWindow) { SetError("encoder window unavailable"); return JNI_FALSE; }
+    EGLSurface newSurface = eglCreateWindowSurface(p->display, p->config, newWindow, nullptr);
+    if (newSurface == EGL_NO_SURFACE) {
         SetError(EglError("eglCreateWindowSurface encoder failed"));
-        ANativeWindow_release(p->encoderWindow);
-        p->encoderWindow = nullptr;
+        ANativeWindow_release(newWindow);
         return JNI_FALSE;
     }
+
+    EGLSurface oldSurface = p->encoderSurface;
+    ANativeWindow* oldWindow = p->encoderWindow;
+    p->encoderSurface = newSurface;
+    p->encoderWindow = newWindow;
+    if (oldSurface != EGL_NO_SURFACE) eglDestroySurface(p->display, oldSurface);
+    if (oldWindow) ANativeWindow_release(oldWindow);
     p->encoderFrameIndex = 0;
     if (p->recording.recording) {
         p->recording.encoderSegmentStartSteadyMs = NowMs();
@@ -947,13 +916,6 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_Vulkan
     p->encoderFrameIndex = 0;
     p->encoderPending = false;
     return JNI_TRUE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderPreview(JNIEnv* env, jobject, jlong handle, jint index) {
-    std::lock_guard<std::mutex> lock(gLock);
-    Pipe* p = Get(handle);
-    if (!p) return JNI_FALSE;
-    return RenderPreviewLocked(env, *p, index) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestPreviewRender(JNIEnv*, jobject, jlong handle, jint index) {
@@ -991,41 +953,6 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_Vulkan
     bool ok = RenderPreviewLocked(env, *p, index);
     input.previewPending = false;
     return ok ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestEncoderRender(JNIEnv*, jobject, jlong handle) {
-    std::lock_guard<std::mutex> lock(gLock);
-    Pipe* p = Get(handle);
-    if (!p) return JNI_FALSE;
-    return RequestEncoderRenderLocked(*p) ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderScheduledEncoder(JNIEnv* env, jobject, jlong handle) {
-    std::lock_guard<std::mutex> lock(gLock);
-    Pipe* p = Get(handle);
-    if (!p) return JNI_FALSE;
-    if (!p->encoderPending) return JNI_TRUE;
-    bool rendered = false;
-    bool ok = RenderEncoderLocked(env, *p, true, &rendered);
-    p->encoderPending = false;
-    if (ok && rendered) p->recording.renderedFrames += 1;
-    return ok ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jint JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderScheduledEncoderResult(JNIEnv* env, jobject, jlong handle) {
-    std::lock_guard<std::mutex> lock(gLock);
-    Pipe* p = Get(handle);
-    if (!p) return -1;
-    if (!p->encoderPending) return 0;
-    bool rendered = false;
-    bool ok = RenderEncoderLocked(env, *p, true, &rendered);
-    p->encoderPending = false;
-    if (!ok) return -1;
-    if (rendered) {
-        p->recording.renderedFrames += 1;
-        return 1;
-    }
-    return 0;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderCompositor(JNIEnv* env, jobject, jlong handle) {
