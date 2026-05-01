@@ -5,8 +5,7 @@
     <!-- 摄像头权限 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_LOGS" />
-    <!-- 录音权限（如果需要音频） -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- 存储权限 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -49,6 +48,10 @@
     <!-- 蓝牙权限（用于监听蓝牙状态变化，车机启动会自动连蓝牙） -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Flyme Auto SystemUI 状态栏插件权限 -->
+    <uses-permission
+        android:name="com.android.systemui.permission.PLUGIN"
+        tools:ignore="ProtectedPermissions" />
 
     <!-- 声明使用摄像头功能 -->
     <uses-feature android:name="android.hardware.camera" android:required="true" />
@@ -113,6 +116,23 @@
             android:foregroundServiceType="camera" />
 
         <service
+            android:name="com.kooo.evcam.v2.plugin.V2StatusBarPlugin"
+            android:exported="true"
+            android:label="EVCam status bar plugin">
+            <intent-filter>
+                <action android:name="com.flyme.auto.plugin.action.PLUGIN_STATUS_BAR" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name="com.kooo.evcam.v2.plugin.V2StatusBarPluginReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.kooo.evcam.v2.action.PLUGIN_TOGGLE_RECORDING" />
+            </intent-filter>
+        </receiver>
+
+        <service
             android:name="com.kooo.evcam.v2.service.V2KeepAliveAccessibilityService"
             android:exported="true"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
@@ -142,6 +162,7 @@
             <intent-filter>
                 <action android:name="ecarx.intent.action.DISPLAY_OFF" />
                 <action android:name="ecarx.intent.action.DISPLAY_ON" />
+                <action android:name="android.intent.action.ACTION_SHUTDOWN" />
             </intent-filter>
         </receiver>
 
@@ -150,7 +171,6 @@
             android:enabled="true"
             android:exported="true">
             <intent-filter>
-                <action android:name="android.intent.action.SCREEN_ON" />
                 <action android:name="android.intent.action.SCREEN_OFF" />
                 <action android:name="android.intent.action.USER_PRESENT" />
                 <action android:name="android.intent.action.ACTION_POWER_CONNECTED" />

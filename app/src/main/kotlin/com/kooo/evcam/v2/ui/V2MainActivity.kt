@@ -1,6 +1,8 @@
 package com.kooo.evcam.v2.ui
 
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.Intent
 import android.content.ComponentName
 import android.content.ServiceConnection
@@ -13,6 +15,7 @@ import android.os.SystemClock
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
+import android.view.animation.LinearInterpolator
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -21,8 +24,11 @@ import com.kooo.evcam.R
 import com.kooo.evcam.databinding.ActivityV2MainA7Binding
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.V2CameraForegroundService
+import com.kooo.evcam.v2.service.V2CameraServiceCommands
 import com.kooo.evcam.v2.ui.playback.V2VideoPlaybackActivity
-import com.kooo.evcam.v2.ui.settings.V2SettingsActivity
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
 class V2MainActivity : AppCompatActivity() {
@@ -31,6 +37,7 @@ class V2MainActivity : AppCompatActivity() {
         const val EXTRA_SILENT_MODE = "silent_mode"
         private const val BOOT_RECORDING_DELAY_MS = 3_000L
         private const val BOOT_MOVE_BACK_DELAY_MS = 1_500L
+        private const val EMERGENCY_RECORDING_DURATION_MS = V2CameraForegroundService.EMERGENCY_RECORDING_DURATION_MS
         @Volatile private var lastKnownRecording = false
     }
 
@@ -41,9 +48,37 @@ class V2MainActivity : AppCompatActivity() {
     private val fpsCounters = Array(4) { FpsCounter() }
     private val previewSizeLabels = Array(4) { "--×--" }
     private val previewSurfaces = arrayOfNulls<Surface>(4)
+    private val dateTimeFormat = SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss", Locale.CHINA)
+    private var normalRecordingAnimator: ObjectAnimator? = null
+    private var emergencyProgressAnimator: ValueAnimator? = null
+    private var recordingDotBlinking = false
+    private var recordingDotVisible = true
+    private var emergencyRecording = false
+    private var emergencyRecordingEndsAtMs = 0L
+    private var lastEmergencyRepeatToastMs = 0L
     private var autoStartFromBoot = false
     private var silentMode = false
     private var autoRecordingRequested = false
+    private val dateTimeTicker = object : Runnable {
+        override fun run() {
+            binding.tvDatetime.text = dateTimeFormat.format(Date())
+            mainHandler.postDelayed(this, 1000L)
+        }
+    }
+    private val emergencyRecordingTicker = object : Runnable {
+        override fun run() {
+            updateRecordingPillText()
+            if (emergencyRecording) mainHandler.postDelayed(this, 250L)
+        }
+    }
+    private val recordingDotBlinker = object : Runnable {
+        override fun run() {
+            if (!::binding.isInitialized || binding.tvRecordingPill.visibility != View.VISIBLE) return
+            recordingDotVisible = !recordingDotVisible
+            binding.recordingDot.alpha = if (recordingDotVisible) 1f else 0f
+            mainHandler.postDelayed(this, 650L)
+        }
+    }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -74,13 +109,11 @@ class V2MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         consumeBootIntent(intent)
         binding.btnStartRecord.setOnClickListener { toggleRecordingWithToast() }
-        binding.btnExit.setOnClickListener { shutdownApp() }
-        binding.btnVideoPlayback.setOnClickListener {
+        binding.btnExit.setOnClickListener {
             startActivity(Intent(this, V2VideoPlaybackActivity::class.java))
         }
-        binding.btnSettings.setOnClickListener {
-            startActivity(Intent(this, V2SettingsActivity::class.java))
-        }
+        binding.btnVideoPlayback.setOnClickListener { startEmergencyRecordingWithToast() }
+        dateTimeTicker.run()
         updateRecordButton(lastKnownRecording)
         ensurePermissions()
     }
@@ -100,7 +133,7 @@ class V2MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         V2AppLog.i("V2MainActivity", "onPause")
-        unbindPreviews()
+        if (isFinishing) unbindPreviews()
         service?.setUiStatusListener(null)
         service?.setUiVisibility(false)
         if (bound) { unbindService(connection); bound = false; service = null }
@@ -110,6 +143,10 @@ class V2MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         V2AppLog.i("V2MainActivity", "onDestroy finishing=$isFinishing bound=$bound")
         mainHandler.removeCallbacksAndMessages(null)
+        stopNormalRecordingAnimation()
+        stopEmergencyProgressAnimation()
+        stopRecordingDotAnimation()
+        if (isFinishing && bound) unbindPreviews()
         V2AppLog.saveToPersistentLog(this)
         super.onDestroy()
     }
@@ -153,10 +190,97 @@ class V2MainActivity : AppCompatActivity() {
 
     private fun updateRecordButton(recording: Boolean) {
         lastKnownRecording = recording
-        binding.btnStartRecord.setBackgroundResource(
-            if (recording) R.drawable.v2_record_control_recording else R.drawable.v2_record_control_idle
-        )
+        binding.tvRecordingPill.visibility = if (recording || emergencyRecording) View.VISIBLE else View.GONE
+        val normalRecording = recording && !emergencyRecording
+        binding.btnStartRecord.isChecked = normalRecording
+        binding.normalRecordingProgress.visibility = if (normalRecording) View.VISIBLE else View.GONE
+        if (normalRecording) startNormalRecordingAnimation() else stopNormalRecordingAnimation()
         binding.btnStartRecord.contentDescription = if (recording) "停止录制" else "开始录制"
+        if (recording || emergencyRecording) startRecordingDotAnimation() else stopRecordingDotAnimation()
+        updateRecordingPillText()
+    }
+
+    private fun setEmergencyRecordingActive(active: Boolean) {
+        emergencyRecording = active
+        binding.btnVideoPlayback.isChecked = active
+        binding.btnStartRecord.isEnabled = !active
+        binding.emergencyRecordingProgress.visibility = if (active) View.VISIBLE else View.GONE
+        stopEmergencyProgressAnimation()
+        binding.btnVideoPlayback.contentDescription = if (active) "停止紧急录制" else "紧急录制"
+        mainHandler.removeCallbacks(emergencyRecordingTicker)
+        if (active) {
+            emergencyRecordingEndsAtMs = SystemClock.elapsedRealtime() + EMERGENCY_RECORDING_DURATION_MS
+            startEmergencyProgressAnimation()
+            emergencyRecordingTicker.run()
+        } else {
+            emergencyRecordingEndsAtMs = 0L
+            binding.emergencyRecordingProgress.progress = 0f
+            updateRecordingPillText()
+        }
+        binding.tvRecordingPill.visibility = if (lastKnownRecording || active) View.VISIBLE else View.GONE
+        updateRecordButton(lastKnownRecording)
+    }
+
+    private fun updateRecordingPillText() {
+        if (!::binding.isInitialized) return
+        binding.tvRecordingStateText.text = if (emergencyRecording) {
+            val remainingMs = (emergencyRecordingEndsAtMs - SystemClock.elapsedRealtime())
+                .coerceIn(0L, EMERGENCY_RECORDING_DURATION_MS)
+            val remainingSeconds = ((remainingMs + 999L) / 1000L)
+                .coerceIn(0L, EMERGENCY_RECORDING_DURATION_MS / 1000L)
+            "录制中 (${remainingSeconds}s)"
+        } else {
+            "录制中"
+        }
+    }
+
+    private fun startNormalRecordingAnimation() {
+        if (normalRecordingAnimator?.isStarted == true) return
+        normalRecordingAnimator = ObjectAnimator.ofFloat(binding.normalRecordingProgress, View.ROTATION, 0f, 360f).apply {
+            duration = 3000L
+            repeatCount = ObjectAnimator.INFINITE
+            interpolator = LinearInterpolator()
+            start()
+        }
+    }
+
+    private fun stopNormalRecordingAnimation() {
+        normalRecordingAnimator?.cancel()
+        normalRecordingAnimator = null
+        if (::binding.isInitialized) binding.normalRecordingProgress.rotation = 0f
+    }
+
+    private fun startEmergencyProgressAnimation() {
+        binding.emergencyRecordingProgress.progress = 0f
+        emergencyProgressAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = EMERGENCY_RECORDING_DURATION_MS
+            interpolator = LinearInterpolator()
+            addUpdateListener { animator ->
+                binding.emergencyRecordingProgress.progress = animator.animatedValue as Float
+            }
+            start()
+        }
+    }
+
+    private fun stopEmergencyProgressAnimation() {
+        emergencyProgressAnimator?.cancel()
+        emergencyProgressAnimator = null
+    }
+
+    private fun startRecordingDotAnimation() {
+        if (recordingDotBlinking) return
+        recordingDotBlinking = true
+        mainHandler.removeCallbacks(recordingDotBlinker)
+        recordingDotVisible = true
+        binding.recordingDot.alpha = 1f
+        mainHandler.postDelayed(recordingDotBlinker, 650L)
+    }
+
+    private fun stopRecordingDotAnimation() {
+        recordingDotBlinking = false
+        mainHandler.removeCallbacks(recordingDotBlinker)
+        recordingDotVisible = true
+        if (::binding.isInitialized) binding.recordingDot.alpha = 1f
     }
 
     private fun syncRecordButtonFromService() {
@@ -183,25 +307,31 @@ class V2MainActivity : AppCompatActivity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
-    private fun shutdownApp() {
-        V2AppLog.w("V2MainActivity", "shutdown app requested")
-        Toast.makeText(this, "正在退出并停止服务", Toast.LENGTH_SHORT).show()
-        val cameraService = service
-        unbindPreviews()
-        cameraService?.setUiStatusListener(null)
-        cameraService?.setUiVisibility(false)
-        cameraService?.shutdownFromUi()
-        if (bound) {
-            runCatching { unbindService(connection) }
-            bound = false
+    private fun startEmergencyRecordingWithToast() {
+        if (emergencyRecording) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastEmergencyRepeatToastMs > 1_500L) {
+                lastEmergencyRepeatToastMs = now
+                val remainingSeconds = ((emergencyRecordingEndsAtMs - now + 999L) / 1000L).coerceAtLeast(0L)
+                Toast.makeText(this, "紧急录制中（${remainingSeconds}s）", Toast.LENGTH_SHORT).show()
+            }
+            return
         }
-        service = null
-        stopService(Intent(this, V2CameraForegroundService::class.java))
-        finishAndRemoveTask()
+        val cameraService = service
+        if (cameraService == null) {
+            V2AppLog.w("V2MainActivity", "emergency recording skipped: service null")
+            Toast.makeText(this, "相机服务启动中", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val started = cameraService.startEmergencyRecording(EMERGENCY_RECORDING_DURATION_MS) { active ->
+            runOnUiThread { setEmergencyRecordingActive(active) }
+        }
+        V2AppLog.i("V2MainActivity", "emergency recording requested started=$started")
+        if (!started) Toast.makeText(this, "紧急录制启动失败", Toast.LENGTH_SHORT).show()
     }
 
     private fun ensurePermissions() {
-        val perms = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        val perms = arrayOf(Manifest.permission.CAMERA)
         val missing = perms.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         V2AppLog.i("V2MainActivity", "ensurePermissions missing=$missing")
         if (missing) ActivityCompat.requestPermissions(this, perms, 2001) else startAndBindService()
@@ -211,16 +341,16 @@ class V2MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 2001) {
             V2AppLog.i("V2MainActivity", "permission result grants=${grantResults.joinToString()} hasPermissions=${hasPermissions()}")
-            if (hasPermissions()) startAndBindService() else Toast.makeText(this, "相机和录音权限未授予", Toast.LENGTH_SHORT).show()
+            if (hasPermissions()) startAndBindService() else Toast.makeText(this, "相机权限未授予", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun hasPermissions() = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+    private fun hasPermissions() = arrayOf(Manifest.permission.CAMERA).all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
 
     private fun startAndBindService() {
         V2AppLog.i("V2MainActivity", "startAndBindService bound=$bound")
         val intent = Intent(this, V2CameraForegroundService::class.java)
-        ContextCompat.startForegroundService(this, intent)
+        V2CameraServiceCommands.start(this)
         if (!bound) bindService(intent, connection, BIND_AUTO_CREATE)
     }
 

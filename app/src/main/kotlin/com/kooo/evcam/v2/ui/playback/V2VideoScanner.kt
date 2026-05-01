@@ -3,8 +3,12 @@ package com.kooo.evcam.v2.ui.playback
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.os.SystemClock
+import com.kooo.evcam.v2.storage.V2PlaybackListCache
+import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -12,12 +16,15 @@ import java.util.Locale
 data class V2VideoGroup(
     val timestamp: String,
     val composite: File?,
-    val thumbnail: Bitmap? = null
+    val thumbnail: Bitmap? = null,
+    val thumbnailPath: String? = null,
+    private val cachedTotalBytes: Long? = null,
+    private val cachedModified: Long? = null,
 ) {
     val files: List<File> = listOfNotNull(composite)
     val count: Int = files.size
-    val totalBytes: Long = files.sumOf { it.length() }
-    private val parsedDate: Date = V2VideoScanner.parseTimestamp(timestamp) ?: Date(files.maxOfOrNull { it.lastModified() } ?: 0L)
+    val totalBytes: Long = cachedTotalBytes ?: files.sumOf { it.length() }
+    private val parsedDate: Date = V2VideoScanner.parseTimestamp(timestamp) ?: Date(cachedModified ?: files.maxOfOrNull { it.lastModified() } ?: 0L)
     val displayYear: String = runCatching {
         SimpleDateFormat("yyyy", Locale.getDefault()).format(parsedDate)
     }.getOrDefault("")
@@ -25,16 +32,20 @@ data class V2VideoGroup(
         SimpleDateFormat("MM-dd", Locale.getDefault()).format(parsedDate)
     }.getOrDefault("")
     val displayTime: String = runCatching {
-        SimpleDateFormat("HH:mm", Locale.getDefault()).format(parsedDate)
+        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(parsedDate)
     }.getOrDefault(timestamp)
 }
 
 object V2VideoScanner {
-    private val fileNamePattern = Regex("^(\\d{8}_\\d{4})_(composite(?:_\\d{3})?)\\.mp4$", RegexOption.IGNORE_CASE)
+    private val fileNamePattern = Regex(
+        "^(\\d{8}_\\d{4}(?:\\d{2})?)(?:_[A-Za-z0-9]+)?(?:_\\d{2}(?:_\\d{3})?)?(?:(?:_seg\\d{3})?(?:_[A-Za-z0-9_]+)?_composite)?(?:_\\d{3})?\\.mp4$",
+        RegexOption.IGNORE_CASE
+    )
 
     fun parseTimestamp(timestamp: String): Date? {
-        val pattern = if (timestamp.length == 13) "yyyyMMdd_HHmm" else "yyyyMMdd_HHmmss"
-        return runCatching { SimpleDateFormat(pattern, Locale.US).parse(timestamp) }.getOrNull()
+        val prefix = Regex("^(\\d{8}_\\d{4}(?:\\d{2})?)").find(timestamp)?.value ?: return null
+        val pattern = if (prefix.length == 15) "yyyyMMdd_HHmmss" else "yyyyMMdd_HHmm"
+        return runCatching { SimpleDateFormat(pattern, Locale.US).parse(prefix) }.getOrNull()
     }
 
     fun scanGroupsIncremental(
@@ -42,38 +53,125 @@ object V2VideoScanner {
         isCancelled: () -> Boolean = { false },
         onGroup: (V2VideoGroup) -> Unit
     ): Int {
-        val dir = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES), "EVCamV2")
-        val files = dir.listFiles { f ->
-            f.isFile && f.exists() && f.canRead() && f.length() > 0L &&
-                f.extension.equals("mp4", ignoreCase = true) &&
-                !f.name.endsWith(".recording", ignoreCase = true)
-        }.orEmpty()
-
-        val orderedFiles = files.mapNotNull { file ->
-            val match = fileNamePattern.matchEntire(file.name) ?: return@mapNotNull null
-            Triple(match.groupValues[1], match.groupValues[2].lowercase(Locale.US), file)
-        }.sortedWith(compareByDescending<Triple<String, String, File>> { it.first }.thenBy { it.second })
-
         val emitted = HashSet<String>()
         var count = 0
         var lastYieldMs = SystemClock.uptimeMillis()
-        orderedFiles.forEach { (timestamp, _, file) ->
+
+        val cursors = V2StoragePathHelper.playbackScanDirs(context).mapNotNull { dir ->
+            if (isCancelled() || !dir.isDirectory || !dir.canRead()) return@mapNotNull null
+            val files = dir.listFiles()
+                .orEmpty()
+                .filter { isPlayableVideoFile(it) && fileNamePattern.matches(it.name) }
+                .sortedByDescending { videoKey(it).lowercase(Locale.US) }
+            if (files.isEmpty()) null else ScanCursor(files)
+        }.toMutableList()
+
+        while (cursors.isNotEmpty()) {
             if (isCancelled()) return count
-            if (!emitted.add(timestamp)) return@forEach
-            onGroup(V2VideoGroup(timestamp = timestamp, composite = file))
-            count += 1
-            val now = SystemClock.uptimeMillis()
-            if (now - lastYieldMs >= 8L) {
-                Thread.yield()
-                lastYieldMs = now
+            val cursorIndex = cursors.indices.maxByOrNull { videoKey(cursors[it].current()).lowercase(Locale.US) } ?: break
+            val cursor = cursors[cursorIndex]
+            val file = cursor.current()
+            val key = videoKey(file)
+            if (emitted.add(key)) {
+                onGroup(V2VideoGroup(timestamp = key, composite = file))
+                count += 1
+                val now = SystemClock.uptimeMillis()
+                if (now - lastYieldMs >= 8L) {
+                    Thread.yield()
+                    lastYieldMs = now
+                }
             }
+            if (!cursor.advance()) cursors.removeAt(cursorIndex)
         }
         return count
     }
 
+    fun loadCachedGroups(context: Context): List<V2VideoGroup> = runCatching {
+        V2PlaybackListCache.loadFast(context).map { entry ->
+            V2VideoGroup(
+                timestamp = entry.key,
+                composite = File(entry.path),
+                thumbnailPath = entry.thumbnailPath,
+                cachedTotalBytes = entry.length,
+                cachedModified = entry.modified,
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    fun loadCachedGroupsIncremental(
+        context: Context,
+        isCancelled: () -> Boolean = { false },
+        onGroup: (V2VideoGroup) -> Unit
+    ): Int = runCatching {
+        var count = 0
+        V2PlaybackListCache.loadFast(context).forEach { entry ->
+            if (isCancelled()) return count
+            val file = File(entry.path)
+            onGroup(V2VideoGroup(
+                timestamp = entry.key,
+                composite = file,
+                thumbnailPath = entry.thumbnailPath,
+                cachedTotalBytes = entry.length,
+                cachedModified = entry.modified,
+            ))
+            count += 1
+        }
+        count
+    }.getOrDefault(0)
+
+    fun saveCachedGroups(context: Context, groups: List<V2VideoGroup>) {
+        V2PlaybackListCache.save(context, groups.mapNotNull { group ->
+            val file = group.composite ?: return@mapNotNull null
+            V2PlaybackListCache.Entry(
+                key = group.timestamp,
+                path = file.absolutePath,
+                length = file.length(),
+                modified = file.lastModified(),
+                thumbnailPath = defaultThumbnailFile(file).takeIf { it.isFile && it.length() > 0L }?.absolutePath,
+                thumbnailModified = defaultThumbnailFile(file).takeIf { it.isFile && it.length() > 0L }?.lastModified() ?: 0L,
+            )
+        })
+    }
+
+    private class ScanCursor(private val files: List<File>) {
+        private var index = 0
+        fun current(): File = files[index]
+        fun advance(): Boolean {
+            index += 1
+            return index < files.size
+        }
+    }
+
+    private fun videoKey(file: File): String = file.nameWithoutExtension
+
+    private fun isPlayableVideoFile(file: File): Boolean =
+        file.isFile && file.exists() && file.canRead() && file.length() > 0L &&
+            file.extension.equals("mp4", ignoreCase = true) &&
+            !file.name.endsWith(".recording", ignoreCase = true)
+
     fun cachedThumbnail(file: File): Bitmap? {
-        val thumb = File(file.parentFile, file.nameWithoutExtension + ".jpg")
+        val thumb = findThumbnailFile(file) ?: return null
+        return decodeThumbnailFile(thumb)
+    }
+
+    fun cachedThumbnailPath(path: String?): Bitmap? {
+        if (path.isNullOrBlank()) return null
+        val thumb = File(path)
         if (!thumb.isFile || !thumb.canRead() || thumb.length() <= 0L) return null
+        return decodeThumbnailFile(thumb)
+    }
+
+    fun cachedThumbnail(context: Context, file: File): Bitmap? {
+        val thumb = findThumbnailFile(file) ?: return null
+        val bitmap = decodeThumbnailFile(thumb) ?: return null
+        V2PlaybackListCache.updateThumbnail(context, file, thumb)
+        return bitmap
+    }
+
+    private fun findThumbnailFile(file: File): File? =
+        thumbnailCandidates(file).firstOrNull { it.isFile && it.canRead() && it.length() > 0L }
+
+    private fun decodeThumbnailFile(thumb: File): Bitmap? {
         return runCatching {
             BitmapFactory.Options().run {
                 inJustDecodeBounds = true
@@ -83,6 +181,82 @@ object V2VideoScanner {
                 BitmapFactory.decodeFile(thumb.absolutePath, this)
             }
         }.getOrNull()
+    }
+
+    private fun cachedThumbnailFromEntry(context: Context, file: File, entry: V2PlaybackListCache.Entry): Bitmap? {
+        val cached = entry.thumbnailPath?.let { path ->
+            val thumb = File(path)
+            if (thumb.isFile && thumb.canRead() && thumb.length() > 0L &&
+                (entry.thumbnailModified <= 0L || thumb.lastModified() == entry.thumbnailModified)
+            ) {
+                decodeThumbnailFile(thumb)?.also { V2PlaybackListCache.updateThumbnail(context, file, thumb) }
+            } else {
+                null
+            }
+        }
+        return cached ?: cachedThumbnail(context, file)
+    }
+
+    fun videoFrameThumbnail(context: Context, file: File): Bitmap? = runCatching {
+        val out = defaultThumbnailFile(file)
+        if (out.isFile && out.canRead() && out.length() > 0L && out.lastModified() >= file.lastModified()) {
+            V2PlaybackListCache.updateThumbnail(context, file, out)
+            return cachedThumbnail(file)
+        }
+
+        val retriever = MediaMetadataRetriever()
+        val frame = try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.frameAtTime
+        } finally {
+            retriever.release()
+        } ?: return null
+
+        val scaled = scaleThumbnail(frame)
+        if (scaled !== frame) frame.recycle()
+        out.parentFile?.mkdirs()
+        FileOutputStream(out).use { stream ->
+            scaled.compress(Bitmap.CompressFormat.JPEG, 78, stream)
+        }
+        out.setLastModified(file.lastModified())
+        V2PlaybackListCache.updateThumbnail(context, file, out)
+        scaled
+    }.getOrNull()
+
+    private fun scaleThumbnail(bitmap: Bitmap): Bitmap {
+        val targetW = 240
+        val targetH = 160
+        val scale = minOf(targetW.toFloat() / bitmap.width.coerceAtLeast(1), targetH.toFloat() / bitmap.height.coerceAtLeast(1), 1f)
+        return if (scale >= 1f) bitmap else Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1), (bitmap.height * scale).toInt().coerceAtLeast(1), true)
+    }
+
+    private fun defaultThumbnailFile(file: File): File = File(file.parentFile, file.nameWithoutExtension + ".jpg")
+
+    private fun thumbnailCandidates(file: File): List<File> {
+        val parent = file.parentFile ?: return emptyList()
+        val stem = file.nameWithoutExtension
+        val timestamp = fileNamePattern.matchEntire(file.name)?.groupValues?.getOrNull(1)
+        val direct = listOf(
+            defaultThumbnailFile(file),
+            File(parent, "$stem.jpeg"),
+            File(parent, "${stem}_thumb.jpg"),
+            File(parent, "${stem}_thumbnail.jpg"),
+            File(parent, "${stem.removeSuffix("_composite")}.jpg"),
+            File(parent, "${stem.removeSuffix("_composite")}.jpeg")
+        )
+        val prefixMatches = timestamp?.let { prefix ->
+            parent.listFiles { candidate ->
+                candidate.isFile && candidate.canRead() && candidate.length() > 0L &&
+                    (candidate.extension.equals("jpg", ignoreCase = true) || candidate.extension.equals("jpeg", ignoreCase = true)) &&
+                    candidate.name.startsWith(prefix, ignoreCase = true)
+            }.orEmpty().sortedWith(
+                compareByDescending<File> { it.nameWithoutExtension.equals(stem, ignoreCase = true) }
+                    .thenByDescending { it.nameWithoutExtension.length }
+                    .thenByDescending { it.name.lowercase(Locale.US) }
+            )
+        }.orEmpty()
+        return (direct + prefixMatches).distinctBy { it.absolutePath }
     }
 
     private fun thumbnailSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {

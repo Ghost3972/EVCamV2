@@ -7,10 +7,14 @@ object V2DisplayPowerActions {
     const val ECARX_DISPLAY_ON = "ecarx.intent.action.DISPLAY_ON"
 
     fun isDisplayOff(action: String?): Boolean {
-        return action == Intent.ACTION_SCREEN_OFF || action == ECARX_DISPLAY_OFF
+        return action == Intent.ACTION_SCREEN_OFF || action == ECARX_DISPLAY_OFF || isPreStrRelease(action)
     }
 
     fun isDisplayOn(action: String?): Boolean {
-        return action == Intent.ACTION_SCREEN_ON || action == ECARX_DISPLAY_ON
+        return action == ECARX_DISPLAY_ON
+    }
+
+    fun isPreStrRelease(action: String?): Boolean {
+        return action == Intent.ACTION_SHUTDOWN
     }
 }

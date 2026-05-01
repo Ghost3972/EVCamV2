@@ -30,6 +30,7 @@ object VulkanNative {
     external fun getVulkanSummary(): String
     external fun createCompositor(width: Int, height: Int): Long
     external fun createOesTexture(handle: Long, index: Int): Int
+    external fun destroyOesInput(handle: Long, index: Int): Boolean
     external fun attachEncoderSurface(handle: Long, surface: Surface): Boolean
     external fun setCompositorRuntimeConfig(
         handle: Long,
@@ -48,6 +49,7 @@ object VulkanNative {
         centerY: FloatArray
     ): Boolean
     external fun setPreviewMaxFps(handle: Long, fps: Int): Boolean
+    external fun setRecordingOverlayBitmap(handle: Long, rgba: ByteArray, width: Int, height: Int): Boolean
     external fun startRecordingSession(handle: Long, fps: Int, segmentDurationMs: Long, wallClockMs: Long): Long
     external fun stopRecordingSession(handle: Long): Boolean
     external fun recordingTickAndRender(handle: Long, wallClockMs: Long): Long
@@ -56,6 +58,7 @@ object VulkanNative {
     external fun completeRecordingSegmentSwitch(handle: Long, success: Boolean): Boolean
     external fun createOesInput(handle: Long, index: Int, surfaceTexture: android.graphics.SurfaceTexture): Boolean
     external fun attachPreviewSurface(handle: Long, index: Int, surface: Surface): Boolean
+    external fun attachPreviewSurfaceWithMode(handle: Long, index: Int, surface: Surface, applyFisheye: Boolean, applyNativeTransform: Boolean): Boolean
     external fun detachPreviewSurface(handle: Long, index: Int): Boolean
     external fun setFisheyeCorrection(handle: Long, enabled: Boolean, k1: Float, k2: Float, zoom: Float, centerX: Float, centerY: Float): Boolean
     external fun setFisheyeCorrectionForCamera(handle: Long, index: Int, enabled: Boolean, k1: Float, k2: Float, zoom: Float, centerX: Float, centerY: Float): Boolean

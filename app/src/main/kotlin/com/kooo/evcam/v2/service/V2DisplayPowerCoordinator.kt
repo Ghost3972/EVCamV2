@@ -29,7 +29,7 @@ internal class V2DisplayPowerCoordinator(
         if (registered) return
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
-            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SHUTDOWN)
             addAction(V2DisplayPowerActions.ECARX_DISPLAY_OFF)
             addAction(V2DisplayPowerActions.ECARX_DISPLAY_ON)
         }

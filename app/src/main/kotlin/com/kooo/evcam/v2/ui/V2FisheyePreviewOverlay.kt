@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.SurfaceTexture
 import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
@@ -111,7 +110,7 @@ class V2FisheyePreviewOverlay(
         return WindowManager.LayoutParams(
             (metrics.widthPixels * 0.30f).toInt(),
             (metrics.heightPixels * 0.42f).toInt(),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             android.graphics.PixelFormat.TRANSLUCENT
         ).apply {

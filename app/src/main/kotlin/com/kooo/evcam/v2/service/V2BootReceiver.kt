@@ -43,32 +43,19 @@ class V2BootReceiver : BroadcastReceiver() {
             V2AppLog.i(TAG, "transparent boot activity start requested action=$action")
         }.onFailure { error ->
             V2AppLog.e(TAG, "start transparent boot activity failed, fallback to foreground service", error)
-            val serviceIntent = Intent(context, V2CameraForegroundService::class.java)
-            startCameraService(context, serviceIntent, "boot fallback")
-        }
-    }
-
-    private fun startCameraService(context: Context, serviceIntent: Intent, reason: String) {
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
-            V2AppLog.i(TAG, "$reason foreground service start requested action=${serviceIntent.action}")
-        }.onFailure { error ->
-            V2AppLog.e(TAG, "start $reason foreground service failed", error)
+            runCatching { V2CameraServiceCommands.start(context) }
+                .onSuccess { V2AppLog.i(TAG, "boot fallback foreground service start requested") }
+                .onFailure { fallbackError -> V2AppLog.e(TAG, "start boot fallback foreground service failed", fallbackError) }
         }
     }
 
     private fun hasRequiredPermissions(context: Context): Boolean {
-        return isGranted(context, Manifest.permission.CAMERA) &&
-            isGranted(context, Manifest.permission.RECORD_AUDIO)
+        return isGranted(context, Manifest.permission.CAMERA)
     }
 
     private fun permissionSummary(context: Context): String {
         val notificationGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || isGranted(context, Manifest.permission.POST_NOTIFICATIONS)
-        return "camera=${isGranted(context, Manifest.permission.CAMERA)} audio=${isGranted(context, Manifest.permission.RECORD_AUDIO)} notification=$notificationGranted"
+        return "camera=${isGranted(context, Manifest.permission.CAMERA)} notification=$notificationGranted"
     }
 
     private fun isGranted(context: Context, permission: String): Boolean {

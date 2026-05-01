@@ -6,29 +6,20 @@ import android.util.Log;
 
 import com.kooo.evcam.VhalNative;
 
-import io.grpc.ManagedChannel;
-
 public final class V2VhalCustomKeyObserver {
     public interface Listener { void onCustomKeyLongPress(); }
 
     private static final String TAG = "V2VhalCustomKey";
     private static final int DEFAULT_SPEED_PROP_ID = 291504647;
     private static final int LONG_PRESS_VALUE = 4;
-    private static final long RECONNECT_DELAY_MS = 3000;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Listener listener;
     private final int buttonPropId;
-    private final V2VhalStreamClient streamClient = new V2VhalStreamClient(
-            TAG,
-            "Channel created, session_id=",
-            "Stream idle timeout (120000ms), forcing reconnect",
-            "Requested all property values to stream (attempt ",
-            "SendAll exhausted all retries"
-    );
-    private ManagedChannel channel;
-    private Thread thread;
     private volatile boolean running;
+    private final V2VhalSharedStream.BatchListener batchListener = data -> {
+        if (running) processPropertyBatch(data);
+    };
     private volatile int lastButtonState = -1;
     private volatile long batchCount;
     private volatile long customKeyEventCount;
@@ -50,68 +41,18 @@ public final class V2VhalCustomKeyObserver {
         customKeyEventCount = 0;
         Log.d(TAG, "configure custom key buttonPropId=" + buttonPropId);
         VhalNative.configureCustomKey(DEFAULT_SPEED_PROP_ID, buttonPropId, 0f);
-        thread = new Thread(this::connectLoop, "V2VhalCustomKey");
-        thread.setDaemon(true);
-        thread.start();
+        V2VhalSharedStream.get().register(batchListener);
+        Log.d(TAG, "registered shared VHAL stream listener");
     }
 
     public synchronized void stop() {
         running = false;
-        disconnect();
-        if (thread != null) {
-            thread.interrupt();
-            thread = null;
-        }
-    }
-
-    private void connectLoop() {
-        while (running) {
-            try {
-                Log.d(TAG, "Connecting to vehicle API service...");
-                if (connect()) {
-                    Log.d(TAG, "Connected, starting property stream");
-                    streamProperties();
-                }
-            } catch (Throwable error) {
-                Log.e(TAG, "Connection error: " + error.getMessage(), error);
-            }
-            disconnect();
-            if (!running) break;
-            try {
-                Log.d(TAG, "Reconnecting in " + RECONNECT_DELAY_MS + "ms...");
-                Thread.sleep(RECONNECT_DELAY_MS);
-            } catch (InterruptedException ignored) {
-                break;
-            }
-        }
-    }
-
-    private boolean connect() {
-        try {
-            channel = streamClient.connect().channel;
-            return true;
-        } catch (Throwable error) {
-            Log.e(TAG, "Connect failed: " + error.getMessage(), error);
-            disconnect();
-            return false;
-        }
-    }
-
-    private void disconnect() {
-        ManagedChannel old = channel;
-        channel = null;
-        streamClient.disconnect(old);
-    }
-
-    private void streamProperties() throws InterruptedException {
-        streamClient.streamProperties(VhalNative.getStreamMethod(), channel, new V2VhalStreamClient.Callback() {
-            @Override public void onBatch(byte[] data) { processPropertyBatch(data); }
-            @Override public void onStreamCompleted() { Log.d(TAG, "Property stream completed"); }
-            @Override public void onStreamError(Throwable t) { Log.e(TAG, "Property stream error: " + t.getMessage(), t); }
-        });
+        V2VhalSharedStream.get().unregister(batchListener);
+        Log.d(TAG, "unregistered shared VHAL stream listener");
     }
 
     private void processPropertyBatch(byte[] data) {
+        if (!running) return;
         if (!VhalNative.isLibraryLoaded()) {
             Log.w(TAG, "Native library not loaded, skipping property batch processing");
             return;

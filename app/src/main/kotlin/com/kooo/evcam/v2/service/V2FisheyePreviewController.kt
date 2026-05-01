@@ -28,6 +28,10 @@ internal class V2FisheyePreviewController(
             showToast("鱼眼预览需要悬浮窗权限")
             return
         }
+        if (!service.canShowFisheyePreview(index)) {
+            showToast("补盲显示中，暂不打开鱼眼预览")
+            return
+        }
 
         val params = V2FisheyeSettings.defaultParamsForIndex(index)
         val previousIndex = cameraIndex
@@ -49,15 +53,15 @@ internal class V2FisheyePreviewController(
     private fun previewOverlay(): V2FisheyePreviewOverlay {
         return overlay ?: V2FisheyePreviewOverlay(
             service,
-            attachPreview = { index, surface -> engine.attachPreviewSurface(index, surface) },
-            detachPreview = { index -> engine.detachPreviewSurface(index) },
+            attachPreview = { index, surface -> service.attachFisheyePreviewSurface(index, surface) },
+            detachPreview = { index -> service.detachFisheyePreviewSurface(index) },
             onClose = { hide() }
         ).also { overlay = it }
     }
 
     private fun restoreMainPreviewIfNeeded(index: Int) {
         if (index < 0 || !isDisplayPowerOn()) return
-        previewSurfaces.getOrNull(index)?.takeIf { it.isValid }?.let { engine.attachPreviewSurface(index, it) }
+        previewSurfaces.getOrNull(index)?.takeIf { it.isValid }?.let { service.attachPreviewSurface(index, it) }
     }
 
     private companion object {

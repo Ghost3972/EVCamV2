@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="v2_status_bar_plugin_width">450dp</dimen>
+    <dimen name="v2_status_bar_btn_h">56dp</dimen>
+    <dimen name="v2_status_bar_divider_gap">20dp</dimen>
+    <dimen name="v2_status_bar_dvr_h">66dp</dimen>
+    <dimen name="v2_status_bar_switch_h">40dp</dimen>
+    <dimen name="v2_status_bar_switch_w">78dp</dimen>
+    <dimen name="v2_status_bar_title_text">26px</dimen>
+    <dimen name="v2_status_bar_body_text">20px</dimen>
+</resources>

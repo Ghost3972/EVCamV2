@@ -1,0 +1,45 @@
+package com.kooo.evcam.v2.service
+
+import android.content.Context
+import android.content.Intent
+import androidx.core.content.ContextCompat
+
+object V2CameraServiceCommands {
+    fun start(context: Context) {
+        ContextCompat.startForegroundService(context, Intent(context, V2CameraForegroundService::class.java))
+    }
+
+    fun stop(context: Context) {
+        context.stopService(Intent(context, V2CameraForegroundService::class.java))
+    }
+
+    fun autoStartRecording(context: Context) = startAction(context, V2CameraForegroundService.ACTION_AUTO_START_RECORDING)
+
+    fun refreshCustomKey(context: Context) = startAction(context, V2CameraForegroundService.ACTION_REFRESH_CUSTOM_KEY)
+
+    fun refreshBlindSpot(context: Context) = startAction(context, V2CameraForegroundService.ACTION_REFRESH_BLIND_SPOT)
+
+    fun refreshFisheye(context: Context) = startAction(context, V2CameraForegroundService.ACTION_REFRESH_FISHEYE)
+
+    fun refreshWakeLock(context: Context) = startAction(context, V2CameraForegroundService.ACTION_REFRESH_WAKE_LOCK)
+
+    fun showFisheyePreview(context: Context, cameraIndex: Int) = startAction(context, V2CameraForegroundService.ACTION_SHOW_FISHEYE_PREVIEW) {
+        putExtra(V2CameraForegroundService.EXTRA_CAMERA_INDEX, cameraIndex)
+    }
+
+    fun hideFisheyePreview(context: Context) = startAction(context, V2CameraForegroundService.ACTION_HIDE_FISHEYE_PREVIEW)
+
+    fun showBlindSpotPreview(context: Context, side: String) = startAction(context, V2CameraForegroundService.ACTION_SHOW_BLIND_SPOT_PREVIEW) {
+        putExtra(V2CameraForegroundService.EXTRA_SIDE, side)
+    }
+
+    fun hideBlindSpotPreview(context: Context) = startAction(context, V2CameraForegroundService.ACTION_HIDE_BLIND_SPOT_PREVIEW)
+
+    fun startAction(context: Context, action: String, configure: Intent.() -> Unit = {}) {
+        val intent = Intent(context, V2CameraForegroundService::class.java).apply {
+            this.action = action
+            configure()
+        }
+        ContextCompat.startForegroundService(context, intent)
+    }
+}

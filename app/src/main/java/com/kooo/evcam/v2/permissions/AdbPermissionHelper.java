@@ -819,9 +819,6 @@ public class AdbPermissionHelper {
         commands.add(new PermissionCommand("相机权限",
                 "pm grant " + packageName + " android.permission.CAMERA"));
 
-        commands.add(new PermissionCommand("麦克风权限",
-                "pm grant " + packageName + " android.permission.RECORD_AUDIO"));
-
         // 存储权限（按 API 版本区分）
         if (sdk >= 33) {
             // Android 13+: 媒体权限

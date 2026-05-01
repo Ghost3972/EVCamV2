@@ -2,7 +2,6 @@ package com.kooo.evcam.v2.service
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.provider.Settings
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.settings.V2StartupSettings
@@ -38,12 +37,7 @@ internal object V2KeepAliveStarter {
 
     private fun startForegroundService(context: Context, reason: String) {
         runCatching {
-            val intent = Intent(context, V2CameraForegroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            V2CameraServiceCommands.start(context)
             V2AppLog.i(TAG, "foreground service start requested reason=$reason")
         }.onFailure { error ->
             V2AppLog.e(TAG, "foreground service start failed reason=$reason", error)

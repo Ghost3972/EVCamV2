@@ -16,4 +16,9 @@ object V2DisplayPowerState {
         latestDisplayPowerOn = displayPowerOn
         return displayPowerOn
     }
+
+    fun updateFromSystem(interactive: Boolean): Boolean {
+        latestDisplayPowerOn = interactive
+        return interactive
+    }
 }

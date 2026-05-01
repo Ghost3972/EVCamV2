@@ -8,19 +8,15 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.provider.Settings
 import android.view.Surface
 import android.widget.Toast
 import com.kooo.evcam.v2.log.V2BroadcastLogger
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2AvoidanceSettings
-import com.kooo.evcam.v2.settings.V2BlindSpotSettings
-import com.kooo.evcam.v2.settings.V2CustomKeySettings
+import com.kooo.evcam.v2.plugin.V2StatusBarStateStore
 import com.kooo.evcam.v2.settings.V2KeepAliveSettings
 import com.kooo.evcam.v2.settings.V2StartupSettings
-import com.kooo.evcam.v2.ui.V2BlindSpotOverlay
+import com.kooo.evcam.v2.storage.V2PlaybackCacheMaintainer
 import com.kooo.evcam.v2.ui.V2MainActivity
-import java.util.Locale
 
 class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     companion object {
@@ -31,17 +27,16 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         const val ACTION_REFRESH_WAKE_LOCK = "com.kooo.evcam.v2.action.REFRESH_WAKE_LOCK"
         const val ACTION_SHOW_FISHEYE_PREVIEW = "com.kooo.evcam.v2.action.SHOW_FISHEYE_PREVIEW"
         const val ACTION_HIDE_FISHEYE_PREVIEW = "com.kooo.evcam.v2.action.HIDE_FISHEYE_PREVIEW"
+        const val ACTION_SHOW_BLIND_SPOT_PREVIEW = "com.kooo.evcam.v2.action.SHOW_BLIND_SPOT_PREVIEW"
+        const val ACTION_HIDE_BLIND_SPOT_PREVIEW = "com.kooo.evcam.v2.action.HIDE_BLIND_SPOT_PREVIEW"
+        const val ACTION_TOGGLE_RECORDING_FROM_PLUGIN = "com.kooo.evcam.v2.action.PLUGIN_TOGGLE_RECORDING"
+        const val ACTION_START_EMERGENCY_FROM_PLUGIN = "com.kooo.evcam.v2.action.PLUGIN_START_EMERGENCY"
         const val EXTRA_CAMERA_INDEX = "camera_index"
-        internal const val AUTO_START_RECORDING_DELAY_MS = 3_000L
-        private const val AVOIDANCE_CHECK_INTERVAL_MS = 1_000L
-        private const val WATCHDOG_CHECK_INTERVAL_MS = 15_000L
-        private const val WATCHDOG_GRACE_MS = 20_000L
-        private const val WATCHDOG_FAILURE_THRESHOLD = 2
+        const val EXTRA_SIDE = "side"
+        internal const val AUTO_START_RECORDING_DELAY_MS = 0L
         private const val WATCHDOG_RECORDING_RESTART_DELAY_MS = 3_000L
-        private const val BLIND_SPOT_HIDE_TOKEN = "blind_spot_hide"
-        private const val BLIND_SPOT_SHOW_TOKEN = "blind_spot_show"
-        private const val BLIND_SPOT_SHOW_AFTER_UI_HIDE_MS = 300L
         private const val SERVICE_RESTART_DELAY_MS = 1_000L
+        const val EMERGENCY_RECORDING_DURATION_MS = 15_000L
     }
 
     inner class LocalBinder : Binder() {
@@ -57,50 +52,67 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         service = this,
         handler = mainHandler,
         isDisplayPowerOn = { isDisplayPowerOn() },
-        isAutoStartEnabled = { V2StartupSettings.isAutoStartRecording(this) && avoidanceSnapshot == null },
+        isAutoStartEnabled = { V2StartupSettings.isAutoStartRecording(this) && !avoidanceController.isActive },
         isRecording = { engine.isRecording() },
         startRecording = { startAutoRecordingIfAllowed() },
         showToast = { showServiceToast(it) }
-    )
-    private val displayPowerCoordinator = V2DisplayPowerCoordinator(
-        service = this,
-        onDisplayOff = { action -> handleDisplayOff(action) },
-        onDisplayOn = { action -> handleDisplayOn(action) }
     )
     private var uiStatusListener: ((String) -> Unit)? = null
     private var uiHideListener: (() -> Unit)? = null
     private var uiVisible = false
     private var manualShutdown = false
-    private var customKeyObserver: V2VhalCustomKeyObserver? = null
-    private var turnSignalObserver: V2VhalTurnSignalObserver? = null
-    private var blindSpotOverlay: V2BlindSpotOverlay? = null
-    private var blindSpotCameraIndex = -1
-    private var restoreUiAfterBlindSpot = false
+    private lateinit var previewLeaseManager: V2PreviewLeaseManager
+    private lateinit var customKeyController: V2CustomKeyController
     private lateinit var fisheyePreviewController: V2FisheyePreviewController
-    @Volatile private var blindSpotSignalIsOff = true
-    private lateinit var foregroundAppMonitor: V2ForegroundAppMonitor
-    private var avoidanceSnapshot: AvoidanceSnapshot? = null
-    private var activeAvoidanceTarget: String? = null
+    private lateinit var blindSpotController: V2BlindSpotController
+    private lateinit var avoidanceController: V2AvoidanceController
     private var lastToastText: String? = null
     private var lastToastMs = 0L
     private var lastNotificationText: String? = null
     private var lastNotificationMs = 0L
     private var lastNotificationRecording: Boolean? = null
+    private var emergencyRecordingActive = false
+    private var resumeNormalRecordingAfterEmergency = false
+    private var emergencyRecordingStopRunnable: Runnable? = null
     private val previewSurfaces = arrayOfNulls<Surface>(4)
-    @Volatile private var displayPowerOn = true
-    private var watchdogLastSnapshot: V2CameraEngine.HealthSnapshot? = null
-    private var watchdogLastSnapshotMs = 0L
-    private var watchdogFailureCount = 0
-    private var watchdogLastResetMs = 0L
+    private lateinit var displayPowerController: V2DisplayPowerController
+    private lateinit var cameraWatchdog: V2CameraWatchdog
 
     override fun onCreate() {
         super.onCreate()
         V2AppLog.init(this)
         V2KeepAliveStatus.recordServiceCreated(this)
         V2KeepAliveStatus.recordTrigger(this, "service", "on_create")
-        displayPowerOn = V2DisplayPowerState.initialValue(isSystemInteractive())
-        V2AppLog.i("V2CameraService", "onCreate autoRecord=${V2StartupSettings.isAutoStartRecording(this)} displayPowerOn=${isDisplayPowerOn()} systemInteractive=${isSystemInteractive()}")
+        displayPowerController = V2DisplayPowerController(
+            service = this,
+            handler = mainHandler,
+            systemInteractive = isSystemInteractive(),
+            onDisplayOff = { action -> handleDisplayOff(action) },
+            onDisplayOn = { action -> handleDisplayOn(action) },
+        )
+        V2AppLog.i("V2CameraService", "onCreate autoRecord=${V2StartupSettings.isAutoStartRecording(this)} displayPowerOn=${isDisplayPowerOn()} systemInteractive=${isSystemInteractive()} stableApi=ecarx_display_power")
         engine = V2CameraEngine(this, this)
+        previewLeaseManager = V2PreviewLeaseManager(
+            slotCount = previewSurfaces.size,
+            isDisplayPowerOn = { isDisplayPowerOn() },
+            attachNative = { index, surface, owner ->
+                engine.attachPreviewSurface(
+                    index = index,
+                    surface = surface,
+                    applyFisheye = owner != V2PreviewLeaseManager.Owner.BLIND_SPOT,
+                    applyNativeTransform = owner != V2PreviewLeaseManager.Owner.MAIN || index < 2,
+                )
+            },
+            detachNative = { index -> engine.detachPreviewSurface(index) },
+            onLeasesChanged = { updatePreviewRenderingEnabled() },
+        )
+        cameraWatchdog = V2CameraWatchdog(
+            handler = mainHandler,
+            engine = engine,
+            isDisplayPowerOn = { isDisplayPowerOn() },
+            shouldExpectPreviewRendering = { recording -> shouldExpectPreviewRendering(recording) },
+            onRestartRequired = { reason -> restartCamerasFromWatchdog(reason) }
+        )
         fisheyePreviewController = V2FisheyePreviewController(
             service = this,
             engine = engine,
@@ -108,20 +120,74 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             isDisplayPowerOn = { isDisplayPowerOn() },
             showToast = { showServiceToast(it) }
         )
-        foregroundAppMonitor = V2ForegroundAppMonitor(this)
+        customKeyController = V2CustomKeyController(
+            context = this,
+            handler = mainHandler,
+            isDisplayPowerOn = { isDisplayPowerOn() },
+            isUiVisible = { uiVisible },
+            hideUi = { uiHideListener?.invoke() },
+            showUi = { showUiFromCustomKey() },
+        )
+        blindSpotController = V2BlindSpotController(
+            context = this,
+            handler = mainHandler,
+            isDisplayPowerOn = { isDisplayPowerOn() },
+            isUiVisible = { uiVisible },
+            shouldAvoidWindow = { avoidanceController.shouldAvoidBlindSpotWindow() },
+            avoidanceTarget = { avoidanceController.activeTarget ?: avoidanceController.currentTarget() },
+            previewIndexForSide = { side -> engine.previewIndexForPosition(side) },
+            previewDescription = { index -> engine.previewDescription(index) },
+            previewInputSize = { index -> engine.previewInputSize(index) },
+            attachPreview = { index, surface -> attachBlindSpotPreviewSurface(index, surface) },
+            detachPreview = { index -> detachBlindSpotPreviewSurface(index) },
+            restoreMainPreview = { index -> restoreMainPreviewSurface(index) },
+            hideFisheyePreview = { fisheyePreviewController.hide() },
+            hideUi = { hideUiForAvoidance() },
+            restoreUi = { restoreUiFromBlindSpot() },
+            renderedFrames = { index -> engine.previewRenderedFrames(index) },
+            showToast = { message -> showServiceToast(message) },
+        )
+        avoidanceController = V2AvoidanceController(
+            context = this,
+            handler = mainHandler,
+            foregroundAppMonitor = V2ForegroundAppMonitor(this),
+            isDisplayPowerOn = { isDisplayPowerOn() },
+            isRecording = { engine.isRecording() },
+            isUiVisible = { uiVisible },
+            onHideBlindSpot = { blindSpotController.cancelAndHideForAvoidance() },
+            onHideFisheye = { fisheyePreviewController.hide() },
+            onCancelAutoRecording = { autoRecordingController.cancelPending() },
+            onHideUi = { hideUiForAvoidance() },
+            onStopRecording = {
+                engine.stopRecording()
+                updatePlaybackCacheRecordingState()
+                uiStatusListener?.invoke(engine.statusText())
+            },
+            onRestoreRecording = {
+                engine.startRecording()
+                updatePlaybackCacheRecordingState()
+                uiStatusListener?.invoke(engine.statusText())
+            },
+            onRestoreUi = { restoreUiFromAvoidance() },
+            onScheduleAutoRecording = { V2AppLog.i("V2CameraService", "auto recording restore skipped: cold start only") },
+            showToast = { showServiceToast(it) }
+        )
         notificationHelper.startForeground("camera ready")
         V2AppLog.i("V2CameraService", "foreground notification started")
-        displayPowerCoordinator.register()
+        displayPowerController.register()
         engine.setCameraAccessAllowed(isDisplayPowerOn())
         if (isDisplayPowerOn()) engine.startCameras()
         wakeLockHolder.acquire()
-        startCustomKeyObserver()
-        startBlindSpotObserver()
-        startAvoidanceMonitor()
-        startWatchdog()
+        customKeyController.start()
+        blindSpotController.startObserver()
+        avoidanceController.start()
+        cameraWatchdog.start()
         V2KeepAliveScheduler.schedule(this)
         V2KeepAliveReceiver.registerDynamic(this)
+        updatePlaybackCacheRecordingState()
+        V2PlaybackCacheMaintainer.scheduleRefresh(this)
         autoRecordingController.scheduleIfEnabled()
+        updateStatusBarPluginState()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -129,16 +195,20 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         V2BroadcastLogger.logServiceStart("V2CameraService", intent, flags, startId)
         V2KeepAliveStatus.recordTrigger(this, "service", intent?.action ?: "start_command")
-        ensureKeepAliveChain("start_command")
         val action = intent?.action
+        ensureKeepAliveChain("start_command")
         when {
             action == ACTION_AUTO_START_RECORDING -> autoRecordingController.scheduleIfEnabled()
-            action == ACTION_REFRESH_CUSTOM_KEY -> restartCustomKeyObserver()
-            action == ACTION_REFRESH_BLIND_SPOT -> restartBlindSpotObserver()
+            action == ACTION_REFRESH_CUSTOM_KEY -> customKeyController.restart()
+            action == ACTION_REFRESH_BLIND_SPOT -> blindSpotController.restartObserver()
             action == ACTION_REFRESH_FISHEYE -> engine.applyFisheyeSettings()
             action == ACTION_REFRESH_WAKE_LOCK -> refreshWakeLock()
             action == ACTION_SHOW_FISHEYE_PREVIEW -> fisheyePreviewController.show(intent.getIntExtra(EXTRA_CAMERA_INDEX, 0))
             action == ACTION_HIDE_FISHEYE_PREVIEW -> fisheyePreviewController.hide()
+            action == ACTION_SHOW_BLIND_SPOT_PREVIEW -> blindSpotController.showPreview(intent.getStringExtra(EXTRA_SIDE) ?: "left")
+            action == ACTION_HIDE_BLIND_SPOT_PREVIEW -> blindSpotController.hide()
+            action == ACTION_TOGGLE_RECORDING_FROM_PLUGIN -> toggleRecordingFromPlugin()
+            action == ACTION_START_EMERGENCY_FROM_PLUGIN -> startEmergencyRecordingFromPlugin()
             V2DisplayPowerActions.isDisplayOff(action) -> handleDisplayOff(action)
             V2DisplayPowerActions.isDisplayOn(action) -> handleDisplayOn(action)
         }
@@ -150,15 +220,16 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         V2KeepAliveStatus.recordServiceDestroyed(this)
         val shouldRestart = !manualShutdown && V2KeepAliveSettings.isKeepAliveEnabled(this) && V2StartupSettings.isAutoStartOnBoot(this)
         mainHandler.removeCallbacksAndMessages(null)
-        displayPowerCoordinator.unregister()
+        displayPowerController.unregister()
         V2KeepAliveReceiver.unregisterDynamic(this)
-        stopBlindSpotObserver()
-        hideBlindSpotOverlay()
+        blindSpotController.stopObserver()
+        blindSpotController.hide()
         fisheyePreviewController.hide()
-        stopCustomKeyObserver()
+        customKeyController.stop()
         releaseWakeLock()
         engine.release()
         if (shouldRestart) scheduleServiceRestart("on_destroy")
+        V2StatusBarStateStore.update(this, false, false, false, "")
         V2AppLog.saveToPersistentLog(this)
         super.onDestroy()
     }
@@ -175,19 +246,18 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     }
 
     private fun ensureKeepAliveChain(reason: String) {
+        releaseCamerasIfSystemAlreadyNonInteractive("keep_alive:$reason")
         V2KeepAliveReceiver.registerTimeTick(this)
         V2KeepAliveScheduler.schedule(this)
         V2KeepAliveStatus.recordTrigger(this, "chain", reason)
         refreshWakeLock()
-        autoRecordingController.scheduleIfEnabled()
     }
 
     private fun scheduleServiceRestart(reason: String) {
         V2KeepAliveStatus.recordTrigger(this, "service_restart", reason)
         Handler(Looper.getMainLooper()).postDelayed({
             runCatching {
-                val intent = Intent(applicationContext, V2CameraForegroundService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) applicationContext.startForegroundService(intent) else applicationContext.startService(intent)
+                V2CameraServiceCommands.start(applicationContext)
                 V2AppLog.w("V2CameraService", "delayed restart requested reason=$reason")
             }.onFailure { V2AppLog.e("V2CameraService", "delayed restart failed reason=$reason", it) }
         }, SERVICE_RESTART_DELAY_MS)
@@ -200,55 +270,133 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             return false
         }
         val result = engine.toggleRecording()
+        updatePlaybackCacheRecordingState()
+        updateStatusBarPluginState()
         V2AppLog.i("V2CameraService", "toggleRecording result=$result")
         return result
     }
     fun isRecording(): Boolean = engine.isRecording()
     fun statusText(): String = engine.statusText()
-    fun isPreviewPausedByAvoidance(): Boolean = avoidanceSnapshot?.stoppedPreview == true
+    fun isPreviewPausedByAvoidance(): Boolean = false
     fun previewInputSizeLabel(index: Int): String = engine.previewInputSizeLabel(index)
+    fun previewInputSize(index: Int): android.util.Size? = engine.previewInputSize(index)
     fun attachPreviewSurface(index: Int, surface: Surface) {
         previewSurfaces[index] = surface
-        if (isPreviewPausedByAvoidance()) {
-            V2AppLog.i("V2CameraService", "attachPreviewSurface cached but skipped: avoidance preview paused index=$index")
-            return
-        }
-        if (!isDisplayPowerOn()) {
-            V2AppLog.w("V2CameraService", "attachPreviewSurface cached but skipped: display off index=$index")
-            return
-        }
-        engine.attachPreviewSurface(index, surface)
+        previewLeaseManager.attach(index, surface, V2PreviewLeaseManager.Owner.MAIN)
     }
     fun detachPreviewSurface(index: Int) {
-        engine.detachPreviewSurface(index)
         previewSurfaces[index] = null
+        previewLeaseManager.detach(index, V2PreviewLeaseManager.Owner.MAIN)
+    }
+    internal fun attachFisheyePreviewSurface(index: Int, surface: Surface) {
+        previewLeaseManager.attach(index, surface, V2PreviewLeaseManager.Owner.FISHEYE)
+    }
+    internal fun detachFisheyePreviewSurface(index: Int) {
+        previewLeaseManager.detach(index, V2PreviewLeaseManager.Owner.FISHEYE)
+    }
+    internal fun canShowFisheyePreview(index: Int): Boolean {
+        if (blindSpotController.activeCameraIndex >= 0 || previewLeaseManager.isOwnedBy(index, V2PreviewLeaseManager.Owner.BLIND_SPOT)) {
+            V2AppLog.i("V2CameraService", "fisheye preview denied: blind spot active index=$index blindSpotIndex=${blindSpotController.activeCameraIndex}")
+            return false
+        }
+        return true
+    }
+    private fun attachBlindSpotPreviewSurface(index: Int, surface: Surface) {
+        previewLeaseManager.attach(index, surface, V2PreviewLeaseManager.Owner.BLIND_SPOT)
+    }
+    private fun detachBlindSpotPreviewSurface(index: Int) {
+        previewLeaseManager.detach(index, V2PreviewLeaseManager.Owner.BLIND_SPOT)
+    }
+
+    private fun restoreMainPreviewSurface(index: Int) {
+        previewLeaseManager.restoreMain(index, previewSurfaces.getOrNull(index))
     }
     fun startRecording() {
         V2AppLog.i("V2CameraService", "manual startRecording displayPowerOn=${isDisplayPowerOn()} systemInteractive=${isSystemInteractive()}")
-        if (avoidanceSnapshot != null) {
-            V2AppLog.w("V2CameraService", "manual startRecording skipped: avoidance active target=$activeAvoidanceTarget")
+        if (avoidanceController.isActive) {
+            V2AppLog.w("V2CameraService", "manual startRecording skipped: avoidance active target=${avoidanceController.activeTarget}")
             return
         }
         if (isDisplayPowerOn()) {
             engine.startRecording()
+            updatePlaybackCacheRecordingState()
+            updateStatusBarPluginState()
         } else {
             V2AppLog.w("V2CameraService", "manual startRecording skipped: display off")
         }
     }
-    fun stopRecording() { V2AppLog.i("V2CameraService", "manual stopRecording"); engine.stopRecording() }
+    fun stopRecording() { V2AppLog.i("V2CameraService", "manual stopRecording"); engine.stopRecording(); updatePlaybackCacheRecordingState(); updateStatusBarPluginState() }
+
+    fun startEmergencyRecording(durationMs: Long = EMERGENCY_RECORDING_DURATION_MS, onStateChanged: ((Boolean) -> Unit)? = null): Boolean {
+        V2AppLog.i("V2CameraService", "emergency start requested durationMs=$durationMs active=$emergencyRecordingActive recording=${engine.isRecording()}")
+        if (!isDisplayPowerOn()) {
+            V2AppLog.w("V2CameraService", "emergency skipped: display off")
+            return false
+        }
+        if (avoidanceController.isActive) {
+            V2AppLog.w("V2CameraService", "emergency skipped: avoidance active target=${avoidanceController.activeTarget}")
+            return false
+        }
+        if (emergencyRecordingActive) return false
+
+        emergencyRecordingActive = true
+        resumeNormalRecordingAfterEmergency = engine.isRecording()
+        emergencyRecordingStopRunnable?.let(mainHandler::removeCallbacks)
+        emergencyRecordingStopRunnable = null
+        onStateChanged?.invoke(true)
+        updateStatusBarPluginState()
+
+        if (engine.isRecording()) {
+            engine.stopRecordingBlockingForSwitch()
+        }
+        engine.startEventRecording(durationMs)
+        updatePlaybackCacheRecordingState()
+        updateStatusBarPluginState()
+        uiStatusListener?.invoke(engine.statusText())
+
+        val stopRunnable = Runnable { finishEmergencyRecording(onStateChanged) }
+        emergencyRecordingStopRunnable = stopRunnable
+        mainHandler.postDelayed(stopRunnable, durationMs)
+        return true
+    }
+
+    private fun finishEmergencyRecording(onStateChanged: ((Boolean) -> Unit)?) {
+        if (!emergencyRecordingActive) return
+        V2AppLog.i("V2CameraService", "emergency finish resumeNormal=$resumeNormalRecordingAfterEmergency recording=${engine.isRecording()}")
+        emergencyRecordingActive = false
+        emergencyRecordingStopRunnable = null
+        engine.stopRecording()
+        updatePlaybackCacheRecordingState()
+        updateStatusBarPluginState()
+        uiStatusListener?.invoke(engine.statusText())
+        onStateChanged?.invoke(false)
+        if (resumeNormalRecordingAfterEmergency && isDisplayPowerOn() && !avoidanceController.isActive) {
+            mainHandler.postDelayed({
+                engine.startRecording()
+                updatePlaybackCacheRecordingState()
+                updateStatusBarPluginState()
+                uiStatusListener?.invoke(engine.statusText())
+            }, 500L)
+        }
+        resumeNormalRecordingAfterEmergency = false
+    }
 
     private fun startAutoRecordingIfAllowed() {
-        if (avoidanceSnapshot != null) {
-            V2AppLog.i("V2CameraService", "auto recording skipped: avoidance active target=$activeAvoidanceTarget")
+        if (avoidanceController.isActive) {
+            V2AppLog.i("V2CameraService", "auto recording skipped: avoidance active target=${avoidanceController.activeTarget}")
             return
         }
         engine.startRecording()
+        updatePlaybackCacheRecordingState()
+        updateStatusBarPluginState()
     }
     fun shutdownFromUi() {
         V2AppLog.w("V2CameraService", "manual shutdown from UI")
         manualShutdown = true
         mainHandler.removeCallbacksAndMessages(null)
         engine.stopRecording()
+        updatePlaybackCacheRecordingState()
+        updateStatusBarPluginState()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -260,307 +408,60 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         uiVisible = visible
         uiHideListener = if (visible) hideListener else null
         V2AppLog.i("V2CameraService", "uiVisible=$uiVisible")
+        updatePreviewRenderingEnabled()
+    }
+
+    private fun updatePreviewRenderingEnabled() {
+        if (!::engine.isInitialized) return
+        engine.setPreviewRenderingEnabled(uiVisible || previewLeaseManager.hasOverlayOwner())
     }
 
     private fun handleDisplayOff(action: String?) {
-        displayPowerOn = V2DisplayPowerState.updateFromAction(action) ?: false
-        V2AppLog.i("V2CameraService", "display off action=$action: stop recording, detach preview, release cameras")
-        resetWatchdogState("display_off")
+        displayPowerController.markOff(action)
+        V2AppLog.i("V2CameraService", "display off/pre-STR action=$action: stop recording, detach preview, release cameras")
+        cameraWatchdog.reset("display_off")
         autoRecordingController.cancelPending()
-        if (avoidanceSnapshot != null) V2AppLog.i("V2CameraService", "display off clears active avoidance target=$activeAvoidanceTarget")
-        avoidanceSnapshot = null
-        activeAvoidanceTarget = null
-        hideBlindSpotOverlay()
+        avoidanceController.clear("display off")
+        blindSpotController.hide()
         fisheyePreviewController.hide()
         pauseCameraForDisplayOff()
         uiStatusListener?.invoke(engine.statusText())
         V2AppLog.saveToPersistentLog(this)
     }
 
+    private fun releaseCamerasIfSystemAlreadyNonInteractive(reason: String) {
+        if (!isDisplayPowerOn()) {
+            engine.stopRecordingAndReleaseCameras("$reason:display_power_off")
+            updatePlaybackCacheRecordingState()
+            return
+        }
+        displayPowerController.queryCurrentState(reason)
+    }
+
     private fun handleDisplayOn(action: String?) {
-        displayPowerOn = V2DisplayPowerState.updateFromAction(action) ?: true
+        if (isDisplayPowerOn()) {
+            displayPowerController.markOnIfAlreadyOn(action)
+            V2AppLog.i("V2CameraService", "display on ignored: already on action=$action")
+            return
+        }
+        displayPowerController.markOn(action)
         V2AppLog.i("V2CameraService", "display on action=$action: allow cameras and reconnect previews")
         resumeCameraForDisplayOn()
         previewSurfaces.forEachIndexed { index, surface ->
-            if (surface?.isValid == true) engine.attachPreviewSurface(index, surface)
+            previewLeaseManager.restoreMain(index, surface)
         }
-        autoRecordingController.scheduleIfEnabled()
-        resetWatchdogState("display_on")
-        startWatchdog()
+        autoRecordingController.cancelPending()
+        cameraWatchdog.reset("display_on")
+        cameraWatchdog.start()
         uiStatusListener?.invoke(engine.statusText())
     }
 
-    private fun startCustomKeyObserver() {
-        if (customKeyObserver != null) return
-        if (!V2CustomKeySettings.isEnabled(this)) {
-            V2AppLog.i("V2CameraService", "VHAL custom key observer skipped: disabled")
-            return
-        }
-        val buttonPropId = V2CustomKeySettings.buttonPropId(this)
-        customKeyObserver = V2VhalCustomKeyObserver(buttonPropId) { handleCustomKeyToggle() }.also { it.start() }
-        V2AppLog.i("V2CameraService", "VHAL custom key observer started buttonPropId=$buttonPropId")
-    }
-
-    private fun restartCustomKeyObserver() {
-        V2AppLog.i("V2CameraService", "refresh VHAL custom key observer")
-        stopCustomKeyObserver()
-        startCustomKeyObserver()
-    }
-
-    private fun stopCustomKeyObserver() {
-        customKeyObserver?.stop()
-        customKeyObserver = null
-        V2AppLog.i("V2CameraService", "VHAL custom key observer stopped")
-    }
-
-    private fun startBlindSpotObserver() {
-        if (turnSignalObserver != null) return
-        if (!V2BlindSpotSettings.isEnabled(this)) {
-            V2AppLog.i("V2CameraService", "blind spot observer skipped: disabled")
-            return
-        }
-        val propId = V2BlindSpotSettings.turnSignalPropId(this)
-        turnSignalObserver = V2VhalTurnSignalObserver(
-            propId,
-            V2BlindSpotSettings.LEFT_VALUE,
-            V2BlindSpotSettings.RIGHT_VALUE,
-            V2BlindSpotSettings.OFF_VALUE
-        ) { side, on -> handleTurnSignalForBlindSpot(side, on) }.also { it.start() }
-        V2AppLog.i("V2CameraService", "blind spot observer started propId=$propId left=${V2BlindSpotSettings.LEFT_VALUE} right=${V2BlindSpotSettings.RIGHT_VALUE}")
-    }
-
-    private fun stopBlindSpotObserver() {
-        turnSignalObserver?.stop()
-        turnSignalObserver = null
-        V2AppLog.i("V2CameraService", "blind spot observer stopped")
-    }
-
-    private fun restartBlindSpotObserver() {
-        V2AppLog.i("V2CameraService", "refresh blind spot observer")
-        stopBlindSpotObserver()
-        hideBlindSpotOverlay()
-        startBlindSpotObserver()
-    }
-
-    private fun handleTurnSignalForBlindSpot(side: String, on: Boolean) {
-        mainHandler.post {
-            if (!V2BlindSpotSettings.isEnabled(this)) return@post
-            if (on) {
-                blindSpotSignalIsOff = false
-                mainHandler.removeCallbacksAndMessages(BLIND_SPOT_HIDE_TOKEN)
-                mainHandler.removeCallbacksAndMessages(BLIND_SPOT_SHOW_TOKEN)
-                showBlindSpotOverlay(side)
-            } else {
-                blindSpotSignalIsOff = true
-                V2AppLog.i("V2CameraService", "blind spot signal off side=$side, hide after ${V2BlindSpotSettings.HIDE_DELAY_MS}ms")
-                mainHandler.removeCallbacksAndMessages(BLIND_SPOT_HIDE_TOKEN)
-                mainHandler.removeCallbacksAndMessages(BLIND_SPOT_SHOW_TOKEN)
-                mainHandler.postDelayed({
-                    if (blindSpotSignalIsOff) hideBlindSpotOverlay()
-                    else V2AppLog.i("V2CameraService", "blind spot hide canceled: signal is active again")
-                }, BLIND_SPOT_HIDE_TOKEN, V2BlindSpotSettings.HIDE_DELAY_MS)
-            }
-        }
-    }
-
-    private fun showBlindSpotOverlay(side: String) {
-        val avoidanceTarget = currentAvoidanceTarget()
-        if (avoidanceSnapshot != null || avoidanceTarget != null) {
-            V2AppLog.i("V2CameraService", "blind spot show skipped: avoidance active target=${activeAvoidanceTarget ?: avoidanceTarget} side=$side")
-            mainHandler.removeCallbacksAndMessages(BLIND_SPOT_SHOW_TOKEN)
-            return
-        }
-        if (!isDisplayPowerOn()) {
-            V2AppLog.w("V2CameraService", "blind spot show skipped: display off side=$side")
-            return
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            V2AppLog.w("V2CameraService", "blind spot show skipped: overlay permission missing")
-            Toast.makeText(this, "补盲悬浮窗需要悬浮窗权限", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (uiVisible) {
-            V2AppLog.i("V2CameraService", "blind spot hide preview UI before overlay side=$side")
-            restoreUiAfterBlindSpot = true
-            uiHideListener?.invoke()
-            mainHandler.removeCallbacksAndMessages(BLIND_SPOT_SHOW_TOKEN)
-            mainHandler.postDelayed({
-                val delayedAvoidanceTarget = currentAvoidanceTarget()
-                if (!blindSpotSignalIsOff && avoidanceSnapshot == null && delayedAvoidanceTarget == null) showBlindSpotOverlayNow(side)
-                else if (avoidanceSnapshot != null || delayedAvoidanceTarget != null) {
-                    restoreUiAfterBlindSpot = false
-                    V2AppLog.i("V2CameraService", "blind spot delayed show canceled: avoidance active target=${activeAvoidanceTarget ?: delayedAvoidanceTarget}")
-                }
-                else V2AppLog.i("V2CameraService", "blind spot delayed show canceled: signal is off")
-            }, BLIND_SPOT_SHOW_TOKEN, BLIND_SPOT_SHOW_AFTER_UI_HIDE_MS)
-            return
-        }
-        showBlindSpotOverlayNow(side)
-    }
-
-    private fun showBlindSpotOverlayNow(side: String) {
-        val avoidanceTarget = currentAvoidanceTarget()
-        if (avoidanceSnapshot != null || avoidanceTarget != null) {
-            V2AppLog.i("V2CameraService", "blind spot showNow skipped: avoidance active target=${activeAvoidanceTarget ?: avoidanceTarget} side=$side")
-            return
-        }
-        val index = engine.previewIndexForPosition(side) ?: run {
-            V2AppLog.w("V2CameraService", "blind spot show skipped: no preview index for side=$side")
-            return
-        }
-        val previousIndex = blindSpotCameraIndex
-        blindSpotCameraIndex = index
-        if (blindSpotOverlay == null) {
-            blindSpotOverlay = V2BlindSpotOverlay(
-                this,
-                attachPreview = { cameraIndex, surface -> engine.attachPreviewSurface(cameraIndex, surface) },
-                detachPreview = { cameraIndex -> engine.detachPreviewSurface(cameraIndex) },
-                renderedFrames = { cameraIndex -> engine.previewRenderedFrames(cameraIndex) }
-            )
-        }
-        V2AppLog.i("V2CameraService", "blind spot show side=$side ${engine.previewDescription(index)}")
-        blindSpotOverlay?.show(side, index)
-        if (previousIndex >= 0 && previousIndex != index && isDisplayPowerOn()) {
-            previewSurfaces.getOrNull(previousIndex)?.takeIf { it.isValid }?.let { engine.attachPreviewSurface(previousIndex, it) }
-        }
-    }
-
-    private fun hideBlindSpotOverlay() {
-        mainHandler.removeCallbacksAndMessages(BLIND_SPOT_SHOW_TOKEN)
-        val index = blindSpotCameraIndex
-        blindSpotOverlay?.hide()
-        blindSpotCameraIndex = -1
-        if (index >= 0 && isDisplayPowerOn()) {
-            previewSurfaces.getOrNull(index)?.takeIf { it.isValid }?.let { engine.attachPreviewSurface(index, it) }
-        }
-        restoreUiAfterBlindSpotIfNeeded()
-        V2AppLog.i("V2CameraService", "blind spot overlay hidden index=$index")
-    }
-
-    private fun restoreUiAfterBlindSpotIfNeeded() {
-        if (!restoreUiAfterBlindSpot) return
-        restoreUiAfterBlindSpot = false
-        if (!isDisplayPowerOn() || uiVisible) return
+    private fun showUiFromCustomKey() {
         val intent = Intent(this, V2MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-        V2AppLog.i("V2CameraService", "blind spot restore preview UI")
         runCatching { startActivity(intent) }
-            .onFailure { V2AppLog.e("V2CameraService", "blind spot restore UI failed", it) }
-    }
-
-    private fun handleCustomKeyToggle() {
-        mainHandler.post {
-            if (!isDisplayPowerOn()) {
-                V2AppLog.w("V2CameraService", "custom key toggle ignored: display off")
-                return@post
-            }
-            if (uiVisible) {
-                V2AppLog.i("V2CameraService", "custom key value 4: hide UI")
-                uiHideListener?.invoke()
-            } else {
-                V2AppLog.i("V2CameraService", "custom key value 4: show UI")
-                val intent = Intent(this, V2MainActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                }
-                runCatching { startActivity(intent) }
-                    .onFailure { V2AppLog.e("V2CameraService", "custom key show UI failed", it) }
-            }
-        }
-    }
-
-    private fun startAvoidanceMonitor() {
-        mainHandler.removeCallbacks(avoidanceRunnable)
-        mainHandler.post(avoidanceRunnable)
-        V2AppLog.i("V2CameraService", "avoidance monitor started targets=${V2AvoidanceSettings.targetValues().joinToString()} behavior=${V2AvoidanceSettings.behaviorLabels(V2AvoidanceSettings.behaviorMask(this))}")
-    }
-
-    private val avoidanceRunnable = object : Runnable {
-        override fun run() {
-            runCatching { checkAvoidanceTarget() }
-                .onFailure { V2AppLog.e("V2CameraService", "avoidance monitor tick failed", it) }
-            mainHandler.postDelayed(this, AVOIDANCE_CHECK_INTERVAL_MS)
-        }
-    }
-
-    private fun checkAvoidanceTarget() {
-        val behaviorMask = V2AvoidanceSettings.behaviorMask(this)
-        val target = if (behaviorMask == 0 || !isDisplayPowerOn()) null else currentAvoidanceTarget()
-        if (target != null && avoidanceSnapshot == null) {
-            enterAvoidance(target, behaviorMask)
-        } else if (target == null && avoidanceSnapshot != null) {
-            exitAvoidance()
-        } else if (target != null && target != activeAvoidanceTarget) {
-            V2AppLog.i("V2CameraService", "avoidance target changed $activeAvoidanceTarget -> $target")
-            activeAvoidanceTarget = target
-        }
-    }
-
-    private fun enterAvoidance(target: String, behaviorMask: Int) {
-        val snapshot = AvoidanceSnapshot(
-            behaviorMask = behaviorMask,
-            wasRecording = engine.isRecording(),
-            wasUiVisible = uiVisible,
-            stoppedPreview = behaviorMask and V2AvoidanceSettings.BEHAVIOR_STOP_PREVIEW != 0
-        )
-        avoidanceSnapshot = snapshot
-        activeAvoidanceTarget = target
-        V2AppLog.i("V2CameraService", "enter avoidance target=$target behavior=${V2AvoidanceSettings.behaviorLabels(behaviorMask)} wasRecording=${snapshot.wasRecording} wasUiVisible=${snapshot.wasUiVisible}")
-        mainHandler.removeCallbacksAndMessages(BLIND_SPOT_HIDE_TOKEN)
-        mainHandler.removeCallbacksAndMessages(BLIND_SPOT_SHOW_TOKEN)
-        restoreUiAfterBlindSpot = false
-        hideBlindSpotOverlay()
-        fisheyePreviewController.hide()
-        showServiceToast("避让中")
-        autoRecordingController.cancelPending()
-
-        if (behaviorMask and V2AvoidanceSettings.BEHAVIOR_EXIT_FOREGROUND != 0) {
-            V2AppLog.i("V2CameraService", "avoidance hide UI")
-            hideUiForAvoidance()
-        }
-        if (behaviorMask and V2AvoidanceSettings.BEHAVIOR_STOP_PREVIEW != 0) {
-            V2AppLog.i("V2CameraService", "avoidance detach preview surfaces")
-            detachMainPreviewSurfacesForAvoidance()
-        }
-        if (behaviorMask and V2AvoidanceSettings.BEHAVIOR_STOP_RECORDING != 0 && engine.isRecording()) {
-            V2AppLog.i("V2CameraService", "avoidance stop recording")
-            engine.stopRecording()
-            uiStatusListener?.invoke(engine.statusText())
-        }
-    }
-
-    private fun currentAvoidanceTarget(): String? {
-        val behaviorMask = V2AvoidanceSettings.behaviorMask(this)
-        if (behaviorMask == 0 || !isDisplayPowerOn()) return null
-        return foregroundAppMonitor.findForegroundTarget(V2AvoidanceSettings.targetValues())
-    }
-
-    private fun exitAvoidance() {
-        val snapshot = avoidanceSnapshot ?: return
-        val target = activeAvoidanceTarget
-        avoidanceSnapshot = null
-        activeAvoidanceTarget = null
-        V2AppLog.i("V2CameraService", "exit avoidance target=$target restoreRecording=${snapshot.wasRecording} restoreUi=${snapshot.wasUiVisible} restorePreview=${snapshot.stoppedPreview}")
-        if (snapshot.stoppedPreview && isDisplayPowerOn()) {
-            engine.setCameraAccessAllowed(true)
-            previewSurfaces.forEachIndexed { index, surface ->
-                if (surface?.isValid == true) engine.attachPreviewSurface(index, surface)
-            }
-        }
-        if (snapshot.wasRecording && isDisplayPowerOn() && !engine.isRecording()) {
-            engine.startRecording()
-            uiStatusListener?.invoke(engine.statusText())
-        }
-        showServiceToast("避让结束")
-        if (snapshot.wasUiVisible) {
-            val intent = Intent(this, V2MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            }
-            runCatching { startActivity(intent) }
-                .onFailure { V2AppLog.e("V2CameraService", "avoidance restore UI failed", it) }
-        } else {
-            autoRecordingController.scheduleIfEnabled()
-        }
+            .onFailure { V2AppLog.e("V2CameraService", "custom key show UI failed", it) }
     }
 
     private fun hideUiForAvoidance() {
@@ -571,114 +472,44 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         V2AppLog.w("V2CameraService", "avoidance hide UI skipped: ui callback unavailable")
     }
 
-    private fun detachMainPreviewSurfacesForAvoidance() {
-        previewSurfaces.forEachIndexed { index, surface ->
-            if (surface?.isValid == true) engine.detachPreviewSurface(index)
+    private fun restoreUiFromAvoidance() {
+        val intent = Intent(this, V2MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-        uiStatusListener?.invoke(engine.statusText())
+        runCatching { startActivity(intent) }
+            .onFailure { V2AppLog.e("V2CameraService", "avoidance restore UI failed", it) }
     }
 
-    private data class AvoidanceSnapshot(
-        val behaviorMask: Int,
-        val wasRecording: Boolean,
-        val wasUiVisible: Boolean,
-        val stoppedPreview: Boolean
-    )
-
-    private fun startWatchdog() {
-        mainHandler.removeCallbacks(watchdogRunnable)
-        watchdogLastResetMs = android.os.SystemClock.elapsedRealtime()
-        watchdogLastSnapshot = engine.healthSnapshot()
-        watchdogLastSnapshotMs = watchdogLastResetMs
-        watchdogFailureCount = 0
-        mainHandler.postDelayed(watchdogRunnable, WATCHDOG_CHECK_INTERVAL_MS)
-        V2AppLog.i("V2CameraService", "watchdog started interval=${WATCHDOG_CHECK_INTERVAL_MS}ms")
-    }
-
-    private val watchdogRunnable = object : Runnable {
-        override fun run() {
-            runCatching { checkCameraWatchdog() }
-                .onFailure { V2AppLog.e("V2CameraService", "watchdog tick failed", it) }
-            mainHandler.postDelayed(this, WATCHDOG_CHECK_INTERVAL_MS)
+    private fun restoreUiFromBlindSpot() {
+        val intent = Intent(this, V2MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-    }
-
-    private fun checkCameraWatchdog() {
-        if (!isDisplayPowerOn()) {
-            resetWatchdogState("display_off_skip")
-            return
-        }
-        if (avoidanceSnapshot?.stoppedPreview == true) {
-            resetWatchdogState("avoidance_skip")
-            return
-        }
-        val now = android.os.SystemClock.elapsedRealtime()
-        val snapshot = engine.healthSnapshot()
-        val previous = watchdogLastSnapshot
-        val previousMs = watchdogLastSnapshotMs
-        logPerformanceSnapshot(snapshot, previous, (now - previousMs).coerceAtLeast(1L))
-        watchdogLastSnapshot = snapshot
-        watchdogLastSnapshotMs = now
-        if (now - watchdogLastResetMs < WATCHDOG_GRACE_MS) return
-
-        val issues = mutableListOf<String>()
-        val brokenSlots = snapshot.slots.filter { !it.inputReady || !it.deviceOpen || !it.sessionOpen }
-        if (brokenSlots.isNotEmpty()) {
-            issues += "camera=${brokenSlots.joinToString { "${it.label}(input=${it.inputReady},dev=${it.deviceOpen},sess=${it.sessionOpen})" }}"
-        }
-
-        if (previous != null) {
-            val stalledPreview = snapshot.slots.filter { slot ->
-                slot.previewAttached && previous.slots.firstOrNull { it.index == slot.index }?.let { prev ->
-                    slot.frameSignals <= prev.frameSignals || slot.renderedFrames <= prev.renderedFrames
-                } == true
-            }
-            if (stalledPreview.isNotEmpty()) {
-                issues += "preview=${stalledPreview.joinToString { "${it.label}(sig=${it.frameSignals},r=${it.renderedFrames},err=${it.lastError})" }}"
-            }
-            if (snapshot.recording) {
-                val metrics = snapshot.recordingMetrics
-                val prevMetrics = previous.recordingMetrics
-                when {
-                    metrics == null -> issues += "recording=metrics_missing"
-                    prevMetrics != null && metrics.requestedFrames <= prevMetrics.requestedFrames -> issues += "recording=request_stalled(${metrics.requestedFrames})"
-                    prevMetrics != null && metrics.renderedFrames <= prevMetrics.renderedFrames -> issues += "recording=render_stalled(${metrics.renderedFrames})"
-                    prevMetrics != null && metrics.encodedSamples <= prevMetrics.encodedSamples -> issues += "recording=encode_stalled(${metrics.encodedSamples})"
-                    metrics.lastError != "无" -> issues += "recording=err:${metrics.lastError}"
-                }
-            }
-        }
-
-        if (issues.isEmpty()) {
-            if (watchdogFailureCount > 0) V2AppLog.i("V2CameraService", "watchdog recovered")
-            watchdogFailureCount = 0
-            return
-        }
-
-        watchdogFailureCount += 1
-        V2AppLog.w("V2CameraService", "watchdog issue count=$watchdogFailureCount/$WATCHDOG_FAILURE_THRESHOLD ${issues.joinToString("; ")}")
-        if (watchdogFailureCount >= WATCHDOG_FAILURE_THRESHOLD) {
-            restartCamerasFromWatchdog(issues.joinToString("; "))
-        }
+        runCatching { startActivity(intent) }
+            .onFailure { V2AppLog.e("V2CameraService", "blind spot restore UI failed", it) }
     }
 
     private fun restartCamerasFromWatchdog(reason: String) {
         if (!isDisplayPowerOn()) return
         V2AppLog.e("V2CameraService", "watchdog restarting cameras reason=$reason")
         val wasRecording = engine.isRecording()
-        resetWatchdogState("restart")
         runCatching {
-            if (wasRecording) engine.stopRecording()
+            if (wasRecording) {
+                engine.stopRecording()
+                updatePlaybackCacheRecordingState()
+                updateStatusBarPluginState()
+            }
             engine.stopCameras()
             engine.startCameras()
             previewSurfaces.forEachIndexed { index, surface ->
-                if (surface?.isValid == true) engine.attachPreviewSurface(index, surface)
+                previewLeaseManager.restoreMain(index, surface)
             }
             if (wasRecording && isDisplayPowerOn()) {
                 mainHandler.postDelayed({
-                    if (isDisplayPowerOn() && avoidanceSnapshot == null && !engine.isRecording()) {
+                    if (isDisplayPowerOn() && !avoidanceController.isActive && !engine.isRecording()) {
                         V2AppLog.w("V2CameraService", "watchdog restarting recording")
                         engine.startRecording()
+                        updatePlaybackCacheRecordingState()
+                        updateStatusBarPluginState()
                     }
                 }, WATCHDOG_RECORDING_RESTART_DELAY_MS)
             }
@@ -686,49 +517,9 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         }.onFailure { V2AppLog.e("V2CameraService", "watchdog camera restart failed", it) }
     }
 
-    private fun resetWatchdogState(reason: String) {
-        watchdogLastResetMs = android.os.SystemClock.elapsedRealtime()
-        watchdogFailureCount = 0
-        watchdogLastSnapshot = if (::engine.isInitialized) engine.healthSnapshot() else null
-        watchdogLastSnapshotMs = watchdogLastResetMs
-        V2AppLog.i("V2CameraService", "watchdog reset reason=$reason")
+    private fun shouldExpectPreviewRendering(recording: Boolean): Boolean {
+        return recording || uiVisible || previewLeaseManager.hasOverlayOwner()
     }
-
-    private fun logPerformanceSnapshot(
-        snapshot: V2CameraEngine.HealthSnapshot,
-        previous: V2CameraEngine.HealthSnapshot?,
-        deltaMs: Long
-    ) {
-        val slotText = snapshot.slots.joinToString(prefix = "[", postfix = "]", separator = " ") { slot ->
-            val prev = previous?.slots?.firstOrNull { it.index == slot.index }
-            val signalFps = ratePerSecond(slot.frameSignals - (prev?.frameSignals ?: slot.frameSignals), deltaMs)
-            val renderFps = ratePerSecond(slot.renderedFrames - (prev?.renderedFrames ?: slot.renderedFrames), deltaMs)
-            "${slot.label}{open=${slot.deviceOpen && slot.sessionOpen} preview=${slot.previewAttached} sig=${formatRate(signalFps)} view=${formatRate(renderFps)} fail=${slot.renderFailures} last=${slot.lastRenderMs}ms err=${slot.lastError}}"
-        }
-
-        val metrics = snapshot.recordingMetrics
-        val prevMetrics = previous?.recordingMetrics
-        val recordingText = if (snapshot.recording && metrics != null) {
-            val requestFps = ratePerSecond(metrics.requestedFrames - (prevMetrics?.requestedFrames ?: metrics.requestedFrames), deltaMs)
-            val renderFps = ratePerSecond(metrics.renderedFrames - (prevMetrics?.renderedFrames ?: metrics.renderedFrames), deltaMs)
-            val encodeFps = ratePerSecond(metrics.encodedSamples - (prevMetrics?.encodedSamples ?: metrics.encodedSamples), deltaMs)
-            val dropDelta = (metrics.droppedFrames - (prevMetrics?.droppedFrames ?: metrics.droppedFrames)).coerceAtLeast(0L)
-            "rec=ON req=${formatRate(requestFps)} render=${formatRate(renderFps)} enc=${formatRate(encodeFps)} drop=$dropDelta totalDrop=${metrics.droppedFrames} seg=${metrics.segmentIndex} switch=${metrics.segmentSwitchMs}ms first=${metrics.firstSampleLatencyMs}ms err=${metrics.lastError}"
-        } else {
-            "rec=OFF"
-        }
-
-        V2AppLog.i(
-            "V2Perf",
-            "dt=${deltaMs}ms display=$displayPowerOn failures=$watchdogFailureCount $recordingText slots=$slotText"
-        )
-    }
-
-    private fun ratePerSecond(delta: Long, deltaMs: Long): Float {
-        return delta.coerceAtLeast(0L) * 1000f / deltaMs.coerceAtLeast(1L)
-    }
-
-    private fun formatRate(value: Float): String = String.format(Locale.US, "%.1f", value)
 
     private fun showServiceToast(message: String) {
         val now = android.os.SystemClock.elapsedRealtime()
@@ -748,10 +539,11 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         }
     }
 
-    private fun isDisplayPowerOn(): Boolean = displayPowerOn
+    private fun isDisplayPowerOn(): Boolean = ::displayPowerController.isInitialized && displayPowerController.isOn()
 
     private fun pauseCameraForDisplayOff() {
-        engine.setCameraAccessAllowed(false)
+        engine.stopRecordingAndReleaseCameras("display_off")
+        updatePlaybackCacheRecordingState()
     }
 
     private fun resumeCameraForDisplayOn() {
@@ -764,6 +556,8 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
 
     override fun onStatusChanged(status: String) {
         uiStatusListener?.invoke(status)
+        parseRecordingState(status)?.let { V2PlaybackCacheMaintainer.setRecordingActive(it) }
+        updateStatusBarPluginState(status)
         if (shouldUpdateNotification(status)) {
             notificationHelper.update(status)
             lastNotificationText = status
@@ -787,5 +581,26 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             prefix.startsWith("rec=OFF") -> false
             else -> null
         }
+    }
+
+    private fun updatePlaybackCacheRecordingState() {
+        if (!::engine.isInitialized) return
+        V2PlaybackCacheMaintainer.setRecordingActive(engine.isRecording())
+    }
+
+    private fun toggleRecordingFromPlugin() {
+        V2AppLog.i("V2CameraService", "plugin toggle recording")
+        toggleRecording()
+    }
+
+    private fun startEmergencyRecordingFromPlugin() {
+        V2AppLog.i("V2CameraService", "plugin emergency recording")
+        val started = startEmergencyRecording()
+        if (!started) showServiceToast("紧急录制启动失败")
+    }
+
+    private fun updateStatusBarPluginState(status: String = if (::engine.isInitialized) engine.statusText() else "") {
+        if (!::engine.isInitialized) return
+        V2StatusBarStateStore.update(this, true, engine.isRecording(), emergencyRecordingActive, status)
     }
 }

@@ -2,12 +2,12 @@ package com.kooo.evcam.v2.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import androidx.core.content.ContextCompat
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraForegroundService
+import com.kooo.evcam.v2.service.V2CameraServiceCommands
 import com.kooo.evcam.v2.settings.V2StartupSettings
 
 class V2TransparentBootActivity : Activity() {
@@ -35,8 +35,7 @@ class V2TransparentBootActivity : Activity() {
 
     private fun startCameraServiceFromForegroundActivity() {
         runCatching {
-            val intent = Intent(this, V2CameraForegroundService::class.java)
-            ContextCompat.startForegroundService(this, intent)
+            V2CameraServiceCommands.start(this)
             V2AppLog.i(TAG, "foreground service start requested from transparent activity")
         }.onFailure { error ->
             V2AppLog.e(TAG, "start foreground service failed", error)
@@ -59,7 +58,16 @@ class V2TransparentBootActivity : Activity() {
 
     private fun finishQuietly() {
         finish()
-        overridePendingTransition(0, 0)
+        disableFinishAnimation()
+    }
+
+    private fun disableFinishAnimation() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
+        } else {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
     }
 
     companion object {

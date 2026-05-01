@@ -27,7 +27,7 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = 75
-        versionName = "2.0.0-test-04261514"
+        versionName = "2.0.0-test-05020331"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -39,7 +39,6 @@ android {
             }
         }
 
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -47,7 +46,8 @@ android {
         release {
             // 使用签名配置
             signingConfig = signingConfigs.getByName("release")
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -61,12 +61,7 @@ android {
 
     buildFeatures {
         viewBinding = true
-    }
-
-    sourceSets {
-        getByName("main") {
-            assets.directories.add("../assets")
-        }
+        aidl = true
     }
 
 }
@@ -78,29 +73,7 @@ dependencies {
     implementation(libs.constraintlayout)
     implementation(libs.recyclerview)
     implementation(libs.cardview)
-
-    // 钉钉官方 Stream SDK
-    implementation("com.dingtalk.open:app-stream-client:1.3.12")
-
-    // 飞书：使用轻量级 OkHttp WebSocket 实现，不再依赖官方 SDK
-
-    // 网络请求和 WebSocket
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
-
-    // JSON 解析
-    implementation("com.google.code.gson:gson:2.10.1")
-
-    // ZXing 二维码生成
-    implementation("com.google.zxing:core:3.5.1")
-
-    // NanoHTTPD - 轻量级 HTTP 服务器
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
-
-    // Glide 图片加载库（用于缓存和优化缩略图加载）
-    implementation("com.github.bumptech.glide:glide:4.16.0")
-    annotationProcessor("com.github.bumptech.glide:compiler:4.16.0")
-
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     // WorkManager 定时任务（用于保活）
     implementation("androidx.work:work-runtime:2.9.0")
 

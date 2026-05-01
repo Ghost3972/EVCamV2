@@ -46,9 +46,11 @@ final class V2VhalStreamClient {
     private final String streamTimeoutLog;
     private final String sendAllSuccessLog;
     private final String sendAllExhaustedLog;
+    private final String clientId;
 
-    V2VhalStreamClient(String tag, String connectedLog, String streamTimeoutLog, String sendAllSuccessLog, String sendAllExhaustedLog) {
+    V2VhalStreamClient(String tag, String clientId, String connectedLog, String streamTimeoutLog, String sendAllSuccessLog, String sendAllExhaustedLog) {
         this.tag = tag;
+        this.clientId = clientId;
         this.connectedLog = connectedLog;
         this.streamTimeoutLog = streamTimeoutLog;
         this.sendAllSuccessLog = sendAllSuccessLog;
@@ -59,7 +61,7 @@ final class V2VhalStreamClient {
         String sessionId = UUID.randomUUID().toString();
         Metadata headers = new Metadata();
         headers.put(Metadata.Key.of("session_id", Metadata.ASCII_STRING_MARSHALLER), sessionId);
-        headers.put(Metadata.Key.of("client_id", Metadata.ASCII_STRING_MARSHALLER), "evcam_signal");
+        headers.put(Metadata.Key.of("client_id", Metadata.ASCII_STRING_MARSHALLER), clientId);
         ManagedChannel channel = OkHttpChannelBuilder.forAddress(VhalNative.getGrpcHost(), VhalNative.getGrpcPort())
                 .usePlaintext()
                 .intercept(MetadataUtils.newAttachHeadersInterceptor(headers))

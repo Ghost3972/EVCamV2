@@ -14,6 +14,10 @@ class V2KeepAliveReceiver : BroadcastReceiver() {
         val action = intent?.action ?: return
         V2AppLog.init(context)
         V2BroadcastLogger.logReceive(TAG, intent)
+        if (V2DisplayPowerActions.isDisplayOff(action)) {
+            val displayPowerOn = V2DisplayPowerState.updateFromAction(action)
+            V2AppLog.i(TAG, "display power state updated action=$action on=$displayPowerOn")
+        }
         V2KeepAliveStatus.recordTrigger(context, "broadcast", reasonFor(action))
         if (!V2KeepAliveSettings.isKeepAliveEnabled(context)) {
             V2AppLog.i(TAG, "skip broadcast: keep alive disabled action=$action")
@@ -155,7 +159,6 @@ class V2KeepAliveReceiver : BroadcastReceiver() {
 
         private fun keepAliveFilter(includeTimeTick: Boolean): IntentFilter = IntentFilter().apply {
             if (includeTimeTick) addAction(Intent.ACTION_TIME_TICK)
-            addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
             addAction(Intent.ACTION_POWER_CONNECTED)

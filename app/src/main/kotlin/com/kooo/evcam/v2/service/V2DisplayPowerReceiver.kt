@@ -3,7 +3,6 @@ package com.kooo.evcam.v2.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import com.kooo.evcam.v2.log.V2BroadcastLogger
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.settings.V2StartupSettings
@@ -25,13 +24,8 @@ class V2DisplayPowerReceiver : BroadcastReceiver() {
     }
 
     private fun startCameraService(context: Context, action: String) {
-        val serviceIntent = Intent(context, V2CameraForegroundService::class.java).setAction(action)
         runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
+            V2CameraServiceCommands.startAction(context, action)
             V2AppLog.i(TAG, "display foreground service start requested action=$action")
         }.onFailure { error ->
             V2AppLog.e(TAG, "start display foreground service failed", error)

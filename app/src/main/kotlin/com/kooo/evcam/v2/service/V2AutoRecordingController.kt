@@ -23,27 +23,32 @@ internal class V2AutoRecordingController(
             return
         }
         handler.removeCallbacksAndMessages(V2CameraForegroundService.ACTION_AUTO_START_RECORDING)
+        if (V2CameraForegroundService.AUTO_START_RECORDING_DELAY_MS <= 0L) {
+            attemptStart()
+            return
+        }
         V2AppLog.i("V2CameraService", "auto recording scheduled delay=${V2CameraForegroundService.AUTO_START_RECORDING_DELAY_MS}ms")
-        handler.postDelayed({
-            if (!isAutoStartEnabled()) {
-                V2AppLog.i("V2CameraService", "auto recording skipped at start time: disabled")
-                return@postDelayed
-            }
-            if (!isDisplayPowerOn()) {
-                V2AppLog.i("V2CameraService", "auto recording skipped at start time: display off")
-                return@postDelayed
-            }
-            if (!isRecording()) {
-                V2AppLog.i("V2CameraService", "auto recording start now")
-                startRecording()
-                if (isRecording()) showToast("自动录制已开始") else showToast("自动录制启动失败")
-            } else {
-                V2AppLog.i("V2CameraService", "auto recording skipped: already recording")
-            }
-        }, V2CameraForegroundService.ACTION_AUTO_START_RECORDING, V2CameraForegroundService.AUTO_START_RECORDING_DELAY_MS)
+        handler.postDelayed({ attemptStart() }, V2CameraForegroundService.ACTION_AUTO_START_RECORDING, V2CameraForegroundService.AUTO_START_RECORDING_DELAY_MS)
     }
 
     fun cancelPending() {
         handler.removeCallbacksAndMessages(V2CameraForegroundService.ACTION_AUTO_START_RECORDING)
+    }
+
+    private fun attemptStart() {
+        if (!isAutoStartEnabled()) {
+            V2AppLog.i("V2CameraService", "auto recording skipped at start time: disabled")
+            return
+        }
+        if (!isDisplayPowerOn()) {
+            V2AppLog.i("V2CameraService", "auto recording skipped at start time: display off")
+            return
+        }
+        if (!isRecording()) {
+            V2AppLog.i("V2CameraService", "auto recording start now")
+            startRecording()
+        } else {
+            V2AppLog.i("V2CameraService", "auto recording skipped: already recording")
+        }
     }
 }

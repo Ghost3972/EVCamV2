@@ -6,14 +6,11 @@ import android.util.Log;
 
 import com.kooo.evcam.VhalNative;
 
-import io.grpc.ManagedChannel;
-
 public final class V2VhalTurnSignalObserver {
     public interface Listener { void onTurnSignal(String side, boolean on); }
 
     private static final String TAG = "V2VhalTurnSignal";
     private static final int EVT_TURN_SIGNAL = 1;
-    private static final long RECONNECT_DELAY_MS = 3000;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final int propId;
@@ -21,16 +18,10 @@ public final class V2VhalTurnSignalObserver {
     private final int rightValue;
     private final int offValue;
     private final Listener listener;
-    private final V2VhalStreamClient streamClient = new V2VhalStreamClient(
-            TAG,
-            "connected session_id=",
-            "Stream idle timeout, reconnecting",
-            "Requested all property values (attempt ",
-            ""
-    );
-    private ManagedChannel channel;
-    private Thread thread;
     private volatile boolean running;
+    private final V2VhalSharedStream.BatchListener batchListener = data -> {
+        if (running) processPropertyBatch(data);
+    };
     private volatile int lastState = Integer.MIN_VALUE;
     private volatile String lastSide;
 
@@ -52,61 +43,18 @@ public final class V2VhalTurnSignalObserver {
         lastState = Integer.MIN_VALUE;
         lastSide = null;
         Log.d(TAG, "start propId=" + propId + " left=" + leftValue + " right=" + rightValue + " off=" + offValue);
-        thread = new Thread(this::connectLoop, "V2VhalTurnSignal");
-        thread.setDaemon(true);
-        thread.start();
+        V2VhalSharedStream.get().register(batchListener);
+        Log.d(TAG, "registered shared VHAL stream listener");
     }
 
     public synchronized void stop() {
         running = false;
-        disconnect();
-        if (thread != null) {
-            thread.interrupt();
-            thread = null;
-        }
-    }
-
-    private void connectLoop() {
-        while (running) {
-            try {
-                if (connect()) streamProperties();
-            } catch (Throwable error) {
-                Log.e(TAG, "Connection error: " + error.getMessage(), error);
-            }
-            disconnect();
-            if (!running) break;
-            try { Thread.sleep(RECONNECT_DELAY_MS); } catch (InterruptedException ignored) { break; }
-        }
-    }
-
-    private boolean connect() {
-        try {
-            V2VhalStreamClient.Connection connection = streamClient.connect();
-            channel = connection.channel;
-            Log.d(TAG, "connected session_id=" + connection.sessionId + " propId=" + propId);
-            return true;
-        } catch (Throwable error) {
-            Log.e(TAG, "connect failed: " + error.getMessage(), error);
-            disconnect();
-            return false;
-        }
-    }
-
-    private void disconnect() {
-        ManagedChannel old = channel;
-        channel = null;
-        streamClient.disconnect(old);
-    }
-
-    private void streamProperties() throws InterruptedException {
-        streamClient.streamProperties(VhalNative.getStreamMethod(), channel, new V2VhalStreamClient.Callback() {
-            @Override public void onBatch(byte[] data) { processPropertyBatch(data); }
-            @Override public void onStreamCompleted() { Log.d(TAG, "Property stream completed"); }
-            @Override public void onStreamError(Throwable t) { Log.e(TAG, "Property stream error: " + t.getMessage(), t); }
-        });
+        V2VhalSharedStream.get().unregister(batchListener);
+        Log.d(TAG, "unregistered shared VHAL stream listener");
     }
 
     private void processPropertyBatch(byte[] data) {
+        if (!running) return;
         int[] events;
         try { events = VhalNative.decode(data); } catch (Throwable error) { Log.e(TAG, "decode failed: " + error.getMessage(), error); return; }
         if (events == null || events.length < 1) return;

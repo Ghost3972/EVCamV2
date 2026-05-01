@@ -1,65 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginHorizontal="8dp"
-    android:layout_marginVertical="4dp"
-    app:cardBackgroundColor="@color/card_background"
-    app:cardCornerRadius="8dp"
-    app:cardElevation="2dp">
+    android:paddingEnd="12dp"
+    android:paddingBottom="12dp">
 
-    <LinearLayout
+    <ImageView
+        android:id="@+id/video_thumbnail"
         android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="@color/input_background"
+        android:contentDescription="视频预览图"
+        android:scaleType="centerCrop"
+        app:layout_constraintDimensionRatio="16:9"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <ImageView
+        android:id="@+id/video_play_icon"
+        android:layout_width="80dp"
+        android:layout_height="80dp"
+        android:contentDescription="播放"
+        android:src="@drawable/v2_playback_ic_play"
+        app:layout_constraintBottom_toBottomOf="@id/video_thumbnail"
+        app:layout_constraintEnd_toEndOf="@id/video_thumbnail"
+        app:layout_constraintStart_toStartOf="@id/video_thumbnail"
+        app:layout_constraintTop_toTopOf="@id/video_thumbnail" />
+
+    <View
+        android:layout_width="0dp"
+        android:layout_height="64dp"
+        android:background="@drawable/v2_playback_file_time_bottom_bg"
+        app:layout_constraintBottom_toBottomOf="@id/video_thumbnail"
+        app:layout_constraintEnd_toEndOf="@id/video_thumbnail"
+        app:layout_constraintStart_toStartOf="@id/video_thumbnail" />
+
+    <TextView
+        android:id="@+id/video_time"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="8dp"
-        android:gravity="center_vertical">
+        android:layout_marginEnd="10dp"
+        android:layout_marginBottom="10dp"
+        android:textColor="@color/playback_video_text"
+        android:textSize="26sp"
+        app:layout_constraintBottom_toBottomOf="@id/video_thumbnail"
+        app:layout_constraintEnd_toEndOf="@id/video_thumbnail" />
 
-        <FrameLayout
-            android:layout_width="100dp"
-            android:layout_height="62dp"
-            android:background="#000000">
+    <TextView
+        android:id="@+id/video_date"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="gone" />
 
-            <ImageView
-                android:id="@+id/video_thumbnail"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:scaleType="fitXY"
-                android:contentDescription="视频预览图" />
-        </FrameLayout>
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="12dp"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/video_date"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="@color/text_primary"
-                android:textSize="15sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/video_time"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="@color/text_primary"
-                android:textSize="18sp"
-                android:textStyle="bold"
-                android:layout_marginTop="2dp" />
-
-            <TextView
-                android:id="@+id/video_size"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textColor="@color/text_secondary"
-                android:textSize="16sp"
-                android:layout_marginTop="2dp" />
-        </LinearLayout>
-    </LinearLayout>
-</androidx.cardview.widget.CardView>
+    <TextView
+        android:id="@+id/video_size"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:visibility="gone" />
+</androidx.constraintlayout.widget.ConstraintLayout>

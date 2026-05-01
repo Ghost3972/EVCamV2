@@ -10,3 +10,5 @@ local.properties
 *.log
 captures/
 .trae/
+tmp/
+*.mp4

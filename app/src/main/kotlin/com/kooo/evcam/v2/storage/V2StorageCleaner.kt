@@ -6,16 +6,19 @@ import com.kooo.evcam.v2.settings.V2StorageCleanupSettings
 import java.io.File
 
 object V2StorageCleaner {
+    private const val STALE_RECORDING_AGE_MS = 10 * 60 * 1000L
+
     fun cleanupForReservedSpace(context: Context, outputDir: File): CleanupResult {
         outputDir.mkdirs()
         val reservedBytes = V2StorageCleanupSettings.reservedSpaceBytes(context)
-        if (reservedBytes <= 0L) return CleanupResult(0, 0L, outputDir.usableSpace, reservedBytes)
+        val staleResult = cleanupStaleRecordingFiles(outputDir)
+        if (reservedBytes <= 0L) return CleanupResult(staleResult.first, staleResult.second, outputDir.usableSpace, reservedBytes)
 
         var available = outputDir.usableSpace
-        if (available >= reservedBytes) return CleanupResult(0, 0L, available, reservedBytes)
+        if (available >= reservedBytes) return CleanupResult(staleResult.first, staleResult.second, available, reservedBytes)
 
-        var deletedCount = 0
-        var deletedBytes = 0L
+        var deletedCount = staleResult.first
+        var deletedBytes = staleResult.second
         val videos = outputDir.listFiles { file -> file.isFile && file.extension.equals("mp4", ignoreCase = true) }
             ?.sortedWith(compareBy<File> { it.lastModified() }.thenBy { it.name })
             .orEmpty()
@@ -43,6 +46,26 @@ object V2StorageCleaner {
             V2AppLog.w("V2StorageCleaner", "cleanup result deleted=$deletedCount freed=${formatBytes(deletedBytes)} available=${formatBytes(available)} reserve=${formatBytes(reservedBytes)}")
         }
         return result
+    }
+
+    private fun cleanupStaleRecordingFiles(outputDir: File): Pair<Int, Long> {
+        val cutoff = System.currentTimeMillis() - STALE_RECORDING_AGE_MS
+        var deletedCount = 0
+        var deletedBytes = 0L
+        val staleTemps = outputDir.listFiles { file ->
+            file.isFile && file.name.endsWith(".mp4.recording", ignoreCase = true) && file.lastModified() in 1 until cutoff
+        }.orEmpty()
+        for (temp in staleTemps) {
+            val before = temp.length().coerceAtLeast(0L)
+            if (temp.delete()) {
+                deletedCount += 1
+                deletedBytes += before
+                V2AppLog.w("V2StorageCleaner", "deleted stale temp segment ${temp.name} freed=${formatBytes(before)}")
+            } else {
+                V2AppLog.w("V2StorageCleaner", "delete stale temp failed ${temp.absolutePath}")
+            }
+        }
+        return deletedCount to deletedBytes
     }
 
     fun formatBytes(bytes: Long): String {

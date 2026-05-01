@@ -1,9 +1,9 @@
 package com.kooo.evcam.v2.settings
 
 import android.content.Context
-import android.os.Environment
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.storage.V2StorageCleaner
+import com.kooo.evcam.v2.storage.V2StoragePathHelper
 
 object V2StorageCleanupSettings {
     private const val PREFS = "evcam_v2_storage_cleanup_settings"
@@ -24,13 +24,8 @@ object V2StorageCleanupSettings {
 
     fun summary(context: Context): String {
         val gb = reservedSpaceGb(context)
-        val cleanup = if (gb <= 0) "关闭低空间滚动覆盖" else "可用空间低于 ${gb}GB 时，自动删除最旧录像继续录制"
-        return "$cleanup\n${systemStorageSummary()}"
-    }
-
-    private fun systemStorageSummary(): String {
-        val dataDir = Environment.getDataDirectory()
-        return "系统可用/总空间：${V2StorageCleaner.formatBytes(dataDir.usableSpace)} / ${V2StorageCleaner.formatBytes(dataDir.totalSpace)}"
+        val cleanup = if (gb <= 0) "关闭低空间滚动覆盖" else "可用空间低于 ${gb}GB 时，自动删除最旧 mp4 继续录制"
+        return "$cleanup\n${V2StoragePathHelper.storageSummary(context)}"
     }
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

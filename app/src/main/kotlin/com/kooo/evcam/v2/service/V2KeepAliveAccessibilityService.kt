@@ -51,7 +51,12 @@ class V2KeepAliveAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val type = event?.eventType ?: return
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
-            V2AppLog.d(TAG, "window event package=${event.packageName} class=${event.className}")
+            val packageName = event.packageName?.toString().orEmpty()
+            val className = event.className?.toString().orEmpty()
+            if (packageName.isNotBlank() || className.isNotBlank()) {
+                lastWindow = ForegroundWindow(packageName, className, System.currentTimeMillis())
+            }
+            V2AppLog.d(TAG, "window event package=$packageName class=$className")
         }
     }
 
@@ -112,7 +117,17 @@ class V2KeepAliveAccessibilityService : AccessibilityService() {
         private const val HEARTBEAT_INTERVAL_MS = 60_000L
         @Volatile private var running = false
         @Volatile private var instance: V2KeepAliveAccessibilityService? = null
+        @Volatile private var lastWindow: ForegroundWindow? = null
         fun isRunning(): Boolean = running
         fun runningMinutes(): Long = instance?.let { (System.currentTimeMillis() - it.startMs) / 60_000L } ?: 0L
+        fun currentWindow(): ForegroundWindow? = lastWindow?.takeIf { System.currentTimeMillis() - it.timestampMs <= WINDOW_FRESH_MS }
+
+        private const val WINDOW_FRESH_MS = 30_000L
     }
+
+    data class ForegroundWindow(
+        val packageName: String,
+        val className: String,
+        val timestampMs: Long,
+    )
 }

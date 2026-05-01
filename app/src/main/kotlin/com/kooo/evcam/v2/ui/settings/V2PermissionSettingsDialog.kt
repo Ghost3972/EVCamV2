@@ -63,10 +63,7 @@ object V2PermissionSettingsDialog {
         content.addView(adbCard(context, refreshAll))
         content.addView(sectionTitle(context, "基础权限"))
         content.addView(permissionRow(context, "相机权限", { statusText(hasPermission(context, Manifest.permission.CAMERA), "用于录制视频和预览") }, refreshers) {
-            requestRuntimePermissions(context, arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
-        })
-        content.addView(permissionRow(context, "麦克风权限", { statusText(hasPermission(context, Manifest.permission.RECORD_AUDIO), "用于录制音频权限占位") }, refreshers) {
-            requestRuntimePermissions(context, arrayOf(Manifest.permission.RECORD_AUDIO))
+            requestRuntimePermissions(context, arrayOf(Manifest.permission.CAMERA))
         })
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             content.addView(permissionRow(context, "通知权限", { statusText(hasPermission(context, Manifest.permission.POST_NOTIFICATIONS), "用于显示前台录制服务通知") }, refreshers) {

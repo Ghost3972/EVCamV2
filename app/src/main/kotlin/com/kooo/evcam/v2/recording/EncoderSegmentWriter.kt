@@ -1,34 +1,36 @@
 package com.kooo.evcam.v2.recording
 
+import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
-import android.media.MediaMetadataRetriever
 import android.media.MediaMuxer
 import android.os.SystemClock
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import java.io.File
-import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class EncoderSegmentWriter(
+    context: Context,
     private val outputDir: File,
     private val metrics: RecordingMetrics,
     private val width: Int,
     private val height: Int,
     private val fps: Int,
     private val bitrate: Int,
+    private val recordingSessionId: String,
+    private val fileSuffix: String = "",
     private val mimeType: String = MediaFormat.MIMETYPE_VIDEO_AVC
 ) {
+    private val appContext = context.applicationContext
     private var codec: MediaCodec? = null
     private var muxer: MediaMuxer? = null
     private var inputSurface: android.view.Surface? = null
+    private var persistentInputSurface = false
     private var trackIndex = -1
     private var muxerStarted = false
     private var writtenSamples = 0L
@@ -39,6 +41,7 @@ class EncoderSegmentWriter(
     private val drainPending = AtomicBoolean(false)
     private val bufferInfo = MediaCodec.BufferInfo()
     @Volatile private var finishing = false
+    private var lastDrainPerfLogMs = 0L
 
     val surface: android.view.Surface? get() = inputSurface
 
@@ -48,19 +51,37 @@ class EncoderSegmentWriter(
         finishing = false
         drainPending.set(false)
         segmentStartedAtMs = SystemClock.elapsedRealtime()
-        val formatStamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date(segmentWallClockMs))
-        currentFile = uniqueFile(formatStamp)
+        val formatStamp = V2SegmentFileNamer.timestamp(segmentWallClockMs)
+        currentFile = V2SegmentFileNamer.uniqueFile(outputDir, formatStamp, fileSuffix)
         tempFile = File(outputDir, currentFile!!.name + ".recording")
-        tempFile?.delete()
         val format = MediaFormat.createVideoFormat(mimeType, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
         }
         codec = MediaCodec.createEncoderByType(mimeType).apply {
+            V2AppLog.i("EncoderSegmentWriter", "selected encoder codec=$name mime=$mimeType")
             configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            inputSurface = createInputSurface()
+            inputSurface = createPersistentInputSurfaceOrNull()?.let { persistentSurface ->
+                runCatching {
+                    setInputSurface(persistentSurface)
+                    persistentInputSurface = true
+                    V2AppLog.i("EncoderSegmentWriter", "using persistent input surface codec=$name")
+                    persistentSurface
+                }.getOrElse {
+                    runCatching { persistentSurface.release() }
+                    persistentInputSurface = false
+                    V2AppLog.w("EncoderSegmentWriter", "set persistent input surface failed; fallback to regular surface codec=$name", it)
+                    createInputSurface()
+                }
+            } ?: createInputSurface().also {
+                persistentInputSurface = false
+                V2AppLog.w("EncoderSegmentWriter", "using regular input surface codec=$name")
+            }
             start()
         }
         muxer = MediaMuxer(tempFile!!.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -94,10 +115,16 @@ class EncoderSegmentWriter(
     private fun drainInternal(endOfStream: Boolean) {
         val codec = codec ?: return
         val muxer = muxer ?: return
+        val startedMs = SystemClock.elapsedRealtime()
+        var drainedSamples = 0L
+        var writeMs = 0L
         while (true) {
             val outIndex = codec.dequeueOutputBuffer(bufferInfo, if (endOfStream) 10_000 else 0)
             when {
-                outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream) return
+                outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream) {
+                    logDrainCost(startedMs, drainedSamples, writeMs, endOfStream)
+                    return
+                }
                 outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     if (!muxerStarted) {
                         trackIndex = muxer.addTrack(codec.outputFormat)
@@ -111,18 +138,42 @@ class EncoderSegmentWriter(
                     if (encoded != null && bufferInfo.size > 0 && muxerStarted && !codecConfig) {
                         encoded.position(bufferInfo.offset)
                         encoded.limit(bufferInfo.offset + bufferInfo.size)
+                        val writeStartedMs = SystemClock.elapsedRealtime()
                         muxer.writeSampleData(trackIndex, encoded, bufferInfo)
+                        writeMs += SystemClock.elapsedRealtime() - writeStartedMs
                         writtenSamples += 1
+                        drainedSamples += 1
                         metrics.encodedSamples += 1
                         if (metrics.firstSampleLatencyMs < 0) {
                             metrics.firstSampleLatencyMs = SystemClock.elapsedRealtime() - segmentStartedAtMs
                         }
                     }
                     codec.releaseOutputBuffer(outIndex, false)
-                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
+                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                        logDrainCost(startedMs, drainedSamples, writeMs, endOfStream)
+                        return
+                    }
                 }
             }
         }
+    }
+
+    private fun logDrainCost(startedMs: Long, samples: Long, writeMs: Long, endOfStream: Boolean) {
+        val elapsedMs = SystemClock.elapsedRealtime() - startedMs
+        val now = SystemClock.elapsedRealtime()
+        if (elapsedMs >= 8L || writeMs >= 4L || samples >= 4L || endOfStream || (samples > 0L && now - lastDrainPerfLogMs >= 3_000L)) {
+            lastDrainPerfLogMs = now
+            V2AppLog.i(
+                "EncoderSegmentWriter",
+                "drain samples=$samples elapsedMs=$elapsedMs writeMs=$writeMs eos=$endOfStream totalSamples=$writtenSamples file=${currentFile?.name}"
+            )
+        }
+    }
+
+    private fun createPersistentInputSurfaceOrNull(): android.view.Surface? {
+        return runCatching { MediaCodec.createPersistentInputSurface() }
+            .onFailure { V2AppLog.w("EncoderSegmentWriter", "create persistent input surface failed; fallback to regular surface", it) }
+            .getOrNull()
     }
 
     fun finishAndReleaseBlocking(generateThumbnail: Boolean = true, timeoutMs: Long = 10_000L) {
@@ -176,9 +227,13 @@ class EncoderSegmentWriter(
         codec = null
         runCatching { inputSurface?.release() }
         inputSurface = null
+        persistentInputSurface = false
         val finishedFile = finalizeTempFile(muxerStopOk)
         V2AppLog.i("EncoderSegmentWriter", "release complete file=${currentFile?.name} temp=${tempFile?.name} muxerStopOk=$muxerStopOk samples=$writtenSamples final=${finishedFile?.name}")
-        if (generateThumbnail) finishedFile?.let { RecordingThumbnailer.generateFirstFrameAsync(it) }
+        finishedFile?.let { file ->
+            V2PlaybackListCache.upsertVideo(appContext, file)
+            if (generateThumbnail) V2RecordingThumbnailer.generateFirstFrameAsync(appContext, file)
+        }
     }
 
     fun currentFile(): File? = currentFile
@@ -201,47 +256,4 @@ class EncoderSegmentWriter(
             temp
         }
     }
-
-    private fun uniqueFile(timestamp: String): File {
-        var index = 0
-        while (true) {
-            val name = if (index == 0) "${timestamp}_composite.mp4" else String.format(java.util.Locale.US, "%s_composite_%03d.mp4", timestamp, index)
-            val file = File(outputDir, name)
-            if (!file.exists()) return file
-            index++
-        }
-    }
-}
-
-private object RecordingThumbnailer {
-    private val executor = Executors.newSingleThreadExecutor()
-
-    fun generateFirstFrameAsync(video: File) {
-        executor.execute { generate(video) }
-    }
-
-    private fun generate(video: File) {
-        runCatching {
-            if (!video.isFile || !video.canRead() || video.length() <= 0L) return
-            val out = thumbnailFile(video)
-            if (out.exists() && out.length() > 0L && out.lastModified() >= video.lastModified()) return
-
-            val retriever = MediaMetadataRetriever()
-            val frame = try {
-                retriever.setDataSource(video.absolutePath)
-                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            } finally {
-                retriever.release()
-            } ?: return
-
-            out.parentFile?.mkdirs()
-            FileOutputStream(out).use { stream ->
-                frame.compress(android.graphics.Bitmap.CompressFormat.JPEG, 78, stream)
-            }
-            frame.recycle()
-            V2AppLog.i("RecordingThumbnailer", "thumbnail generated ${out.absolutePath}")
-        }.onFailure { V2AppLog.w("RecordingThumbnailer", "thumbnail generation failed video=${video.absolutePath}", it) }
-    }
-
-    private fun thumbnailFile(video: File): File = File(video.parentFile, video.nameWithoutExtension + ".jpg")
 }
