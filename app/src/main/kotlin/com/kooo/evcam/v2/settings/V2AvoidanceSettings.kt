@@ -4,11 +4,11 @@ import android.content.Context
 import com.kooo.evcam.v2.log.V2AppLog
 
 object V2AvoidanceSettings {
-    const val BEHAVIOR_EXIT_FOREGROUND = 1 shl 0
-    const val BEHAVIOR_STOP_RECORDING = 1 shl 1
-    const val BEHAVIOR_HIDE_BLIND_SPOT = 1 shl 3
+    const val BEHAVIOR_EXIT_FOREGROUND = V2AvoidanceBehaviors.EXIT_FOREGROUND
+    const val BEHAVIOR_STOP_RECORDING = V2AvoidanceBehaviors.STOP_RECORDING
+    const val BEHAVIOR_HIDE_BLIND_SPOT = V2AvoidanceBehaviors.HIDE_BLIND_SPOT
     private const val LEGACY_BEHAVIOR_STOP_PREVIEW = 1 shl 2
-    private const val KNOWN_BEHAVIOR_MASK = BEHAVIOR_EXIT_FOREGROUND or BEHAVIOR_STOP_RECORDING or BEHAVIOR_HIDE_BLIND_SPOT
+    private const val KNOWN_BEHAVIOR_MASK = V2AvoidanceBehaviors.KNOWN_MASK
 
     private const val PREFS_NAME = "evcam_v2_avoidance_settings"
     private const val KEY_BEHAVIOR_MASK = "behavior_mask"
@@ -56,25 +56,9 @@ object V2AvoidanceSettings {
         .filter { isTargetEnabled(context, it) }
         .map { it.value }
 
-    fun behaviorLabels(mask: Int): String = buildList {
-        if (mask and BEHAVIOR_EXIT_FOREGROUND != 0) add("退出前台")
-        if (mask and BEHAVIOR_STOP_RECORDING != 0) add("停止录制")
-        if (mask and BEHAVIOR_HIDE_BLIND_SPOT != 0) add("补盲避让")
-    }.ifEmpty { listOf("不避让") }.joinToString("/")
+    fun behaviorLabels(mask: Int): String = V2AvoidanceBehaviors.labels(mask)
 
-    fun targetsSummary(context: Context): String = defaultTargets
-        .filter { isTargetEnabled(context, it) }
-        .joinToString("、") { it.shortLabel }
-        .ifBlank { "未选择窗口" }
-
-    private val AvoidanceTarget.shortLabel: String
-        get() = when (label) {
-            "全景全屏" -> "全景全屏"
-            "全景小窗" -> "全景小窗"
-            "泊车窗口" -> "泊车窗口"
-            "记忆泊车" -> "记忆泊车"
-            else -> label
-        }
+    fun targetsSummary(context: Context): String = V2SettingsFormatter.avoidanceTargetsSummary(context)
 
     private fun targetKey(target: AvoidanceTarget): String = KEY_TARGET_PREFIX + target.value
 

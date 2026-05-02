@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "EVCam"
 include(":app")
+include(":core:model")

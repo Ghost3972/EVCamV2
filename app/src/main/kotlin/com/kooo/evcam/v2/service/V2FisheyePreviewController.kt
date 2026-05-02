@@ -4,7 +4,7 @@ import android.os.Build
 import android.provider.Settings
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2FisheyeSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.ui.V2FisheyePreviewOverlay
 
 internal class V2FisheyePreviewController(
@@ -33,7 +33,7 @@ internal class V2FisheyePreviewController(
             return
         }
 
-        val params = V2FisheyeSettings.defaultParamsForIndex(index)
+        val params = V2SettingsRepository.fisheyeConfig(service).paramsForIndex(index)
         val previousIndex = cameraIndex
         cameraIndex = index
         engine.applyFisheyeSettings()

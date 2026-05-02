@@ -15,6 +15,7 @@ object V2RecordingPipelineFactory {
         val recordingFps: Int,
         val segmentDurationMs: Long,
         val segmentPrecreateEnabled: Boolean,
+        val h265Enabled: Boolean,
         val fileSuffix: String = "",
     )
 
@@ -34,6 +35,7 @@ object V2RecordingPipelineFactory {
         segmentDurationMs = config.segmentDurationMs,
         fileSuffix = config.fileSuffix,
         segmentPrecreateEnabled = config.segmentPrecreateEnabled,
+        h265Enabled = config.h265Enabled,
         onFailure = onFailure,
     )
 }

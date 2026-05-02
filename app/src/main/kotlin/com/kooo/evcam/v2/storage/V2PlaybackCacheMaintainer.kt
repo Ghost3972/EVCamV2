@@ -50,6 +50,7 @@ object V2PlaybackCacheMaintainer {
     }
 
     fun refreshNow(context: Context): Int {
+        val startedMs = SystemClock.elapsedRealtime()
         val appContext = context.applicationContext
         if (recordingActive) {
             V2AppLog.i("PlaybackCacheMaintainer", "refreshNow skipped: recording active")
@@ -59,15 +60,18 @@ object V2PlaybackCacheMaintainer {
             val cached = V2PlaybackListCache.loadFast(appContext)
             val cachedByPath = cached.associateBy { it.path }
             val cachedByKey = cached.associateBy { it.key }
-            val entries = V2StoragePathHelper.playbackScanDirs(appContext)
+            var scannedFiles = 0
+            val scanDirs = V2StoragePathHelper.playbackScanDirs(appContext)
+            val entries = scanDirs
                 .asSequence()
                 .flatMap { dir -> dir.listFiles().orEmpty().asSequence() }
+                .onEach { scannedFiles += 1 }
                 .filter { isPlayableVideoFile(it) && videoNamePattern.matches(it.name) }
-                .distinctBy { it.nameWithoutExtension }
+                .distinctBy { it.absolutePath }
                 .map { video ->
                     val cachedEntry = cachedByPath[video.absolutePath] ?: cachedByKey[video.nameWithoutExtension]
                     val thumbnail = validCachedThumbnail(video, cachedEntry) ?: existingThumbnail(video)
-                    V2PlaybackListCache.Entry(
+                    V2PlaybackListEntry(
                         key = video.nameWithoutExtension,
                         path = video.absolutePath,
                         length = video.length(),
@@ -80,14 +84,14 @@ object V2PlaybackCacheMaintainer {
                 .toList()
             V2PlaybackListCache.save(appContext, entries)
             lastRefreshElapsedMs = SystemClock.elapsedRealtime()
-            V2AppLog.i("PlaybackCacheMaintainer", "refresh complete count=${entries.size}")
+            V2AppLog.perf("V2StoragePerf", "playbackCacheRefresh", SystemClock.elapsedRealtime() - startedMs, "dirs=${scanDirs.size} scanned=$scannedFiles entries=${entries.size} cached=${cached.size}")
             entries.size
         }.onFailure {
             V2AppLog.w("PlaybackCacheMaintainer", "refresh failed", it)
         }.getOrDefault(0)
     }
 
-    private fun validCachedThumbnail(video: File, entry: V2PlaybackListCache.Entry?): File? {
+    private fun validCachedThumbnail(video: File, entry: V2PlaybackListEntry?): File? {
         val path = entry?.thumbnailPath ?: return null
         val thumbnail = File(path)
         if (!thumbnail.isFile || !thumbnail.canRead() || thumbnail.length() <= 0L) return null

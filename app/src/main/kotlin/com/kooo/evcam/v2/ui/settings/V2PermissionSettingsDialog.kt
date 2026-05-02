@@ -69,6 +69,9 @@ object V2PermissionSettingsDialog {
             content.addView(permissionRow(context, "通知权限", { statusText(hasPermission(context, Manifest.permission.POST_NOTIFICATIONS), "用于显示前台录制服务通知") }, refreshers) {
                 requestRuntimePermissions(context, arrayOf(Manifest.permission.POST_NOTIFICATIONS))
             })
+            content.addView(permissionRow(context, "媒体文件权限", { statusText(hasMediaPermissions(context), "用于读取录像和图片回放列表") }, refreshers) {
+                requestRuntimePermissions(context, mediaPermissions())
+            })
         }
 
         content.addView(sectionTitle(context, "高级权限"))
@@ -401,6 +404,18 @@ object V2PermissionSettingsDialog {
 
     private fun hasPermission(context: Context, permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasMediaPermissions(context: Context): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        hasPermission(context, Manifest.permission.READ_MEDIA_VIDEO) &&
+            hasPermission(context, Manifest.permission.READ_MEDIA_IMAGES)
+
+    private fun mediaPermissions(): Array<String> = buildList {
+        add(Manifest.permission.READ_MEDIA_VIDEO)
+        add(Manifest.permission.READ_MEDIA_IMAGES)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            add(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+        }
+    }.toTypedArray()
 
     @Suppress("DEPRECATION")
     private fun hasUsageStatsPermission(context: Context): Boolean {

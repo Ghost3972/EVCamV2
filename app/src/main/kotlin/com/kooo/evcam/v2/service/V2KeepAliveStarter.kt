@@ -4,13 +4,13 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2StartupSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.ui.V2TransparentBootActivity
 
 internal object V2KeepAliveStarter {
     fun requestStart(context: Context, reason: String, preferActivity: Boolean = true) {
         V2KeepAliveStatus.recordTrigger(context, "starter", reason)
-        if (!V2StartupSettings.isAutoStartOnBoot(context)) {
+        if (!V2SettingsRepository.startupPolicy(context).autoStartOnBoot) {
             V2AppLog.i(TAG, "skip keep alive start: auto start disabled reason=$reason")
             return
         }

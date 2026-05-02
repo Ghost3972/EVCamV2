@@ -8,7 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.V2CameraServiceCommands
-import com.kooo.evcam.v2.settings.V2StartupSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 
 class V2TransparentBootActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
@@ -16,10 +16,11 @@ class V2TransparentBootActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         V2AppLog.init(this)
-        V2AppLog.i(TAG, "onCreate autoRecord=${V2StartupSettings.isAutoStartRecording(this)}")
+        val startupPolicy = V2SettingsRepository.startupPolicy(this)
+        V2AppLog.i(TAG, "onCreate autoRecord=${startupPolicy.autoStartRecording}")
 
         startCameraServiceFromForegroundActivity()
-        if (V2StartupSettings.isAutoStartRecording(this)) {
+        if (startupPolicy.autoStartRecording) {
             launchMainForAutoRecording()
             finishQuietly()
         } else {

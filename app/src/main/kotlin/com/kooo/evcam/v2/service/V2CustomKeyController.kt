@@ -3,7 +3,8 @@ package com.kooo.evcam.v2.service
 import android.content.Context
 import android.os.Handler
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2CustomKeySettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
+import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 
 class V2CustomKeyController(
     private val context: Context,
@@ -14,23 +15,33 @@ class V2CustomKeyController(
     private val showUi: () -> Unit,
 ) {
     private var observer: V2VhalCustomKeyObserver? = null
+    @Volatile private var config: V2SettingsSnapshot.CustomKey = V2SettingsRepository.customKeyConfig(context)
 
     fun start() {
         if (observer != null) return
-        if (!V2CustomKeySettings.isEnabled(context)) {
+        val current = config
+        if (!current.enabled) {
             V2AppLog.i(TAG, "VHAL custom key observer skipped: disabled")
             return
         }
-        val buttonPropId = V2CustomKeySettings.buttonPropId(context)
         observer = V2VhalCustomKeyObserver(
-            buttonPropId = buttonPropId,
+            buttonPropId = current.buttonPropId,
             listener = V2VhalCustomKeyObserver.Listener { handleValue4() }
         ).also { it.start() }
-        V2AppLog.i(TAG, "VHAL custom key observer started buttonPropId=$buttonPropId")
+        V2AppLog.i(TAG, "VHAL custom key observer started buttonPropId=${current.buttonPropId}")
     }
 
-    fun restart() {
+    fun updateConfig(next: V2SettingsSnapshot.CustomKey) {
+        val old = config
+        config = next
+        if (old != next) {
+            V2AppLog.i(TAG, "custom key config updated enabled=${next.enabled} buttonPropId=${next.buttonPropId}")
+        }
+    }
+
+    fun restart(next: V2SettingsSnapshot.CustomKey = V2SettingsRepository.customKeyConfig(context)) {
         V2AppLog.i(TAG, "refresh VHAL custom key observer")
+        updateConfig(next)
         stop()
         start()
     }
@@ -48,6 +59,10 @@ class V2CustomKeyController(
     }
 
     private fun toggleUiFromCustomKey() {
+        if (!config.enabled) {
+            V2AppLog.i(TAG, "custom key toggle ignored: disabled")
+            return
+        }
         if (!isDisplayPowerOn()) {
             V2AppLog.w(TAG, "custom key toggle ignored: display off")
             return

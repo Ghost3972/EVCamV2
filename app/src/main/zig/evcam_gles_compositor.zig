@@ -3,6 +3,7 @@ const std = @import("std");
 
 const c = @cImport({
     @cInclude("jni.h");
+    @cInclude("android/bitmap.h");
     @cInclude("android/native_window_jni.h");
     @cInclude("android/log.h");
     @cInclude("EGL/egl.h");
@@ -59,6 +60,12 @@ const OverlayBatch = struct {
     len: usize = 0,
 };
 
+const TexturedOverlayBatch = struct {
+    verts: [4096]c.GLfloat = [_]c.GLfloat{0} ** 4096,
+    tex: [4096]c.GLfloat = [_]c.GLfloat{0} ** 4096,
+    len: usize = 0,
+};
+
 const RecordingState = struct {
     recording: bool = false,
     segment_switch_pending: bool = false,
@@ -83,7 +90,14 @@ const RecordingState = struct {
     overlay_geometry_width: i32 = 0,
     overlay_geometry_height: i32 = 0,
     overlay_bg_batch: OverlayBatch = OverlayBatch{},
-    overlay_text_batch: OverlayBatch = OverlayBatch{},
+    overlay_shadow_text_batch: TexturedOverlayBatch = TexturedOverlayBatch{},
+    overlay_text_batch: TexturedOverlayBatch = TexturedOverlayBatch{},
+    overlay_bitmap_texture: c.GLuint = 0,
+    overlay_bitmap_width: i32 = 0,
+    overlay_bitmap_height: i32 = 0,
+    overlay_bitmap_x: f32 = 0,
+    overlay_bitmap_y: f32 = 0,
+    overlay_bitmap_batch: TexturedOverlayBatch = TexturedOverlayBatch{},
 };
 
 const Pipe = struct {
@@ -108,11 +122,17 @@ const Pipe = struct {
     config_version: i64 = 0,
     program: c.GLuint = 0,
     overlay_program: c.GLuint = 0,
+    overlay_text_program: c.GLuint = 0,
+    overlay_font_texture: c.GLuint = 0,
     pos_loc: c.GLint = -1,
     tex_loc: c.GLint = -1,
     sampler_loc: c.GLint = -1,
     overlay_pos_loc: c.GLint = -1,
     overlay_color_loc: c.GLint = -1,
+    overlay_text_pos_loc: c.GLint = -1,
+    overlay_text_tex_loc: c.GLint = -1,
+    overlay_text_sampler_loc: c.GLint = -1,
+    overlay_text_color_loc: c.GLint = -1,
     fisheye_enabled_loc: c.GLint = -1,
     k1_loc: c.GLint = -1,
     k2_loc: c.GLint = -1,
@@ -264,6 +284,8 @@ const FRAG = "#extension GL_OES_EGL_image_external : require\n" ++
     "void main(){ if(uFisheyeEnabled==0){gl_FragColor=texture2D(uTexture,vTexCoord);return;} vec2 coord=(vTexCoord-uCenter)/uZoom; float r2=dot(coord,coord); float r4=r2*r2; float distortion=1.0+uK1*r2+uK2*r4; vec2 corrected=coord*distortion+uCenter; if(corrected.x<0.0||corrected.x>1.0||corrected.y<0.0||corrected.y>1.0){ gl_FragColor=vec4(0.0,0.0,0.0,1.0); }else{ gl_FragColor=texture2D(uTexture,corrected); }}";
 const OVERLAY_VERT = "attribute vec2 aPosition;void main(){gl_Position=vec4(aPosition,0.0,1.0);}";
 const OVERLAY_FRAG = "precision mediump float;uniform vec4 uColor;void main(){gl_FragColor=uColor;}";
+const OVERLAY_TEXT_VERT = "attribute vec2 aPosition;attribute vec2 aTexCoord;varying vec2 vTexCoord;void main(){gl_Position=vec4(aPosition,0.0,1.0);vTexCoord=aTexCoord;}";
+const OVERLAY_TEXT_FRAG = "precision mediump float;varying vec2 vTexCoord;uniform sampler2D uTexture;uniform vec4 uColor;void main(){float a=texture2D(uTexture,vTexCoord).a;gl_FragColor=vec4(uColor.rgb,uColor.a*a);}";
 
 fn compileShader(kind: c.GLenum, source: [*c]const u8) c.GLuint {
     const shader = c.glCreateShader(kind);
@@ -318,6 +340,85 @@ fn createOverlayProgram() c.GLuint {
     return program;
 }
 
+fn createOverlayTextProgram() c.GLuint {
+    const vs = compileShader(c.GL_VERTEX_SHADER, OVERLAY_TEXT_VERT);
+    const fs = compileShader(c.GL_FRAGMENT_SHADER, OVERLAY_TEXT_FRAG);
+    const program = c.glCreateProgram();
+    c.glAttachShader(program, vs);
+    c.glAttachShader(program, fs);
+    c.glLinkProgram(program);
+    var ok: c.GLint = 0;
+    c.glGetProgramiv(program, c.GL_LINK_STATUS, &ok);
+    if (ok == 0) {
+        var log: [512]u8 = [_]u8{0} ** 512;
+        c.glGetProgramInfoLog(program, log.len, null, &log);
+        setError("overlay text program link failed: {s}", .{std.mem.sliceTo(&log, 0)});
+    }
+    c.glDeleteShader(vs);
+    c.glDeleteShader(fs);
+    return program;
+}
+
+const FONT_CELL_W = 8;
+const FONT_CELL_H = 9;
+const FONT_GLYPHS = "0123456789-: ";
+const FONT_PATTERNS = [_][7]u8{
+    .{ 0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110 },
+    .{ 0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
+    .{ 0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111 },
+    .{ 0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110 },
+    .{ 0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010 },
+    .{ 0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110 },
+    .{ 0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110 },
+    .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000 },
+    .{ 0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110 },
+    .{ 0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110 },
+    .{ 0b00000, 0b00000, 0b00000, 0b11110, 0b00000, 0b00000, 0b00000 },
+    .{ 0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000 },
+    .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
+};
+comptime { std.debug.assert(FONT_PATTERNS.len == FONT_GLYPHS.len); }
+const FONT_COLS = FONT_GLYPHS.len;
+const FONT_ATLAS_W = FONT_COLS * FONT_CELL_W;
+const FONT_ATLAS_H = FONT_CELL_H;
+
+fn glyphIndex(ch: u8) usize {
+    for (FONT_GLYPHS, 0..) |glyph, index| if (glyph == ch) return index;
+    return FONT_GLYPHS.len - 1;
+}
+
+fn initOverlayFontTexture(p: *Pipe) bool {
+    if (p.overlay_font_texture != 0) return true;
+    var pixels: [FONT_ATLAS_W * FONT_ATLAS_H]u8 = [_]u8{0} ** (FONT_ATLAS_W * FONT_ATLAS_H);
+    for (FONT_PATTERNS, 0..) |pattern, glyph| {
+        const base_x = glyph * FONT_CELL_W;
+        for (pattern, 0..) |row_bits, row| {
+            for (0..5) |col| {
+                if ((row_bits & (@as(u8, 1) << @intCast(4 - col))) == 0) continue;
+                const x = base_x + 1 + col;
+                const y = 1 + row;
+                pixels[y * FONT_ATLAS_W + x] = 255;
+                if (x + 1 < base_x + FONT_CELL_W - 1) pixels[y * FONT_ATLAS_W + x + 1] = 180;
+                if (y + 1 < FONT_CELL_H - 1) pixels[(y + 1) * FONT_ATLAS_W + x] = 180;
+            }
+        }
+    }
+    var texture: c.GLuint = 0;
+    c.glGenTextures(1, &texture);
+    if (texture == 0) { setError("overlay font texture allocation failed", .{}); return false; }
+    c.glBindTexture(c.GL_TEXTURE_2D, texture);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+    c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_ALPHA, FONT_ATLAS_W, FONT_ATLAS_H, 0, c.GL_ALPHA, c.GL_UNSIGNED_BYTE, &pixels);
+    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 4);
+    if (glError("initOverlayFontTexture")) |e| { setErrorSlice(e); c.glDeleteTextures(1, &texture); return false; }
+    p.overlay_font_texture = texture;
+    return true;
+}
+
 fn initEgl(p: *Pipe) bool {
     if (p.display != c.EGL_NO_DISPLAY) return true;
     p.display = c.eglGetDisplay(c.EGL_DEFAULT_DISPLAY);
@@ -339,17 +440,23 @@ fn initEgl(p: *Pipe) bool {
     if (c.eglMakeCurrent(p.display, p.pbuffer, p.pbuffer, p.context) == c.EGL_FALSE) { setErrorSlice(eglError("eglMakeCurrent pbuffer failed")); return false; }
     p.program = createProgram();
     p.overlay_program = createOverlayProgram();
+    p.overlay_text_program = createOverlayTextProgram();
     p.pos_loc = c.glGetAttribLocation(p.program, "aPosition");
     p.tex_loc = c.glGetAttribLocation(p.program, "aTexCoord");
     p.sampler_loc = c.glGetUniformLocation(p.program, "uTexture");
     p.overlay_pos_loc = c.glGetAttribLocation(p.overlay_program, "aPosition");
     p.overlay_color_loc = c.glGetUniformLocation(p.overlay_program, "uColor");
+    p.overlay_text_pos_loc = c.glGetAttribLocation(p.overlay_text_program, "aPosition");
+    p.overlay_text_tex_loc = c.glGetAttribLocation(p.overlay_text_program, "aTexCoord");
+    p.overlay_text_sampler_loc = c.glGetUniformLocation(p.overlay_text_program, "uTexture");
+    p.overlay_text_color_loc = c.glGetUniformLocation(p.overlay_text_program, "uColor");
     p.fisheye_enabled_loc = c.glGetUniformLocation(p.program, "uFisheyeEnabled");
     p.k1_loc = c.glGetUniformLocation(p.program, "uK1");
     p.k2_loc = c.glGetUniformLocation(p.program, "uK2");
     p.zoom_loc = c.glGetUniformLocation(p.program, "uZoom");
     p.center_loc = c.glGetUniformLocation(p.program, "uCenter");
-    if (p.program == 0 or p.pos_loc < 0 or p.tex_loc < 0 or p.sampler_loc < 0 or p.overlay_program == 0 or p.overlay_pos_loc < 0 or p.overlay_color_loc < 0) { setError("GLES program locations unavailable", .{}); return false; }
+    if (p.program == 0 or p.pos_loc < 0 or p.tex_loc < 0 or p.sampler_loc < 0 or p.overlay_program == 0 or p.overlay_pos_loc < 0 or p.overlay_color_loc < 0 or p.overlay_text_program == 0 or p.overlay_text_pos_loc < 0 or p.overlay_text_tex_loc < 0 or p.overlay_text_sampler_loc < 0 or p.overlay_text_color_loc < 0) { setError("GLES program locations unavailable", .{}); return false; }
+    if (!initOverlayFontTexture(p)) return false;
     clearCurrent(p);
     logd("EGL initialized", .{});
     return true;
@@ -460,26 +567,6 @@ fn drawQuad(p: *Pipe, index: usize, q: *const Quad) void {
     drawQuadWithFisheye(p, index, q, true);
 }
 
-const SEG_A: u8 = 1 << 0;
-const SEG_B: u8 = 1 << 1;
-const SEG_C: u8 = 1 << 2;
-const SEG_D: u8 = 1 << 3;
-const SEG_E: u8 = 1 << 4;
-const SEG_F: u8 = 1 << 5;
-const SEG_G: u8 = 1 << 6;
-const DIGIT_SEGMENTS = [_]u8{
-    SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,
-    SEG_B | SEG_C,
-    SEG_A | SEG_B | SEG_G | SEG_E | SEG_D,
-    SEG_A | SEG_B | SEG_G | SEG_C | SEG_D,
-    SEG_F | SEG_G | SEG_B | SEG_C,
-    SEG_A | SEG_F | SEG_G | SEG_C | SEG_D,
-    SEG_A | SEG_F | SEG_E | SEG_D | SEG_C | SEG_G,
-    SEG_A | SEG_B | SEG_C,
-    SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F | SEG_G,
-    SEG_A | SEG_B | SEG_C | SEG_D | SEG_F | SEG_G,
-};
-
 fn civilFromDays(days_since_epoch: i64) struct { year: i64, month: i64, day: i64 } {
     const z = days_since_epoch + 719468;
     const era = @divFloor(if (z >= 0) z else z - 146096, 146097);
@@ -527,11 +614,26 @@ fn cachedOverlayTime(r: *RecordingState) []const u8 {
     return r.overlay_text[0..r.overlay_text_len];
 }
 
+fn resetOverlayCache(r: *RecordingState, wall_clock_ms: i64) void {
+    r.overlay_wall_clock_ms = wall_clock_ms;
+    r.overlay_cached_second = -1;
+    r.overlay_text_len = 0;
+    r.overlay_geometry_second = -1;
+    r.overlay_geometry_width = 0;
+    r.overlay_geometry_height = 0;
+    r.overlay_bg_batch.len = 0;
+    r.overlay_text_batch.len = 0;
+    r.overlay_bitmap_width = 0;
+    r.overlay_bitmap_height = 0;
+    r.overlay_bitmap_batch.len = 0;
+}
+
 fn overlayCharAdvance(ch: u8, scale: f32) f32 {
     if (ch >= '0' and ch <= '9') return 20.0 * scale;
-    if (ch == '-') return 12.0 * scale;
+    if (ch == '-') return 14.0 * scale;
     if (ch == ':') return 10.0 * scale;
-    return 12.0 * scale;
+    if (ch == ' ') return 12.0 * scale;
+    return 14.0 * scale;
 }
 
 fn overlayTextWidth(text: []const u8, scale: f32) f32 {
@@ -561,33 +663,69 @@ fn flushOverlayBatch(p: *Pipe, batch: *OverlayBatch, color: [4]f32) void {
     c.glDrawArrays(c.GL_TRIANGLES, 0, @intCast(batch.len / 2));
 }
 
-fn drawOverlayDigit(batch: *OverlayBatch, p: *Pipe, digit: u8, x: f32, y: f32, scale: f32) void {
-    const mask = DIGIT_SEGMENTS[digit];
-    const w = 16.0 * scale;
-    const h = 30.0 * scale;
-    const s = @max(2.0 * scale, 1.0);
-    const half = h * 0.5;
-    if ((mask & SEG_A) != 0) appendOverlayRect(batch, p, x + s, y, w - 2.0 * s, s);
-    if ((mask & SEG_B) != 0) appendOverlayRect(batch, p, x + w - s, y + s, s, half - s);
-    if ((mask & SEG_C) != 0) appendOverlayRect(batch, p, x + w - s, y + half, s, half - s);
-    if ((mask & SEG_D) != 0) appendOverlayRect(batch, p, x + s, y + h - s, w - 2.0 * s, s);
-    if ((mask & SEG_E) != 0) appendOverlayRect(batch, p, x, y + half, s, half - s);
-    if ((mask & SEG_F) != 0) appendOverlayRect(batch, p, x, y + s, s, half - s);
-    if ((mask & SEG_G) != 0) appendOverlayRect(batch, p, x + s, y + half - s * 0.5, w - 2.0 * s, s);
+fn appendOverlayTexturedRect(batch: *TexturedOverlayBatch, p: *Pipe, x: f32, y: f32, w: f32, h: f32, tex_u0: f32, tex_v0: f32, tex_u1: f32, tex_v1: f32) void {
+    if (w <= 0 or h <= 0) return;
+    if (batch.len + 12 > batch.verts.len or batch.len + 12 > batch.tex.len) return;
+    const cw = if (p.width <= 0) 1.0 else @as(f32, @floatFromInt(p.width));
+    const ch = if (p.height <= 0) 1.0 else @as(f32, @floatFromInt(p.height));
+    const x0 = x / cw * 2.0 - 1.0;
+    const x1 = (x + w) / cw * 2.0 - 1.0;
+    const y0 = 1.0 - y / ch * 2.0;
+    const y1 = 1.0 - (y + h) / ch * 2.0;
+    const verts = [_]c.GLfloat{ x0, y0, x1, y0, x0, y1, x1, y0, x1, y1, x0, y1 };
+    const tex = [_]c.GLfloat{ tex_u0, tex_v0, tex_u1, tex_v0, tex_u0, tex_v1, tex_u1, tex_v0, tex_u1, tex_v1, tex_u0, tex_v1 };
+    @memcpy(batch.verts[batch.len..][0..verts.len], verts[0..]);
+    @memcpy(batch.tex[batch.len..][0..tex.len], tex[0..]);
+    batch.len += verts.len;
 }
 
-fn appendOverlayChar(batch: *OverlayBatch, p: *Pipe, ch: u8, x: f32, y: f32, scale: f32) void {
-    const w = 16.0 * scale;
-    const h = 30.0 * scale;
-    const s = @max(2.0 * scale, 1.0);
-    if (ch >= '0' and ch <= '9') {
-        drawOverlayDigit(batch, p, ch - '0', x, y, scale);
-    } else if (ch == '-') {
-        appendOverlayRect(batch, p, x + s, y + h * 0.5 - s * 0.5, w * 0.55, s);
-    } else if (ch == ':') {
-        appendOverlayRect(batch, p, x + w * 0.25, y + h * 0.32, s * 1.3, s * 1.3);
-        appendOverlayRect(batch, p, x + w * 0.25, y + h * 0.66, s * 1.3, s * 1.3);
-    }
+fn flushOverlayTextBatch(p: *Pipe, batch: *TexturedOverlayBatch, color: [4]f32) void {
+    if (batch.len == 0 or p.overlay_font_texture == 0) return;
+    flushOverlayTextureBatch(p, batch, p.overlay_font_texture, color);
+}
+
+fn flushOverlayTextureBatch(p: *Pipe, batch: *TexturedOverlayBatch, texture: c.GLuint, color: [4]f32) void {
+    if (batch.len == 0 or texture == 0) return;
+    c.glVertexAttribPointer(@intCast(p.overlay_text_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &batch.verts);
+    c.glVertexAttribPointer(@intCast(p.overlay_text_tex_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &batch.tex);
+    c.glActiveTexture(c.GL_TEXTURE0);
+    c.glBindTexture(c.GL_TEXTURE_2D, texture);
+    c.glUniform1i(p.overlay_text_sampler_loc, 0);
+    c.glUniform4f(p.overlay_text_color_loc, color[0], color[1], color[2], color[3]);
+    c.glDrawArrays(c.GL_TRIANGLES, 0, @intCast(batch.len / 2));
+}
+
+fn rebuildOverlayBitmapGeometry(p: *Pipe) void {
+    const r = &p.recording;
+    if (r.overlay_bitmap_width <= 0 or r.overlay_bitmap_height <= 0) return;
+    if (r.overlay_geometry_width == p.width and r.overlay_geometry_height == p.height and r.overlay_bitmap_batch.len > 0) return;
+    r.overlay_bitmap_batch.len = 0;
+    appendOverlayTexturedRect(
+        &r.overlay_bitmap_batch,
+        p,
+        r.overlay_bitmap_x,
+        r.overlay_bitmap_y,
+        @floatFromInt(r.overlay_bitmap_width),
+        @floatFromInt(r.overlay_bitmap_height),
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+    );
+    r.overlay_geometry_width = p.width;
+    r.overlay_geometry_height = p.height;
+}
+
+fn appendOverlayChar(batch: *TexturedOverlayBatch, p: *Pipe, ch: u8, x: f32, y: f32, scale: f32) void {
+    if (ch == ' ') return;
+    const glyph = glyphIndex(ch);
+    const tex_u0 = (@as(f32, @floatFromInt(glyph * FONT_CELL_W)) + 0.5) / @as(f32, @floatFromInt(FONT_ATLAS_W));
+    const tex_u1 = (@as(f32, @floatFromInt((glyph + 1) * FONT_CELL_W)) - 0.5) / @as(f32, @floatFromInt(FONT_ATLAS_W));
+    const tex_v0 = 0.5 / @as(f32, @floatFromInt(FONT_ATLAS_H));
+    const tex_v1 = (@as(f32, @floatFromInt(FONT_ATLAS_H)) - 0.5) / @as(f32, @floatFromInt(FONT_ATLAS_H));
+    const h = 38.0 * scale;
+    const w = overlayCharAdvance(ch, scale);
+    appendOverlayTexturedRect(batch, p, x, y, w, h, tex_u0, tex_v0, tex_u1, tex_v1);
 }
 
 fn rebuildOverlayGeometry(p: *Pipe, text: []const u8, second: i64, scale: f32, x: f32, y: f32) void {
@@ -595,12 +733,6 @@ fn rebuildOverlayGeometry(p: *Pipe, text: []const u8, second: i64, scale: f32, x
     if (r.overlay_geometry_second == second and r.overlay_geometry_width == p.width and r.overlay_geometry_height == p.height) return;
     r.overlay_bg_batch.len = 0;
     r.overlay_text_batch.len = 0;
-
-    const text_width = overlayTextWidth(text, scale);
-    const text_height = 30.0 * scale;
-    const padding_x = 10.0 * scale;
-    const padding_y = 8.0 * scale;
-    appendOverlayRect(&r.overlay_bg_batch, p, x - padding_x, y - padding_y, text_width + padding_x * 2.0, text_height + padding_y * 2.0);
 
     var cursor = x;
     for (text) |ch| {
@@ -613,26 +745,23 @@ fn rebuildOverlayGeometry(p: *Pipe, text: []const u8, second: i64, scale: f32, x
     r.overlay_geometry_height = p.height;
 }
 
-fn drawOverlay(p: *Pipe, encoder: bool) void {
-    if (!encoder or !p.recording.recording or p.recording.overlay_wall_clock_ms <= 0) return;
-    const scale = @max(@min(@as(f32, @floatFromInt(p.height)) / 1600.0, 1.0), 0.45);
-    const x = 50.0 * scale;
-    const y = 40.0 * scale;
-    const second = @divTrunc(p.recording.overlay_wall_clock_ms, 1000);
-    const text = cachedOverlayTime(&p.recording);
-    if (text.len == 0) return;
-    rebuildOverlayGeometry(p, text, second, scale, x, y);
+fn drawOverlay(p: *Pipe) void {
+    if (!p.recording.recording or p.recording.overlay_bitmap_texture == 0) return;
+    rebuildOverlayBitmapGeometry(p);
+    if (p.recording.overlay_bitmap_batch.len == 0) return;
 
-    c.glUseProgram(p.overlay_program);
-    c.glEnableVertexAttribArray(@intCast(p.overlay_pos_loc));
     c.glEnable(c.GL_BLEND);
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
 
-    flushOverlayBatch(p, &p.recording.overlay_bg_batch, .{ 0.0, 0.0, 0.0, 0.45 });
-    flushOverlayBatch(p, &p.recording.overlay_text_batch, .{ 1.0, 1.0, 1.0, 1.0 });
+    c.glUseProgram(p.overlay_text_program);
+    c.glEnableVertexAttribArray(@intCast(p.overlay_text_pos_loc));
+    c.glEnableVertexAttribArray(@intCast(p.overlay_text_tex_loc));
+    flushOverlayTextureBatch(p, &p.recording.overlay_bitmap_batch, p.recording.overlay_bitmap_texture, .{ 1.0, 1.0, 1.0, 1.0 });
 
     c.glDisable(c.GL_BLEND);
-    c.glDisableVertexAttribArray(@intCast(p.overlay_pos_loc));
+    c.glDisableVertexAttribArray(@intCast(p.overlay_text_tex_loc));
+    c.glDisableVertexAttribArray(@intCast(p.overlay_text_pos_loc));
+    c.glUseProgram(p.program);
 }
 
 fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
@@ -664,7 +793,6 @@ fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     beginDrawPass(p);
     drawQuadWithFisheye(p, i, &p.preview_quad[i], p.preview_apply_fisheye[i]);
-    drawOverlay(p, false);
     if (CHECK_RENDER_GL_ERROR) if (glError("renderPreview")) |e| { setErrorSlice(e); clearCurrent(p); return false; };
     if (c.eglSwapBuffers(p.display, p.preview_surface[i]) == c.EGL_FALSE) {
         setErrorSlice(eglError("eglSwapBuffers preview failed"));
@@ -731,7 +859,7 @@ fn renderEncoderLocked(env: [*c]c.JNIEnv, p: *Pipe, require_dirty: bool, rendere
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     beginDrawPass(p);
     drawQuad(p, 0, &p.encoder_quad[0]); drawQuad(p, 1, &p.encoder_quad[1]); drawQuad(p, 2, &p.encoder_quad[2]); drawQuad(p, 3, &p.encoder_quad[3]);
-    drawOverlay(p, true);
+    drawOverlay(p);
     if (CHECK_RENDER_GL_ERROR) if (glError("renderEncoder")) |e| { setErrorSlice(e); clearCurrent(p); return false; };
     if (g_presentation_time_android) |fnptr| {
         var pts: i64 = undefined;
@@ -833,10 +961,52 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setCompositorRuntimeC
 
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setPreviewMaxFps(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (fps <= 0) { p.preview_max_fps = 0; p.preview_min_interval_ms = 0; } else { p.preview_max_fps = @min(@max(fps, 1), 120); p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps); } logd("preview max fps={d} minIntervalMs={d}", .{ p.preview_max_fps, p.preview_min_interval_ms }); return JNI_TRUE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_startRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; p.recording.recording = true; p.recording.generation += 1; p.recording.fps = @min(@max(fps, 1), 120); p.encoder_fps = p.recording.fps; p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms; p.recording.segment_index = 0; p.recording.pending_segment_index = 0; p.recording.segment_switch_pending = false; p.recording.pending_segment_wall_clock_ms = 0; p.recording.requested_frames = 0; p.recording.rendered_frames = 0; p.recording.dropped_frames = 0; p.recording.last_tick_steady_ms = 0; p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; p.recording.overlay_wall_clock_ms = wall_clock_ms; p.recording.overlay_cached_second = -1; p.recording.overlay_text_len = 0; p.recording.overlay_geometry_second = -1; p.recording.overlay_bg_batch.len = 0; p.recording.overlay_text_batch.len = 0; p.encoder_signal_count = 0; p.encoder_scheduled_count = 0; p.encoder_coalesced_count = 0; const first = floorToSegment(wall_clock_ms, p.recording.segment_duration_ms); p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms; p.encoder_pending = false; return first; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_stopRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; p.recording.recording = false; p.recording.segment_switch_pending = false; p.recording.overlay_wall_clock_ms = 0; p.recording.overlay_cached_second = -1; p.recording.overlay_text_len = 0; p.recording.overlay_geometry_second = -1; p.recording.overlay_bg_batch.len = 0; p.recording.overlay_text_batch.len = 0; p.recording.generation += 1; p.encoder_pending = false; return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_startRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; p.recording.recording = true; p.recording.generation += 1; p.recording.fps = @min(@max(fps, 1), 120); p.encoder_fps = p.recording.fps; p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms; p.recording.segment_index = 0; p.recording.pending_segment_index = 0; p.recording.segment_switch_pending = false; p.recording.pending_segment_wall_clock_ms = 0; p.recording.requested_frames = 0; p.recording.rendered_frames = 0; p.recording.dropped_frames = 0; p.recording.last_tick_steady_ms = 0; p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; resetOverlayCache(&p.recording, wall_clock_ms); p.encoder_signal_count = 0; p.encoder_scheduled_count = 0; p.encoder_coalesced_count = 0; const first = floorToSegment(wall_clock_ms, p.recording.segment_duration_ms); p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms; p.encoder_pending = false; return first; }
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_stopRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; p.recording.recording = false; p.recording.segment_switch_pending = false; resetOverlayCache(&p.recording, 0); p.recording.generation += 1; p.encoder_pending = false; return JNI_TRUE; }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_recordingTickAndRender(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; if (!p.recording.recording) return 0; p.recording.overlay_wall_clock_ms = wall_clock_ms; p.recording.last_tick_steady_ms = nowMs(); p.recording.requested_frames += 1; var flags: c.jlong = 0; if (requestEncoderRenderLocked(p)) { var rendered = false; const ok = renderEncoderLocked(env, p, true, &rendered); p.encoder_pending = false; if (!ok) return -1; if (rendered) { p.recording.rendered_frames += 1; flags |= 1; } else { p.recording.dropped_frames += 1; flags |= 2; } } else { p.recording.dropped_frames += 1; flags |= 2; } if (wall_clock_ms >= p.recording.next_segment_wall_clock_ms and !p.recording.segment_switch_pending) { p.recording.segment_switch_pending = true; p.recording.pending_segment_index = p.recording.segment_index + 1; p.recording.pending_segment_wall_clock_ms = p.recording.next_segment_wall_clock_ms; flags |= 4; flags |= (@as(c.jlong, p.recording.pending_segment_index) << 32); } return flags; }
+
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_updateRecordingOverlayBitmap(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, bitmap: c.jobject, x: c.jfloat, y: c.jfloat) callconv(.c) c.jboolean {
+    lockGlobal();
+    defer unlockGlobal();
+    const p = getPipe(handle) orelse return JNI_FALSE;
+    if (bitmap == null) return JNI_FALSE;
+    if (!makePbufferCurrent(p)) return JNI_FALSE;
+
+    var info: c.AndroidBitmapInfo = undefined;
+    if (c.AndroidBitmap_getInfo(env, bitmap, &info) != 0) { setError("AndroidBitmap_getInfo failed", .{}); return JNI_FALSE; }
+    if (info.width == 0 or info.height == 0 or info.format != c.ANDROID_BITMAP_FORMAT_RGBA_8888) { setError("overlay bitmap must be RGBA_8888", .{}); return JNI_FALSE; }
+
+    var pixels: ?*anyopaque = null;
+    if (c.AndroidBitmap_lockPixels(env, bitmap, &pixels) != 0 or pixels == null) { setError("AndroidBitmap_lockPixels failed", .{}); return JNI_FALSE; }
+    defer _ = c.AndroidBitmap_unlockPixels(env, bitmap);
+
+    if (p.recording.overlay_bitmap_texture == 0) {
+        c.glGenTextures(1, &p.recording.overlay_bitmap_texture);
+        if (p.recording.overlay_bitmap_texture == 0) { setError("overlay bitmap texture allocation failed", .{}); return JNI_FALSE; }
+        c.glBindTexture(c.GL_TEXTURE_2D, p.recording.overlay_bitmap_texture);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    } else {
+        c.glBindTexture(c.GL_TEXTURE_2D, p.recording.overlay_bitmap_texture);
+    }
+
+    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+    c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA, @intCast(info.width), @intCast(info.height), 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, pixels);
+    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 4);
+    if (glError("updateRecordingOverlayBitmap")) |e| { setErrorSlice(e); return JNI_FALSE; }
+
+    p.recording.overlay_bitmap_width = @intCast(info.width);
+    p.recording.overlay_bitmap_height = @intCast(info.height);
+    p.recording.overlay_bitmap_x = x;
+    p.recording.overlay_bitmap_y = y;
+    p.recording.overlay_bitmap_batch.len = 0;
+    p.recording.overlay_geometry_width = 0;
+    p.recording.overlay_geometry_height = 0;
+    return JNI_TRUE;
+}
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getRecordingNextTickDelayMs(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return -1; if (!p.recording.recording) return -1; const interval = recordingTickIntervalMs(&p.recording); if (p.recording.last_tick_steady_ms <= 0) return 0; const remaining = interval - (nowMs() - p.recording.last_tick_steady_ms); return if (remaining > 0) remaining else 0; }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_beginNextRecordingSegment(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; return if (p.recording.segment_switch_pending) p.recording.pending_segment_wall_clock_ms else p.recording.next_segment_wall_clock_ms; }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_completeRecordingSegmentSwitch(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, success: c.jboolean) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (!p.recording.segment_switch_pending) return JNI_TRUE; if (success == JNI_TRUE) { p.recording.segment_index = p.recording.pending_segment_index; p.recording.next_segment_wall_clock_ms = p.recording.pending_segment_wall_clock_ms + p.recording.segment_duration_ms; } p.recording.segment_switch_pending = false; p.recording.pending_segment_index = 0; p.recording.pending_segment_wall_clock_ms = 0; return JNI_TRUE; }
@@ -885,5 +1055,5 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_signalPreviewFrame(en
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderScheduledPreview(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (!p.input[i].preview_pending) return JNI_TRUE; const ok = renderPreviewLocked(env, p, index); p.input[i].preview_pending = false; return if(ok)JNI_TRUE else JNI_FALSE; }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; return if(renderEncoderLocked(env, p, false, null))JNI_TRUE else JNI_FALSE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_releaseCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) void { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |idx| { if (!g_used[idx] or g_pipes[idx].handle != handle) continue; const p = &g_pipes[idx]; if (p.display != c.EGL_NO_DISPLAY) { _ = makePbufferCurrent(p); for (0..4) |i| { if (p.preview_surface[i] != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.preview_surface[i]); if (p.input[i].texture != 0) c.glDeleteTextures(1, &p.input[i].texture); } if (p.encoder_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.encoder_surface); if (p.program != 0) c.glDeleteProgram(p.program); if (p.overlay_program != 0) c.glDeleteProgram(p.overlay_program); clearCurrent(p); if (p.pbuffer != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.pbuffer); if (p.context != c.EGL_NO_CONTEXT) _ = c.eglDestroyContext(p.display, p.context); _ = c.eglTerminate(p.display); } for (0..4) |i| { if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); if (p.preview_window[i]) |w| c.ANativeWindow_release(w); } if (p.encoder_window) |w| c.ANativeWindow_release(w); g_used[idx] = false; g_pipes[idx] = Pipe{}; return; } }
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_releaseCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) void { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |idx| { if (!g_used[idx] or g_pipes[idx].handle != handle) continue; const p = &g_pipes[idx]; if (p.display != c.EGL_NO_DISPLAY) { _ = makePbufferCurrent(p); for (0..4) |i| { if (p.preview_surface[i] != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.preview_surface[i]); if (p.input[i].texture != 0) c.glDeleteTextures(1, &p.input[i].texture); } if (p.encoder_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.encoder_surface); if (p.overlay_font_texture != 0) c.glDeleteTextures(1, &p.overlay_font_texture); if (p.recording.overlay_bitmap_texture != 0) c.glDeleteTextures(1, &p.recording.overlay_bitmap_texture); if (p.program != 0) c.glDeleteProgram(p.program); if (p.overlay_program != 0) c.glDeleteProgram(p.overlay_program); if (p.overlay_text_program != 0) c.glDeleteProgram(p.overlay_text_program); clearCurrent(p); if (p.pbuffer != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.pbuffer); if (p.context != c.EGL_NO_CONTEXT) _ = c.eglDestroyContext(p.display, p.context); _ = c.eglTerminate(p.display); } for (0..4) |i| { if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); if (p.preview_window[i]) |w| c.ANativeWindow_release(w); } if (p.encoder_window) |w| c.ANativeWindow_release(w); g_used[idx] = false; g_pipes[idx] = Pipe{}; return; } }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getLastError(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, &g_last_error); }

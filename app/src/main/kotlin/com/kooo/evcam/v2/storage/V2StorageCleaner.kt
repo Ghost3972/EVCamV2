@@ -1,6 +1,7 @@
 package com.kooo.evcam.v2.storage
 
 import android.content.Context
+import android.os.SystemClock
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.settings.V2StorageCleanupSettings
 import java.io.File
@@ -8,14 +9,17 @@ import java.io.File
 object V2StorageCleaner {
     private const val STALE_RECORDING_AGE_MS = 10 * 60 * 1000L
 
-    fun cleanupForReservedSpace(context: Context, outputDir: File): CleanupResult {
+    fun cleanupForReservedSpace(context: Context, outputDir: File): V2StorageCleanupResult {
+        val startedMs = SystemClock.elapsedRealtime()
         outputDir.mkdirs()
         val reservedBytes = V2StorageCleanupSettings.reservedSpaceBytes(context)
         val staleResult = cleanupStaleRecordingFiles(outputDir)
-        if (reservedBytes <= 0L) return CleanupResult(staleResult.first, staleResult.second, outputDir.usableSpace, reservedBytes)
+        if (reservedBytes <= 0L) return V2StorageCleanupResult(staleResult.first, staleResult.second, outputDir.usableSpace, reservedBytes)
+            .also { logCleanupPerf(startedMs, it, "no_reserve") }
 
         var available = outputDir.usableSpace
-        if (available >= reservedBytes) return CleanupResult(staleResult.first, staleResult.second, available, reservedBytes)
+        if (available >= reservedBytes) return V2StorageCleanupResult(staleResult.first, staleResult.second, available, reservedBytes)
+            .also { logCleanupPerf(startedMs, it, "enough_space") }
 
         var deletedCount = staleResult.first
         var deletedBytes = staleResult.second
@@ -41,11 +45,16 @@ object V2StorageCleaner {
             }
         }
 
-        val result = CleanupResult(deletedCount, deletedBytes, available, reservedBytes)
+        val result = V2StorageCleanupResult(deletedCount, deletedBytes, available, reservedBytes)
         if (deletedCount > 0 || available < reservedBytes) {
             V2AppLog.w("V2StorageCleaner", "cleanup result deleted=$deletedCount freed=${formatBytes(deletedBytes)} available=${formatBytes(available)} reserve=${formatBytes(reservedBytes)}")
         }
+        logCleanupPerf(startedMs, result, if (available >= reservedBytes) "recovered" else "low_space")
         return result
+    }
+
+    private fun logCleanupPerf(startedMs: Long, result: V2StorageCleanupResult, reason: String) {
+        V2AppLog.perf("V2StoragePerf", "cleanup", SystemClock.elapsedRealtime() - startedMs, "reason=$reason deleted=${result.deletedCount} freed=${formatBytes(result.deletedBytes)} available=${formatBytes(result.availableBytes)} reserve=${formatBytes(result.reservedBytes)}")
     }
 
     private fun cleanupStaleRecordingFiles(outputDir: File): Pair<Int, Long> {
@@ -72,11 +81,4 @@ object V2StorageCleaner {
         val gb = bytes / (1024.0 * 1024.0 * 1024.0)
         return String.format(java.util.Locale.US, "%.1fGB", gb)
     }
-
-    data class CleanupResult(
-        val deletedCount: Int,
-        val deletedBytes: Long,
-        val availableBytes: Long,
-        val reservedBytes: Long
-    )
 }

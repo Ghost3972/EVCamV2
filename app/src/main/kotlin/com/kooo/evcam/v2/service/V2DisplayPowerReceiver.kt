@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import com.kooo.evcam.v2.log.V2BroadcastLogger
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2StartupSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 
 class V2DisplayPowerReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -16,7 +16,7 @@ class V2DisplayPowerReceiver : BroadcastReceiver() {
         V2BroadcastLogger.logReceive(TAG, intent)
         V2DisplayPowerState.updateFromAction(action)
         V2AppLog.i(TAG, "display power broadcast received: action=$action")
-        if (!V2StartupSettings.isAutoStartOnBoot(context)) {
+        if (!V2SettingsRepository.startupPolicy(context).autoStartOnBoot) {
             V2AppLog.i(TAG, "display cold start skipped: auto start disabled")
             return
         }

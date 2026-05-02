@@ -7,6 +7,7 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.LinearLayout
 import android.widget.Spinner
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -59,7 +60,31 @@ class V2RecordingSettingsSection(
             onSelected = { index -> V2RecordingSettings.setSegmentMinutes(activity, V2RecordingSettings.segmentMinuteOptions[index]); restartNotice() }
         ))
         row.addView(controls)
+        row.addView(h265SwitchRow())
         return row
+    }
+
+    private fun h265SwitchRow(): View {
+        val supported = V2RecordingSettings.h265Supported()
+        val switch = Switch(activity).apply {
+            isChecked = V2RecordingSettings.h265Enabled(activity)
+            isEnabled = supported
+            setOnCheckedChangeListener { _, enabled ->
+                V2RecordingSettings.setH265Enabled(activity, enabled)
+                restartNotice()
+            }
+        }
+        return cards.switchRow(enabled = supported, onClick = { switch.toggle() }).apply {
+            alpha = if (supported) 1f else 0.5f
+            setPadding(cards.dp(4), cards.dp(12), cards.dp(4), 0)
+            addView(cards.cardTexts(
+                title = "H.265 编码",
+                subtitle = if (supported) "开启后使用 HEVC/H.265 录制；更改后重启生效" else "当前设备未发现可用的 HEVC/H.265 编码器",
+                subtitleEndPaddingDp = 12,
+                useWeight = true,
+            ))
+            addView(switch)
+        }
     }
 
     private fun spinnerCell(label: String, labels: List<String>, selectedIndex: Int, onSelected: (Int) -> Unit): View {

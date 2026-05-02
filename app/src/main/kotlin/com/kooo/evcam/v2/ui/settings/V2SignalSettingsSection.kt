@@ -14,10 +14,11 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.V2CameraServiceCommands
+import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
 import com.kooo.evcam.v2.settings.V2BlindSpotSettings
 import com.kooo.evcam.v2.settings.V2CustomKeySettings
+import com.kooo.evcam.v2.settings.V2SettingsCategory
 import java.util.Locale
 
 class V2SignalSettingsSection(
@@ -37,7 +38,7 @@ class V2SignalSettingsSection(
             invalidToast = "转向灯属性ID无效",
             successToast = "补盲设置已生效",
             logPrefix = "blindSpot",
-            refreshAction = V2CameraForegroundService.ACTION_REFRESH_BLIND_SPOT,
+            settingsCategory = V2SettingsCategory.BLIND_SPOT,
             propIdReader = { V2BlindSpotSettings.turnSignalPropId(activity) },
             propIdWriter = { V2BlindSpotSettings.setTurnSignalPropId(activity, it) },
             enabledWriter = { V2BlindSpotSettings.setEnabled(activity, it) }
@@ -58,7 +59,7 @@ class V2SignalSettingsSection(
         invalidToast = "属性ID无效",
         successToast = "定制键设置已生效",
         logPrefix = "customKey",
-        refreshAction = V2CameraForegroundService.ACTION_REFRESH_CUSTOM_KEY,
+        settingsCategory = V2SettingsCategory.CUSTOM_KEY,
         propIdReader = { V2CustomKeySettings.buttonPropId(activity) },
         propIdWriter = { V2CustomKeySettings.setButtonPropId(activity, it) },
         enabledWriter = { V2CustomKeySettings.setEnabled(activity, it) }
@@ -95,7 +96,7 @@ class V2SignalSettingsSection(
         invalidToast: String,
         successToast: String,
         logPrefix: String,
-        refreshAction: String,
+        settingsCategory: String,
         propIdReader: () -> Int,
         propIdWriter: (Int) -> Unit,
         enabledWriter: (Boolean) -> Unit,
@@ -132,7 +133,7 @@ class V2SignalSettingsSection(
             propIdWriter(inputPropId)
             enabledWriter(switch.isChecked)
             V2AppLog.i(TAG, "$logPrefix enabled=${switch.isChecked} propId=$inputPropId")
-            V2CameraServiceCommands.startAction(activity, refreshAction)
+            V2CameraServiceCommands.notifySettingsChanged(activity, settingsCategory)
             if (showToast) Toast.makeText(activity, successToast, Toast.LENGTH_SHORT).show()
         }
 
@@ -211,7 +212,7 @@ class V2SignalSettingsSection(
         container.addView(titleRow)
 
         var current = V2BlindSpotSettings.correction(activity, side)
-        fun save(next: V2BlindSpotSettings.Correction) {
+        fun save(next: V2BlindSpotCorrection) {
             current = next
             V2BlindSpotSettings.setCorrection(activity, side, next)
             if (blindSpotCorrectionPreviewSide == side) {

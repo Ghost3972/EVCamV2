@@ -27,6 +27,10 @@ class EncoderSegmentWriter(
     private val fileSuffix: String = "",
     private val mimeType: String = MediaFormat.MIMETYPE_VIDEO_AVC
 ) {
+    private companion object {
+        private const val SLOW_WRITE_MS = 8L
+    }
+
     private val appContext = context.applicationContext
     private var codec: MediaCodec? = null
     private var muxer: MediaMuxer? = null
@@ -49,6 +53,7 @@ class EncoderSegmentWriter(
     val surface: android.view.Surface? get() = inputSurface
 
     fun startSegment(segmentIndex: Int, segmentWallClockMs: Long): File {
+        val startedMs = SystemClock.elapsedRealtime()
         V2AppLog.i("EncoderSegmentWriter", "startSegment index=$segmentIndex size=${width}x${height} fps=$fps bitrate=$bitrate mime=$mimeType")
         releaseInternal(generateThumbnail = false)
         finishing = false
@@ -92,7 +97,7 @@ class EncoderSegmentWriter(
         trackIndex = -1
         muxerStarted = false
         writtenSamples = 0L
-        V2AppLog.i("EncoderSegmentWriter", "segment ready temp=${tempFile?.absolutePath} final=${currentFile?.absolutePath}")
+        V2AppLog.perf("EncoderSegmentWriter", "startSegment", SystemClock.elapsedRealtime() - startedMs, "index=$segmentIndex temp=${tempFile?.name} final=${currentFile?.name} persistentSurface=$persistentInputSurface")
         return currentFile!!
     }
 
@@ -145,12 +150,17 @@ class EncoderSegmentWriter(
                         encoded.limit(bufferInfo.offset + bufferInfo.size)
                         val writeStartedMs = SystemClock.elapsedRealtime()
                         muxer.writeSampleData(trackIndex, encoded, bufferInfo)
-                        writeMs += SystemClock.elapsedRealtime() - writeStartedMs
+                        val sampleWriteMs = SystemClock.elapsedRealtime() - writeStartedMs
+                        writeMs += sampleWriteMs
                         writtenSamples += 1
                         drainedSamples += 1
                         metrics.encodedSamples += 1
                         if (metrics.firstSampleLatencyMs < 0) {
                             metrics.firstSampleLatencyMs = SystemClock.elapsedRealtime() - segmentStartedAtMs
+                            V2AppLog.perf("EncoderSegmentWriter", "firstSample", metrics.firstSampleLatencyMs, "file=${currentFile?.name} size=${bufferInfo.size}")
+                        }
+                        if (sampleWriteMs >= SLOW_WRITE_MS) {
+                            V2AppLog.perf("EncoderSegmentWriter", "sampleWrite_slow", sampleWriteMs, "file=${currentFile?.name} sample=$writtenSamples size=${bufferInfo.size}")
                         }
                     }
                     codec.releaseOutputBuffer(outIndex, false)
@@ -168,9 +178,11 @@ class EncoderSegmentWriter(
         val now = SystemClock.elapsedRealtime()
         if (elapsedMs >= 8L || writeMs >= 4L || samples >= 4L || endOfStream || (samples > 0L && now - lastDrainPerfLogMs >= 3_000L)) {
             lastDrainPerfLogMs = now
-            V2AppLog.i(
+            V2AppLog.perf(
                 "EncoderSegmentWriter",
-                "drain samples=$samples elapsedMs=$elapsedMs writeMs=$writeMs eos=$endOfStream totalSamples=$writtenSamples file=${currentFile?.name}"
+                "drain",
+                elapsedMs,
+                "samples=$samples writeMs=$writeMs eos=$endOfStream totalSamples=$writtenSamples file=${currentFile?.name}"
             )
         }
     }
@@ -219,6 +231,7 @@ class EncoderSegmentWriter(
     }
 
     private fun releaseInternal(generateThumbnail: Boolean): File? {
+        val startedMs = SystemClock.elapsedRealtime()
         val muxerStopOk = if (muxerStarted && writtenSamples > 0L) {
             runCatching { muxer?.stop() }
                 .onFailure {
@@ -238,7 +251,7 @@ class EncoderSegmentWriter(
         inputSurface = null
         persistentInputSurface = false
         val finishedFile = finalizeTempFile(muxerStopOk)
-        V2AppLog.i("EncoderSegmentWriter", "release complete file=${currentFile?.name} temp=${tempFile?.name} muxerStopOk=$muxerStopOk samples=$writtenSamples final=${finishedFile?.name}")
+        V2AppLog.perf("EncoderSegmentWriter", "releaseInternal", SystemClock.elapsedRealtime() - startedMs, "file=${currentFile?.name} temp=${tempFile?.name} muxerStopOk=$muxerStopOk samples=$writtenSamples final=${finishedFile?.name}")
         finishedFile?.let { file ->
             V2PlaybackListCache.upsertVideo(appContext, file)
             if (generateThumbnail) V2RecordingThumbnailer.generateFirstFrameAsync(appContext, file)
@@ -252,6 +265,7 @@ class EncoderSegmentWriter(
     fun currentSizeBytes(): Long = tempFile?.takeIf { it.exists() }?.length() ?: currentFile?.takeIf { it.exists() }?.length() ?: 0L
 
     private fun finalizeTempFile(muxerStopOk: Boolean): File? {
+        val startedMs = SystemClock.elapsedRealtime()
         val temp = tempFile ?: return currentFile?.takeIf { it.exists() && it.length() > 0L }
         val final = currentFile ?: return null
         if (!muxerStopOk || writtenSamples <= 0L || !temp.exists() || temp.length() <= 0L) {
@@ -261,7 +275,7 @@ class EncoderSegmentWriter(
         }
         final.delete()
         return if (temp.renameTo(final)) {
-            V2AppLog.i("EncoderSegmentWriter", "segment finalized ${final.absolutePath} size=${final.length()}")
+            V2AppLog.perf("EncoderSegmentWriter", "finalizeTempFile", SystemClock.elapsedRealtime() - startedMs, "file=${final.name} size=${final.length()}")
             final
         } else {
             V2AppLog.w("EncoderSegmentWriter", "segment rename failed, keep temp=${temp.absolutePath}")

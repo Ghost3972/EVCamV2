@@ -3,6 +3,7 @@ package com.kooo.evcam.v2.service
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.ContextCompat
+import com.kooo.evcam.v2.settings.V2SettingsCategory
 
 object V2CameraServiceCommands {
     fun start(context: Context) {
@@ -15,13 +16,23 @@ object V2CameraServiceCommands {
 
     fun autoStartRecording(context: Context) = startAction(context, V2CameraForegroundService.ACTION_AUTO_START_RECORDING)
 
-    fun refreshCustomKey(context: Context) = startAction(context, V2CameraForegroundService.ACTION_REFRESH_CUSTOM_KEY)
+    fun refreshCustomKey(context: Context) = notifySettingsChanged(context, V2SettingsCategory.CUSTOM_KEY)
 
-    fun refreshBlindSpot(context: Context) = startAction(context, V2CameraForegroundService.ACTION_REFRESH_BLIND_SPOT)
+    fun refreshBlindSpot(context: Context) = notifySettingsChanged(context, V2SettingsCategory.BLIND_SPOT)
 
-    fun refreshFisheye(context: Context) = startAction(context, V2CameraForegroundService.ACTION_REFRESH_FISHEYE)
+    fun refreshFisheye(context: Context) = notifySettingsChanged(context, V2SettingsCategory.FISHEYE)
 
-    fun refreshWakeLock(context: Context) = startAction(context, V2CameraForegroundService.ACTION_REFRESH_WAKE_LOCK)
+    fun refreshWakeLock(context: Context) = notifySettingsChanged(context, V2SettingsCategory.WAKE_LOCK)
+
+    fun notifySettingsChanged(context: Context, category: String = V2SettingsCategory.ALL) =
+        startAction(context, V2CameraForegroundService.ACTION_SETTINGS_CHANGED) {
+            putExtra(V2CameraForegroundService.EXTRA_SETTINGS_CATEGORY, category)
+        }
+
+    fun notifySettingsChangedIfRunning(context: Context, category: String = V2SettingsCategory.ALL) {
+        if (!V2CameraForegroundService.isRunning) return
+        notifySettingsChanged(context, category)
+    }
 
     fun showFisheyePreview(context: Context, cameraIndex: Int) = startAction(context, V2CameraForegroundService.ACTION_SHOW_FISHEYE_PREVIEW) {
         putExtra(V2CameraForegroundService.EXTRA_CAMERA_INDEX, cameraIndex)

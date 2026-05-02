@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.os.SystemClock
+import com.kooo.evcam.v2.storage.V2PlaybackListEntry
 import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import java.io.File
@@ -22,6 +23,7 @@ data class V2VideoGroup(
     private val cachedTotalBytes: Long? = null,
     private val cachedModified: Long? = null,
 ) {
+    val identityKey: String = composite?.absolutePath ?: timestamp
     val files: List<File> = listOfNotNull(composite)
     val count: Int = files.size
     val totalBytes: Long = cachedTotalBytes ?: files.sumOf { it.length() }
@@ -74,7 +76,7 @@ object V2VideoScanner {
             val cursor = cursors[cursorIndex]
             val file = cursor.current()
             val key = videoKey(file)
-            if (emitted.add(key)) {
+            if (emitted.add(file.absolutePath)) {
                 onGroup(V2VideoGroup(timestamp = key, composite = file))
                 count += 1
                 val now = SystemClock.uptimeMillis()
@@ -107,7 +109,8 @@ object V2VideoScanner {
         .asSequence()
         .flatMap { dir -> dir.listFiles().orEmpty().asSequence() }
         .filter { isImageFile(it) && imageNamePattern.matches(it.name) }
-        .sortedByDescending { it.nameWithoutExtension.lowercase(Locale.US) }
+        .distinctBy { it.absolutePath }
+        .sortedWith(compareByDescending<File> { it.nameWithoutExtension.lowercase(Locale.US) }.thenByDescending { it.absolutePath })
         .map { file -> V2VideoGroup(timestamp = file.nameWithoutExtension, composite = file, isPhoto = true, thumbnailPath = file.absolutePath, cachedTotalBytes = file.length(), cachedModified = file.lastModified()) }
         .toList()
 
@@ -135,7 +138,7 @@ object V2VideoScanner {
     fun saveCachedGroups(context: Context, groups: List<V2VideoGroup>) {
         V2PlaybackListCache.save(context, groups.mapNotNull { group ->
             val file = group.composite ?: return@mapNotNull null
-            V2PlaybackListCache.Entry(
+            V2PlaybackListEntry(
                 key = group.timestamp,
                 path = file.absolutePath,
                 length = file.length(),
@@ -202,7 +205,7 @@ object V2VideoScanner {
         }.getOrNull()
     }
 
-    private fun cachedThumbnailFromEntry(context: Context, file: File, entry: V2PlaybackListCache.Entry): Bitmap? {
+    private fun cachedThumbnailFromEntry(context: Context, file: File, entry: V2PlaybackListEntry): Bitmap? {
         val cached = entry.thumbnailPath?.let { path ->
             val thumb = File(path)
             if (thumb.isFile && thumb.canRead() && thumb.length() > 0L &&

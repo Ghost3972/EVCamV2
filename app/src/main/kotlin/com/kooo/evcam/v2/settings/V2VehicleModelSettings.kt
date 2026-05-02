@@ -11,8 +11,13 @@ object V2VehicleModelSettings {
     private const val PREFS_NAME = "evcam_v2_vehicle_settings"
     private const val KEY_VEHICLE_MODEL = "vehicle_model"
 
-    data class CameraMapping(val front: String, val back: String, val left: String, val right: String)
-    data class VehicleModel(val id: String, val label: String, val mapping: CameraMapping)
+    data class CameraMapping(val front: String, val back: String, val left: String, val right: String) {
+        fun summary(): String = "前:$front 后:$back 左:$left 右:$right"
+    }
+
+    data class VehicleModel(val id: String, val label: String, val mapping: CameraMapping) {
+        fun mappingSummary(): String = "$label\n${mapping.summary()}"
+    }
 
     val models = listOf(
         VehicleModel(MODEL_E5_2025, "25款E5", CameraMapping(front = "2", back = "1", left = "3", right = "0")),
@@ -36,9 +41,7 @@ object V2VehicleModelSettings {
     }
 
     fun mappingSummary(context: Context): String {
-        val model = getModel(context)
-        val mapping = model.mapping
-        return "${model.label}\n前:${mapping.front} 后:${mapping.back} 左:${mapping.left} 右:${mapping.right}"
+        return getModel(context).mappingSummary()
     }
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

@@ -6,14 +6,14 @@ import android.view.Gravity
 import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import com.kooo.evcam.v2.settings.V2BlindSpotSettings
+import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
 import kotlin.math.max
 
 object V2BlindSpotTransform {
     fun apply(
         texture: TextureView?,
         overlayRotationDegrees: Int,
-        correction: V2BlindSpotSettings.Correction,
+        correction: V2BlindSpotCorrection,
         windowSwapped: Boolean,
         previewSize: Size?,
     ) {
@@ -29,7 +29,7 @@ object V2BlindSpotTransform {
         texture.setTransform(matrix(texture, overlayRotationDegrees, correction, windowSwapped, previewSize))
     }
 
-    fun effectiveRotation(overlayRotationDegrees: Int, correction: V2BlindSpotSettings.Correction): Float =
+    fun effectiveRotation(overlayRotationDegrees: Int, correction: V2BlindSpotCorrection): Float =
         normalizeRotation(overlayRotationDegrees + correction.rotation)
 
     fun isCloserToPortrait(rotation: Float): Boolean {
@@ -53,7 +53,7 @@ object V2BlindSpotTransform {
     private fun matrix(
         texture: TextureView,
         overlayRotationDegrees: Int,
-        correction: V2BlindSpotSettings.Correction,
+        correction: V2BlindSpotCorrection,
         windowSwapped: Boolean,
         previewSize: Size?,
     ): Matrix {

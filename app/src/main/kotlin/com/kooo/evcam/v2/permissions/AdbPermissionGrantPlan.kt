@@ -12,6 +12,7 @@ internal object AdbPermissionGrantPlan {
             add(AdbPermissionCommand("媒体视频权限", "pm grant $packageName android.permission.READ_MEDIA_VIDEO"))
             add(AdbPermissionCommand("媒体图片权限", "pm grant $packageName android.permission.READ_MEDIA_IMAGES"))
         }
+        if (sdk >= 34) add(AdbPermissionCommand("媒体选择权限", "pm grant $packageName android.permission.READ_MEDIA_VISUAL_USER_SELECTED"))
         if (sdk <= 32) {
             add(AdbPermissionCommand("读取存储权限", "pm grant $packageName android.permission.READ_EXTERNAL_STORAGE"))
             add(AdbPermissionCommand("写入存储权限", "pm grant $packageName android.permission.WRITE_EXTERNAL_STORAGE"))

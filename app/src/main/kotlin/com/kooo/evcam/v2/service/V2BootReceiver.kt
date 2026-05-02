@@ -9,7 +9,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.v2.log.V2BroadcastLogger
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2StartupSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.ui.V2TransparentBootActivity
 
 class V2BootReceiver : BroadcastReceiver() {
@@ -18,9 +18,10 @@ class V2BootReceiver : BroadcastReceiver() {
         V2BroadcastLogger.logReceive(TAG, intent)
         val action = intent?.action ?: return
         if (action != Intent.ACTION_BOOT_COMPLETED && action != QUICKBOOT_POWERON && action != HTC_QUICKBOOT_POWERON) return
-        V2AppLog.i(TAG, "boot broadcast received: action=$action autoStart=${V2StartupSettings.isAutoStartOnBoot(context)} autoRecord=${V2StartupSettings.isAutoStartRecording(context)} permissions=${permissionSummary(context)}")
+        val startupPolicy = V2SettingsRepository.startupPolicy(context)
+        V2AppLog.i(TAG, "boot broadcast received: action=$action autoStart=${startupPolicy.autoStartOnBoot} autoRecord=${startupPolicy.autoStartRecording} permissions=${permissionSummary(context)}")
 
-        if (!V2StartupSettings.isAutoStartOnBoot(context)) {
+        if (!startupPolicy.autoStartOnBoot) {
             V2AppLog.d(TAG, "skip boot start: disabled in settings")
             return
         }

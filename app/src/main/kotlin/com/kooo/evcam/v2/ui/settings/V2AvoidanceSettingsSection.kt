@@ -11,7 +11,9 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.service.V2CameraServiceCommands
 import com.kooo.evcam.v2.settings.V2AvoidanceSettings
+import com.kooo.evcam.v2.settings.V2SettingsCategory
 
 class V2AvoidanceSettingsSection(
     private val activity: V2SettingsActivity,
@@ -39,6 +41,7 @@ class V2AvoidanceSettingsSection(
                 isChecked = V2AvoidanceSettings.isTargetEnabled(activity, target)
                 setOnCheckedChangeListener { _, enabled ->
                     V2AvoidanceSettings.setTargetEnabled(activity, target, enabled)
+                    V2CameraServiceCommands.notifySettingsChangedIfRunning(activity, V2SettingsCategory.AVOIDANCE)
                     V2AppLog.i("V2SettingsActivity", "avoidance target changed ${target.value}=$enabled")
                 }
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -91,6 +94,7 @@ class V2AvoidanceSettingsSection(
             isChecked = V2AvoidanceSettings.isBehaviorEnabled(activity, behavior)
             setOnCheckedChangeListener { _, enabled ->
                 V2AvoidanceSettings.setBehaviorEnabled(activity, behavior, enabled)
+                V2CameraServiceCommands.notifySettingsChangedIfRunning(activity, V2SettingsCategory.AVOIDANCE)
                 V2AppLog.i("V2SettingsActivity", "avoidance behavior changed $label=$enabled mask=${V2AvoidanceSettings.behaviorMask(activity)}")
             }
         }

@@ -2,6 +2,7 @@ package com.kooo.evcam.v2.recording
 
 import android.content.Context
 import android.media.MediaMetadataRetriever
+import android.os.SystemClock
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import java.io.File
@@ -17,6 +18,7 @@ object V2RecordingThumbnailer {
     }
 
     private fun generate(context: Context, video: File) {
+        val startedMs = SystemClock.elapsedRealtime()
         runCatching {
             if (!video.isFile || !video.canRead() || video.length() <= 0L) return
             val out = thumbnailFile(video)
@@ -40,7 +42,7 @@ object V2RecordingThumbnailer {
             out.setLastModified(video.lastModified())
             frame.recycle()
             V2PlaybackListCache.updateThumbnail(context, video, out)
-            V2AppLog.i("RecordingThumbnailer", "thumbnail generated ${out.absolutePath}")
+            V2AppLog.perf("V2StoragePerf", "thumbnailGenerate", SystemClock.elapsedRealtime() - startedMs, "video=${video.name} videoBytes=${video.length()} thumbBytes=${out.length()}")
         }.onFailure { V2AppLog.w("RecordingThumbnailer", "thumbnail generation failed video=${video.absolutePath}", it) }
     }
 

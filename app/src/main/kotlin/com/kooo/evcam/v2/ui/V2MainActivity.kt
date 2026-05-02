@@ -22,11 +22,13 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.databinding.ActivityV2MainA7Binding
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.V2CameraServiceCommands
+import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
 import com.kooo.evcam.v2.ui.playback.V2VideoPlaybackActivity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -48,9 +50,9 @@ class V2MainActivity : AppCompatActivity() {
     private var service: V2CameraForegroundService? = null
     private var bound = false
     private var bindingService = false
-    private val fpsCounters = Array(4) { FpsCounter() }
-    private val previewSizeLabels = Array(4) { "--×--" }
-    private val previewSurfaces = arrayOfNulls<Surface>(4)
+    private val fpsCounters = Array(V2_CAMERA_SLOT_COUNT) { FpsCounter() }
+    private val previewSizeLabels = Array(V2_CAMERA_SLOT_COUNT) { "--×--" }
+    private val previewSurfaces = arrayOfNulls<Surface>(V2_CAMERA_SLOT_COUNT)
     private val dateTimeFormat = SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss", Locale.CHINA)
     private var normalRecordingAnimator: ObjectAnimator? = null
     private var emergencyProgressAnimator: ValueAnimator? = null
@@ -137,7 +139,7 @@ class V2MainActivity : AppCompatActivity() {
 
     private fun restoreMainWindowMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(true)
+            WindowCompat.setDecorFitsSystemWindows(window, true)
             window.insetsController?.show(WindowInsets.Type.systemBars())
         } else {
             @Suppress("DEPRECATION")
@@ -442,7 +444,7 @@ class V2MainActivity : AppCompatActivity() {
         previewSurfaces[index] = null
     }
 
-    private fun unbindPreviews() { repeat(4) { detachPreviewSurface(it) } }
+    private fun unbindPreviews() { repeat(V2_CAMERA_SLOT_COUNT) { detachPreviewSurface(it) } }
 
     private fun updatePreviewPlaceholders(paused: Boolean) {
         val visibility = if (paused) View.VISIBLE else View.GONE

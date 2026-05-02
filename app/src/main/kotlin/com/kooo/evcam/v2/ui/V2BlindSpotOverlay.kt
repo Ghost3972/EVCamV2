@@ -21,7 +21,9 @@ import android.widget.ImageView
 import android.widget.TextView
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
 import com.kooo.evcam.v2.settings.V2BlindSpotSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 
 class V2BlindSpotOverlay(
     private val context: Context,
@@ -65,10 +67,11 @@ class V2BlindSpotOverlay(
     private var resizeCornerView: View? = null
     private var metricsView: TextView? = null
     private var currentSide: String = "left"
-    private var correction = V2BlindSpotSettings.Correction()
+    private var correction = V2BlindSpotCorrection()
     private var windowSwapped = false
     private var lastFpsFrames = 0L
     private var fpsWindowStartedMs = 0L
+    private var lastFpsPerfLogMs = 0L
 
     private val metricsRunnable = object : Runnable {
         override fun run() {
@@ -81,6 +84,7 @@ class V2BlindSpotOverlay(
     private val dragHandleListener = OverlayDragTouchListener()
 
     fun show(side: String, index: Int) {
+        val startedMs = SystemClock.elapsedRealtime()
         if (root != null) {
             val previousSide = currentSide
             currentSide = side
@@ -93,7 +97,7 @@ class V2BlindSpotOverlay(
             cameraIndex = index
             refreshCurrentSurface(index)
             animateSideSwitch(previousSide, side)
-            V2AppLog.i("V2BlindSpotOverlay", "switch side=$side index=$index")
+            V2AppLog.perf("V2BlindSpotPerf", "switchOverlay", SystemClock.elapsedRealtime() - startedMs, "side=$side index=$index previousSide=$previousSide")
             return
         }
         hide()
@@ -204,7 +208,7 @@ class V2BlindSpotOverlay(
         if (texture.isAvailable && texture.surfaceTexture != null) attachSurface(index, texture.surfaceTexture!!)
         resetMetricsCounter()
         root?.post(metricsRunnable)
-        V2AppLog.i("V2BlindSpotOverlay", "show side=$side index=$index")
+        V2AppLog.perf("V2BlindSpotPerf", "showOverlay", SystemClock.elapsedRealtime() - startedMs, "side=$side index=$index")
     }
 
     fun hide() {
@@ -231,6 +235,7 @@ class V2BlindSpotOverlay(
     }
 
     private fun attachSurface(index: Int, surfaceTexture: SurfaceTexture) {
+        val startedMs = SystemClock.elapsedRealtime()
         configurePreviewBufferSize(index, surfaceTexture)
         if (attachedPreviewIndex == index && previewSurfaceTexture == surfaceTexture && previewSurface?.isValid == true) return
         detachCurrentSurface()
@@ -239,7 +244,7 @@ class V2BlindSpotOverlay(
         previewSurfaceTexture = surfaceTexture
         attachedPreviewIndex = index
         attachPreview(index, surface)
-        V2AppLog.i("V2BlindSpotOverlay", "attach preview index=$index valid=${surface.isValid}")
+        V2AppLog.perf("V2BlindSpotPerf", "attachPreview", SystemClock.elapsedRealtime() - startedMs, "index=$index valid=${surface.isValid}")
     }
 
     private fun animateSideSwitch(fromSide: String, toSide: String) {
@@ -280,6 +285,15 @@ class V2BlindSpotOverlay(
             currentFps
         }
         metricsView?.text = String.format(java.util.Locale.US, "%dx%d\n%.1f fps", params.width, params.height, value)
+        logFpsIfNeeded(index, value, params.width, params.height)
+    }
+
+    private fun logFpsIfNeeded(index: Int, fps: Float, width: Int, height: Int) {
+        if (index < 0) return
+        val now = SystemClock.elapsedRealtime()
+        if (fps >= LOW_FPS_THRESHOLD && now - lastFpsPerfLogMs < FPS_PERF_LOG_INTERVAL_MS) return
+        lastFpsPerfLogMs = now
+        V2AppLog.perf("V2BlindSpotPerf", if (fps < LOW_FPS_THRESHOLD) "overlayFps_low" else "overlayFps", 0L, "index=$index fps=${String.format(java.util.Locale.US, "%.1f", fps)} window=${width}x$height rendered=${renderedFrames(index)}")
     }
 
     private fun refreshCurrentSurface(index: Int) {
@@ -306,12 +320,9 @@ class V2BlindSpotOverlay(
     }
 
     private fun loadTransformForSide(side: String) {
-        rotationDegrees = V2BlindSpotSettings.overlayRotation(context, side)
-        correction = if (V2BlindSpotSettings.isCorrectionEnabled(context)) {
-            V2BlindSpotSettings.correction(context, side)
-        } else {
-            V2BlindSpotSettings.Correction()
-        }
+        val config = V2SettingsRepository.blindSpotOverlayConfig(context, side, 0, 0, 0, 0)
+        rotationDegrees = config.rotation
+        correction = config.correction
     }
 
     private fun updateWindowSwappedState() {
@@ -341,7 +352,9 @@ class V2BlindSpotOverlay(
     private fun configurePreviewBufferSize(index: Int, surfaceTexture: SurfaceTexture) {
         val size = previewInputSize(index) ?: return
         if (size.width <= 0 || size.height <= 0) return
+        val startedMs = SystemClock.elapsedRealtime()
         runCatching { surfaceTexture.setDefaultBufferSize(size.width, size.height) }
+            .onSuccess { V2AppLog.perf("V2BlindSpotPerf", "setBufferSize", SystemClock.elapsedRealtime() - startedMs, "index=$index size=${size.width}x${size.height}") }
             .onFailure { V2AppLog.w("V2BlindSpotOverlay", "set preview buffer size failed index=$index size=${size.width}x${size.height}", it) }
     }
 
@@ -365,10 +378,11 @@ class V2BlindSpotOverlay(
         val metrics = context.resources.displayMetrics
         val defaultWidth = (metrics.widthPixels * 0.28f).toInt()
         val defaultHeight = (metrics.heightPixels * 0.86f).toInt()
-        val width = clampWidth(V2BlindSpotSettings.overlayWidth(context, currentSide, defaultWidth))
-        val height = clampHeight(V2BlindSpotSettings.overlayHeight(context, currentSide, defaultHeight))
         val defaultX = (metrics.widthPixels * 0.03f).toInt()
-        val defaultY = ((metrics.heightPixels - height) / 2).coerceAtLeast(0)
+        val defaultY = ((metrics.heightPixels - defaultHeight) / 2).coerceAtLeast(0)
+        val config = V2SettingsRepository.blindSpotOverlayConfig(context, currentSide, defaultX, defaultY, defaultWidth, defaultHeight)
+        val width = clampWidth(config.width)
+        val height = clampHeight(config.height)
         return WindowManager.LayoutParams(
             width,
             height,
@@ -377,8 +391,8 @@ class V2BlindSpotOverlay(
             PixelFormat.OPAQUE
         ).apply {
             gravity = Gravity.START or Gravity.TOP
-            x = clampX(V2BlindSpotSettings.overlayX(context, currentSide, defaultX), width)
-            y = clampY(V2BlindSpotSettings.overlayY(context, currentSide, defaultY), height)
+            x = clampX(config.x, width)
+            y = clampY(config.y, height)
         }
     }
 
@@ -631,6 +645,8 @@ class V2BlindSpotOverlay(
         private const val RESIZE_UPDATE_THRESHOLD_PX = 6
         private const val LAYOUT_UPDATE_INTERVAL_MS = 80L
         private const val METRICS_UPDATE_INTERVAL_MS = 1_000L
+        private const val FPS_PERF_LOG_INTERVAL_MS = 5_000L
+        private const val LOW_FPS_THRESHOLD = 18f
         private const val SIDE_SWITCH_ANIMATION_MS = 180L
     }
 }

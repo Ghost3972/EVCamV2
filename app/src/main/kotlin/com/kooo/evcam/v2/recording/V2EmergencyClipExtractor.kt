@@ -11,18 +11,12 @@ import java.io.File
 import java.nio.ByteBuffer
 
 object V2EmergencyClipExtractor {
-    data class SourceSegment(
-        val file: File,
-        val startWallClockMs: Long,
-        val endWallClockMs: Long,
-    )
-
     fun extract(
         context: Context,
         outputDir: File,
         clipStartWallClockMs: Long,
         clipEndWallClockMs: Long,
-        sources: List<SourceSegment>,
+        sources: List<V2EmergencySourceSegment>,
     ): File? = runCatching {
         val usableSources = sources
             .filter { it.file.isFile && it.file.length() > 0L && it.endWallClockMs > clipStartWallClockMs && it.startWallClockMs < clipEndWallClockMs }

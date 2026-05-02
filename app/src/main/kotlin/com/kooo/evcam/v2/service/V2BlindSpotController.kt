@@ -7,7 +7,8 @@ import android.provider.Settings
 import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2BlindSpotSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
+import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 import com.kooo.evcam.v2.ui.V2BlindSpotOverlay
 
 class V2BlindSpotController(
@@ -34,24 +35,34 @@ class V2BlindSpotController(
     private var cameraIndex = -1
     private var restoreUiAfterOverlay = false
     @Volatile private var signalIsOff = true
+    @Volatile private var config: V2SettingsSnapshot.BlindSpot = V2SettingsRepository.blindSpotConfig(context)
 
     val activeCameraIndex: Int
         get() = cameraIndex
 
     fun startObserver() {
         if (turnSignalObserver != null) return
-        if (!V2BlindSpotSettings.isEnabled(context)) {
+        val current = config
+        if (!current.enabled) {
             V2AppLog.i(TAG, "blind spot observer skipped: disabled")
             return
         }
-        val propId = V2BlindSpotSettings.turnSignalPropId(context)
         turnSignalObserver = V2VhalTurnSignalObserver(
-            propId,
-            V2BlindSpotSettings.LEFT_VALUE,
-            V2BlindSpotSettings.RIGHT_VALUE,
-            V2BlindSpotSettings.OFF_VALUE,
+            current.turnSignalPropId,
+            current.leftValue,
+            current.rightValue,
+            current.offValue,
         ) { side, on -> handleTurnSignal(side, on) }.also { it.start() }
-        V2AppLog.i(TAG, "blind spot observer started propId=$propId left=${V2BlindSpotSettings.LEFT_VALUE} right=${V2BlindSpotSettings.RIGHT_VALUE}")
+        V2AppLog.i(TAG, "blind spot observer started propId=${current.turnSignalPropId} left=${current.leftValue} right=${current.rightValue}")
+    }
+
+    fun updateConfig(next: V2SettingsSnapshot.BlindSpot) {
+        val old = config
+        config = next
+        if (!next.enabled) hide()
+        if (old != next) {
+            V2AppLog.i(TAG, "blind spot config updated enabled=${next.enabled} propId=${next.turnSignalPropId} correction=${next.correctionEnabled}")
+        }
     }
 
     fun stopObserver() {
@@ -60,8 +71,9 @@ class V2BlindSpotController(
         V2AppLog.i(TAG, "blind spot observer stopped")
     }
 
-    fun restartObserver() {
+    fun restartObserver(next: V2SettingsSnapshot.BlindSpot = V2SettingsRepository.blindSpotConfig(context)) {
         V2AppLog.i(TAG, "refresh blind spot observer")
+        updateConfig(next)
         stopObserver()
         hide()
         startObserver()
@@ -101,19 +113,20 @@ class V2BlindSpotController(
 
     private fun handleTurnSignal(side: String, on: Boolean) {
         handler.post {
-            if (!V2BlindSpotSettings.isEnabled(context)) return@post
+            if (!config.enabled) return@post
             if (on) {
                 signalIsOff = false
                 cancelPendingShowHide()
                 show(side)
             } else {
                 signalIsOff = true
-                V2AppLog.i(TAG, "blind spot signal off side=$side, hide after ${V2BlindSpotSettings.HIDE_DELAY_MS}ms")
+                val hideDelayMs = config.hideDelayMs
+                V2AppLog.i(TAG, "blind spot signal off side=$side, hide after ${hideDelayMs}ms")
                 cancelPendingShowHide()
                 handler.postDelayed({
                     if (signalIsOff) hide()
                     else V2AppLog.i(TAG, "blind spot hide canceled: signal is active again")
-                }, HIDE_TOKEN, V2BlindSpotSettings.HIDE_DELAY_MS)
+                }, HIDE_TOKEN, hideDelayMs)
             }
         }
     }
@@ -154,6 +167,7 @@ class V2BlindSpotController(
     }
 
     private fun showNow(side: String) {
+        val startedMs = android.os.SystemClock.elapsedRealtime()
         if (shouldAvoidWindow()) {
             V2AppLog.i(TAG, "blind spot showNow skipped: blind spot avoidance active target=${avoidanceTarget()} side=$side")
             return
@@ -178,6 +192,7 @@ class V2BlindSpotController(
         V2AppLog.i(TAG, "blind spot show side=$side ${previewDescription(index)}")
         overlay?.show(side, index)
         if (previousIndex >= 0 && previousIndex != index && isDisplayPowerOn()) restoreMainPreview(previousIndex)
+        V2AppLog.perf("V2BlindSpotPerf", "show", android.os.SystemClock.elapsedRealtime() - startedMs, "side=$side index=$index previous=$previousIndex")
     }
 
     private fun restoreUiAfterOverlayIfNeeded() {

@@ -3,19 +3,18 @@ package com.kooo.evcam.v2.service
 import android.content.Context
 import android.os.PowerManager
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2KeepAliveSettings
-import com.kooo.evcam.v2.settings.V2StartupSettings
+import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 
 internal class V2WakeLockHolder(private val context: Context) {
     private var wakeLock: PowerManager.WakeLock? = null
 
-    fun acquire() {
-        if (!V2StartupSettings.isAutoStartOnBoot(context)) {
+    fun acquire(startup: V2SettingsSnapshot.Startup, keepAlive: V2SettingsSnapshot.KeepAlive) {
+        if (!startup.autoStartOnBoot) {
             release()
             V2AppLog.i("V2CameraService", "wake lock skipped: auto start disabled")
             return
         }
-        if (!V2KeepAliveSettings.isPreventSleepEnabled(context)) {
+        if (!keepAlive.preventSleep) {
             release()
             V2AppLog.i("V2CameraService", "wake lock skipped: prevent sleep disabled")
             return

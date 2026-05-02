@@ -2,6 +2,7 @@ package com.kooo.evcam.v2.settings
 
 import android.content.Context
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
 
 object V2FisheyeSettings {
     private const val PREFS = "evcam_v2_fisheye_settings"
@@ -12,27 +13,11 @@ object V2FisheyeSettings {
     private const val KEY_CENTER_X = "center_x_"
     private const val KEY_CENTER_Y = "center_y_"
 
-    data class Params(
-        val label: String,
-        val k1: Float,
-        val k2: Float,
-        val zoom: Float,
-        val centerX: Float = DEFAULT_CENTER_X,
-        val centerY: Float = DEFAULT_CENTER_Y
-    )
-
-    const val DEFAULT_K1 = 0.82f
-    const val DEFAULT_K2 = 0.22f
-    const val DEFAULT_ZOOM = 1.42f
-    const val DEFAULT_CENTER_X = 0.5f
-    const val DEFAULT_CENTER_Y = 0.5f
-
-    private val DEFAULT_PARAMS = listOf(
-        Params(label = "前", k1 = 0.82f, k2 = 0.22f, zoom = 1.42f),
-        Params(label = "后", k1 = 0.78f, k2 = 0.20f, zoom = 1.38f),
-        Params(label = "左", k1 = 0.64f, k2 = 0.16f, zoom = 1.30f),
-        Params(label = "右", k1 = 0.66f, k2 = 0.17f, zoom = 1.32f)
-    )
+    const val DEFAULT_K1 = V2FisheyeParams.DEFAULT_K1
+    const val DEFAULT_K2 = V2FisheyeParams.DEFAULT_K2
+    const val DEFAULT_ZOOM = V2FisheyeParams.DEFAULT_ZOOM
+    const val DEFAULT_CENTER_X = V2FisheyeParams.DEFAULT_CENTER_X
+    const val DEFAULT_CENTER_Y = V2FisheyeParams.DEFAULT_CENTER_Y
 
     fun isEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, false)
 
@@ -41,7 +26,7 @@ object V2FisheyeSettings {
         V2AppLog.i("V2FisheyeSettings", "enabled=$enabled params=${paramsSummary()}")
     }
 
-    fun paramsForIndex(context: Context, index: Int): Params {
+    fun paramsForIndex(context: Context, index: Int): V2FisheyeParams {
         val defaults = defaultParamsForIndex(index)
         val prefs = prefs(context)
         return defaults.copy(
@@ -53,7 +38,7 @@ object V2FisheyeSettings {
         )
     }
 
-    fun defaultParamsForIndex(index: Int): Params = DEFAULT_PARAMS.getOrElse(index) { DEFAULT_PARAMS.first() }
+    fun defaultParamsForIndex(index: Int): V2FisheyeParams = V2FisheyeParams.defaultForIndex(index)
 
     fun setParams(context: Context, index: Int, k1: Float, k2: Float, zoom: Float, centerX: Float = DEFAULT_CENTER_X, centerY: Float = DEFAULT_CENTER_Y) {
         val label = defaultParamsForIndex(index).label
@@ -69,7 +54,7 @@ object V2FisheyeSettings {
 
     fun resetAllParams(context: Context) {
         val editor = prefs(context).edit()
-        DEFAULT_PARAMS.indices.forEach { index ->
+        repeat(V2_CAMERA_SLOT_COUNT) { index ->
             editor
                 .remove(KEY_K1 + index)
                 .remove(KEY_K2 + index)
@@ -81,9 +66,10 @@ object V2FisheyeSettings {
         V2AppLog.i("V2FisheyeSettings", "reset all params defaults=${paramsSummary()}")
     }
 
-    fun paramsSummary(context: Context? = null): String = DEFAULT_PARAMS.indices.joinToString("；") { index ->
-        val params = if (context == null) defaultParamsForIndex(index) else paramsForIndex(context, index)
-        "${params.label}:k1=${params.k1},k2=${params.k2},zoom=${params.zoom}"
+    fun paramsSummary(context: Context? = null): String = if (context == null) {
+        V2FisheyeParams.defaultSummary()
+    } else {
+        V2SettingsFormatter.fisheyeParamsSummary(context)
     }
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

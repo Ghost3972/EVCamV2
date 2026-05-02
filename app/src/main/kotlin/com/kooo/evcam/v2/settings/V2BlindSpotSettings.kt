@@ -64,17 +64,7 @@ object V2BlindSpotSettings {
         return prefs(context).getInt(key, overlayRotation(context))
     }
 
-    data class Correction(
-        val scaleX: Float = 1f,
-        val scaleY: Float = 1f,
-        val translateX: Float = 0f,
-        val translateY: Float = 0f,
-        val rotation: Float = 0f,
-        val mirrorH: Boolean = false,
-        val mirrorV: Boolean = false,
-    )
-
-    val DEFAULT_CORRECTION = Correction()
+    val DEFAULT_CORRECTION = V2BlindSpotCorrection()
 
     fun isCorrectionEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_CORRECTION_ENABLED, false)
 
@@ -83,7 +73,7 @@ object V2BlindSpotSettings {
         V2AppLog.i("V2BlindSpotSettings", "correctionEnabled=$enabled")
     }
 
-    fun correction(context: Context, side: String): Correction = Correction(
+    fun correction(context: Context, side: String): V2BlindSpotCorrection = V2BlindSpotCorrection(
         scaleX = prefs(context).getFloat(correctionKey(side, "scale_x"), 1f),
         scaleY = prefs(context).getFloat(correctionKey(side, "scale_y"), 1f),
         translateX = prefs(context).getFloat(correctionKey(side, "translate_x"), 0f),
@@ -130,7 +120,7 @@ object V2BlindSpotSettings {
         V2AppLog.i("V2BlindSpotSettings", "overlayRotation side=$side value=$normalized")
     }
 
-    fun setCorrection(context: Context, side: String, correction: Correction) {
+    fun setCorrection(context: Context, side: String, correction: V2BlindSpotCorrection) {
         prefs(context).edit()
             .putFloat(correctionKey(side, "scale_x"), correction.scaleX.coerceIn(0.5f, 2f))
             .putFloat(correctionKey(side, "scale_y"), correction.scaleY.coerceIn(0.5f, 2f))

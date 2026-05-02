@@ -13,7 +13,7 @@ import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2KeepAliveSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.ui.V2MainActivity
 
 class V2KeepAliveAccessibilityService : AccessibilityService() {
@@ -21,7 +21,7 @@ class V2KeepAliveAccessibilityService : AccessibilityService() {
     private var startMs = 0L
     private val heartbeat = object : Runnable {
         override fun run() {
-            if (!V2KeepAliveSettings.isKeepAliveEnabled(this@V2KeepAliveAccessibilityService)) {
+            if (!V2SettingsRepository.keepAlivePolicy(this@V2KeepAliveAccessibilityService).enabled) {
                 V2AppLog.i(TAG, "heartbeat skipped: keep alive disabled")
                 handler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
                 return

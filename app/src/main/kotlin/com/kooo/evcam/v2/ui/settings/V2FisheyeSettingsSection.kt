@@ -13,7 +13,9 @@ import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.V2CameraServiceCommands
+import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
 import com.kooo.evcam.v2.settings.V2FisheyeSettings
+import com.kooo.evcam.v2.settings.V2SettingsFormatter
 import java.util.Locale
 
 class V2FisheyeSettingsSection(
@@ -25,7 +27,7 @@ class V2FisheyeSettingsSection(
         val row = cards.cardContainer()
         row.addView(cards.cardTexts(
             "鱼眼矫正",
-            "四路独立参数；点击“预览”打开对应摄像头悬浮窗，修改 k1/k2/zoom 后实时刷新效果\n${V2FisheyeSettings.paramsSummary(activity)}",
+            "四路独立参数；点击“预览”打开对应摄像头悬浮窗，修改 k1/k2/zoom 后实时刷新效果\n${V2SettingsFormatter.fisheyeParamsSummary(activity)}",
             0,
             useWeight = false
         ))
@@ -37,7 +39,7 @@ class V2FisheyeSettingsSection(
         row.addView(enableRow(paramsContainer))
         row.addView(paramsContainer.apply {
             addView(resetButton())
-            repeat(4) { index -> addView(paramRow(index)) }
+            repeat(V2_CAMERA_SLOT_COUNT) { index -> addView(paramRow(index)) }
         })
         return row
     }

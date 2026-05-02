@@ -1,10 +1,8 @@
 package com.kooo.evcam.v2.settings
 
 import android.content.Context
-import android.graphics.SurfaceTexture
-import android.hardware.camera2.CameraAccessException
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
+import android.media.MediaCodecList
+import android.media.MediaFormat
 import android.util.Size
 import com.kooo.evcam.v2.log.V2AppLog
 
@@ -15,6 +13,7 @@ object V2RecordingSettings {
     private const val KEY_FPS = "fps"
     private const val KEY_SEGMENT_MINUTES = "segment_minutes"
     private const val KEY_SEGMENT_PRECREATE = "segment_precreate"
+    private const val KEY_H265_ENABLED = "h265_enabled"
 
     private const val FALLBACK_RESOLUTION = "1280x720"
     const val BITRATE_LOW = "low"
@@ -26,17 +25,23 @@ object V2RecordingSettings {
         Option(BITRATE_MEDIUM, "标准"),
         Option(BITRATE_HIGH, "高")
     )
-    val fpsOptions = listOf(12, 24)
+    val fpsOptions = listOf(15, 25)
     val segmentMinuteOptions = listOf(1, 3, 5, 10)
 
     fun resolution(context: Context): String = prefs(context).getString(KEY_RESOLUTION, null) ?: maxSupportedResolution(context)
     fun bitrateLevel(context: Context): String = prefs(context).getString(KEY_BITRATE_LEVEL, BITRATE_MEDIUM) ?: BITRATE_MEDIUM
     fun fps(context: Context): Int = fpsOptions.minByOrNull {
-        kotlin.math.abs(it - prefs(context).getInt(KEY_FPS, 24).coerceAtMost(24))
-    } ?: 24
+        kotlin.math.abs(it - prefs(context).getInt(KEY_FPS, 25).coerceAtMost(25))
+    } ?: 25
     fun segmentMinutes(context: Context): Int = prefs(context).getInt(KEY_SEGMENT_MINUTES, 1).coerceAtLeast(1)
     fun segmentDurationMs(context: Context): Long = segmentMinutes(context) * 60_000L
     fun segmentPrecreateEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_SEGMENT_PRECREATE, true)
+    fun h265Enabled(context: Context): Boolean = prefs(context).getBoolean(KEY_H265_ENABLED, false)
+    fun h265Supported(): Boolean = runCatching {
+        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { codec ->
+            codec.isEncoder && codec.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) }
+        }
+    }.getOrDefault(false)
 
     fun setResolution(context: Context, value: String) {
         val next = supportedResolutionOptions(context).firstOrNull { it.value == value }?.value
@@ -53,7 +58,7 @@ object V2RecordingSettings {
     }
 
     fun setFps(context: Context, value: Int) {
-        val next = fpsOptions.minByOrNull { kotlin.math.abs(it - value) } ?: 15
+        val next = fpsOptions.minByOrNull { kotlin.math.abs(it - value) } ?: 25
         prefs(context).edit().putInt(KEY_FPS, next).apply()
         V2AppLog.i("V2RecordingSettings", "fps=$next")
     }
@@ -69,8 +74,13 @@ object V2RecordingSettings {
         V2AppLog.i("V2RecordingSettings", "segmentPrecreateEnabled=$enabled")
     }
 
+    fun setH265Enabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_H265_ENABLED, enabled).apply()
+        V2AppLog.i("V2RecordingSettings", "h265Enabled=$enabled")
+    }
+
     fun supportedResolutionOptions(context: Context): List<Option> {
-        val supported = commonSupportedSurfaceTextureSizes(context)
+        val supported = V2CameraCapabilityResolver.commonSupportedSurfaceTextureSizes(context)
         val options = supported.map { Option(valueForSize(it), "${it.width}×${it.height}") }
         if (options.isNotEmpty()) return options
         val fallback = listOf(Size(1280, 720), Size(1920, 1080))
@@ -99,14 +109,9 @@ object V2RecordingSettings {
         }
     }
 
-    fun summary(context: Context): String {
-        val res = labelFor(supportedResolutionOptions(context), resolution(context))
-        val br = labelFor(bitrateOptionsWithMbps(context), bitrateLevel(context))
-        val precreate = if (segmentPrecreateEnabled(context)) "开" else "关"
-        return "分辨率：$res；码率：$br；帧率：${fps(context)}fps；分段：${segmentMinutes(context)}分钟；预创建：$precreate\n更改后重启应用/服务生效"
-    }
+    fun summary(context: Context): String = V2SettingsFormatter.recordingSummary(context)
 
-    private fun bitrateForLevel(size: Size, level: String): Int {
+    fun bitrateForLevel(size: Size, level: String): Int {
         val basePixels = 1280L * 720L
         val pixels = size.width.toLong() * size.height.toLong()
         val auto = ((2_500_000L * pixels) / basePixels).coerceAtLeast(2_500_000L).coerceAtMost(30_000_000L)
@@ -123,42 +128,8 @@ object V2RecordingSettings {
         return if (mbps >= 10 || mbps % 1.0 == 0.0) String.format(java.util.Locale.US, "%.0f", mbps) else String.format(java.util.Locale.US, "%.1f", mbps)
     }
 
-    private fun commonSupportedSurfaceTextureSizes(context: Context): List<Size> {
-        val app = context.applicationContext
-        val manager = app.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val ids = V2VehicleModelSettings.getModel(app).mapping.run { listOf(front, back, left, right) }.distinct()
-        val availableIds = runCatching { manager.cameraIdList.toSet() }.getOrElse {
-            V2AppLog.e("V2RecordingSettings", "read cameraIdList failed", it)
-            emptySet()
-        }
-        val perCamera = ids.filter { it in availableIds }.mapNotNull { id -> supportedSizesForCamera(manager, id) }
-        val common = perCamera.reduceOrNull { acc, sizes -> acc.intersect(sizes).toSet() }.orEmpty()
-        val source = if (common.isNotEmpty()) common else perCamera.flatten().toSet()
-        return source
-            .filter { it.width > 0 && it.height > 0 }
-            .map { normalizeLandscape(it) }
-            .distinctBy { valueForSize(it) }
-            .sortedWith(compareByDescending<Size> { it.width.toLong() * it.height }.thenByDescending { it.width })
-            .take(12)
-    }
+    fun sizeFromValue(value: String): Size? = parseSize(value)
 
-    private fun supportedSizesForCamera(manager: CameraManager, cameraId: String): Set<Size>? = try {
-        val map = manager.getCameraCharacteristics(cameraId)
-            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?: return emptySet()
-        map.getOutputSizes(SurfaceTexture::class.java)
-            ?.map { normalizeLandscape(it) }
-            ?.toSet()
-            .orEmpty()
-    } catch (error: CameraAccessException) {
-        V2AppLog.e("V2RecordingSettings", "read supported sizes failed camera=$cameraId", error)
-        null
-    } catch (error: RuntimeException) {
-        V2AppLog.e("V2RecordingSettings", "read supported sizes failed camera=$cameraId", error)
-        null
-    }
-
-    private fun labelFor(options: List<Option>, value: String): String = options.firstOrNull { it.value == value }?.label ?: value
     private fun parseSize(value: String): Size? {
         val parts = value.lowercase().split('x')
         if (parts.size != 2) return null
@@ -166,7 +137,6 @@ object V2RecordingSettings {
         val height = parts[1].toIntOrNull() ?: return null
         return if (width > 0 && height > 0) Size(width, height) else null
     }
-    private fun normalizeLandscape(size: Size): Size = if (size.width >= size.height) size else Size(size.height, size.width)
     private fun valueForSize(size: Size) = "${size.width}x${size.height}"
     private fun evenSize(size: Size) = Size(size.width - size.width % 2, size.height - size.height % 2)
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -6,14 +6,14 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
-import com.kooo.evcam.v2.settings.V2KeepAliveSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 import java.util.concurrent.TimeUnit
 
 object V2KeepAliveScheduler {
     private const val UNIQUE_WORK_NAME = "v2_keep_alive_backup"
 
     fun schedule(context: Context) {
-        if (!V2KeepAliveSettings.isKeepAliveEnabled(context)) {
+        if (!V2SettingsRepository.keepAlivePolicy(context).enabled) {
             WorkManager.getInstance(context.applicationContext).cancelUniqueWork(UNIQUE_WORK_NAME)
             return
         }

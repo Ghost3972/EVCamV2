@@ -7,7 +7,9 @@ import android.content.IntentFilter
 import android.os.Build
 import com.kooo.evcam.v2.log.V2BroadcastLogger
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2KeepAliveSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
+import com.kooo.evcam.v2.storage.V2PlaybackCacheMaintainer
+import com.kooo.evcam.v2.storage.V2StoragePathHelper
 
 class V2KeepAliveReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -18,8 +20,13 @@ class V2KeepAliveReceiver : BroadcastReceiver() {
             val displayPowerOn = V2DisplayPowerState.updateFromAction(action)
             V2AppLog.i(TAG, "display power state updated action=$action on=$displayPowerOn")
         }
+        if (isStorageChangeAction(action)) {
+            V2StoragePathHelper.clearCache()
+            V2PlaybackCacheMaintainer.scheduleRefresh(context)
+            V2AppLog.i(TAG, "storage change received; refreshed USB detection cache action=$action")
+        }
         V2KeepAliveStatus.recordTrigger(context, "broadcast", reasonFor(action))
-        if (!V2KeepAliveSettings.isKeepAliveEnabled(context)) {
+        if (!V2SettingsRepository.keepAlivePolicy(context).enabled) {
             V2AppLog.i(TAG, "skip broadcast: keep alive disabled action=$action")
             return
         }
@@ -156,6 +163,13 @@ class V2KeepAliveReceiver : BroadcastReceiver() {
 
         private fun shouldStartThroughActivity(action: String): Boolean =
             action == Intent.ACTION_MY_PACKAGE_REPLACED
+
+        private fun isStorageChangeAction(action: String): Boolean = action == Intent.ACTION_MEDIA_MOUNTED ||
+            action == Intent.ACTION_MEDIA_UNMOUNTED ||
+            action == Intent.ACTION_MEDIA_REMOVED ||
+            action == Intent.ACTION_MEDIA_EJECT ||
+            action == "android.hardware.usb.action.USB_DEVICE_ATTACHED" ||
+            action == "android.hardware.usb.action.USB_DEVICE_DETACHED"
 
         private fun keepAliveFilter(includeTimeTick: Boolean): IntentFilter = IntentFilter().apply {
             if (includeTimeTick) addAction(Intent.ACTION_TIME_TICK)

@@ -13,6 +13,7 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.widget.FrameLayout
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -20,6 +21,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import com.kooo.evcam.R
 import com.kooo.evcam.databinding.ActivityV2VideoPlaybackBinding
@@ -48,6 +50,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     private var playerUiVisible = true
     private var playerSystemTopInset = 0
     private var playerSystemBottomInset = 0
+    private var playerImmersive = false
     private var playbackMode = PlaybackMode.NORMAL
     private val playerUiInterpolator = AccelerateDecelerateInterpolator()
     private val playerTitleDateFormat = SimpleDateFormat("yyyy年MM月dd日", Locale.CHINA)
@@ -191,7 +194,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
 
     private fun requestThumbnail(group: V2VideoGroup) {
         if (group.thumbnail != null || group.composite == null) return
-        if (!requestedThumbnailKeys.add(group.timestamp)) return
+        if (!requestedThumbnailKeys.add(group.identityKey)) return
         loadThumbnailAsync(loadGeneration, group)
     }
 
@@ -206,7 +209,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
                 ?: return@execute
             runOnUiThread {
                 if (generation != loadGeneration) return@runOnUiThread
-                adapter.updateThumbnail(group.timestamp, thumbnail)
+                adapter.updateThumbnail(group.identityKey, thumbnail)
             }
         }
     }
@@ -239,7 +242,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         binding.listContainer.visibility = View.VISIBLE
 
         if (animate && wasShowingPlayer && binding.previewContainer.visibility == View.VISIBLE) {
-            showPlayerSystemBarsKeepingLayout()
+            setPlayerImmersive(false)
             listChrome.forEach {
                 it.alpha = 0f
                 it.animate()
@@ -281,7 +284,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
 
     private fun showPlayerMode() {
         showingPlayer = true
-        enterPlayerFullscreenLayout(showBars = true)
+        setPlayerImmersive(false)
         binding.swipeRefresh.isRefreshing = false
         binding.swipeRefresh.isEnabled = false
         val listChrome = listOf(binding.toolbar, binding.btnRefresh, binding.btnSetting, binding.contentLayout)
@@ -400,7 +403,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     private fun setPlayerUiVisible(visible: Boolean, animate: Boolean) {
         playerUiVisible = visible
         if (showingPlayer) {
-            if (visible) showPlayerSystemBarsKeepingLayout() else hidePlayerSystemBars()
+            setPlayerImmersive(!visible)
         }
 
         val photoMode = selected?.isPhoto == true
@@ -463,6 +466,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
             if (top > 0 || bottom > 0 || playerUiVisible) {
                 applyPlayerOverlayInsets(top, bottom)
             }
+            applyPlayerVideoViewportCrop()
             insets
         }
     }
@@ -473,6 +477,34 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         updateConstraintMargins(binding.playerTitleBar, top = top)
         updateConstraintMargins(binding.controlsLayout, bottom = bottom)
         updateConstraintMargins(binding.btnSnapshot, top = top, bottom = bottom)
+    }
+
+    /**
+     * UI 显示时系统栏可见、窗口按系统栏收缩；把视频本体向上下各扩出去，
+     * 让它和隐藏 UI 后的沉浸全屏使用同一套画面尺度，只是在 UI 态被父容器裁剪。
+     */
+    private fun applyPlayerVideoViewportCrop() {
+        val cropForVisibleBars = showingPlayer && playerUiVisible && !playerImmersive
+        val top = if (cropForVisibleBars) playerSystemTopInset.takeIf { it > 0 } ?: systemBarFallbackInset("status_bar_height") else 0
+        val bottom = if (cropForVisibleBars) playerSystemBottomInset.takeIf { it > 0 } ?: systemBarFallbackInset("navigation_bar_height") else 0
+        updateFrameCrop(binding.videoFront, top, bottom)
+        updateFrameCrop(binding.photoPreview, top, bottom)
+        updateFrameCrop(binding.placeholderFront, top, bottom)
+    }
+
+    private fun updateFrameCrop(view: View, top: Int, bottom: Int) {
+        val params = view.layoutParams as? FrameLayout.LayoutParams ?: return
+        val nextTop = -top
+        val nextBottom = -bottom
+        if (params.topMargin == nextTop && params.bottomMargin == nextBottom) return
+        params.topMargin = nextTop
+        params.bottomMargin = nextBottom
+        view.layoutParams = params
+    }
+
+    private fun systemBarFallbackInset(name: String): Int {
+        val id = resources.getIdentifier(name, "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else 0
     }
 
     private fun updateConstraintMargins(view: View, top: Int? = null, bottom: Int? = null) {
@@ -509,54 +541,49 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
             .start()
     }
 
-    private fun enterPlayerFullscreenLayout(showBars: Boolean) {
+    private fun setPlayerImmersive(immersive: Boolean) {
+        playerImmersive = immersive
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(false)
-            val controller = window.insetsController ?: return
-            if (showBars) {
-                controller.show(WindowInsets.Type.systemBars())
-            } else {
-                controller.hide(WindowInsets.Type.systemBars())
-                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            WindowCompat.setDecorFitsSystemWindows(window, !immersive)
+            window.insetsController?.let { controller ->
+                if (immersive) {
+                    controller.hide(WindowInsets.Type.systemBars())
+                    controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                } else {
+                    controller.show(WindowInsets.Type.systemBars())
+                }
             }
         } else {
             @Suppress("DEPRECATION")
-            window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+            if (immersive) window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN) else window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
             @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = if (showBars) {
-                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            } else {
+            window.decorView.systemUiVisibility = if (immersive) {
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
                     View.SYSTEM_UI_FLAG_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                     View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            } else {
+                View.SYSTEM_UI_FLAG_VISIBLE
             }
         }
+        applyPlayerVideoViewportCrop()
         binding.previewContainer.post { binding.previewContainer.requestApplyInsets() }
     }
 
-    private fun hidePlayerSystemBars() {
-        enterPlayerFullscreenLayout(showBars = false)
-    }
-
-    private fun showPlayerSystemBarsKeepingLayout() {
-        exitPlayerImmersive()
-    }
-
     private fun exitPlayerImmersive() {
+        playerImmersive = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.insetsController?.show(WindowInsets.Type.systemBars())
-            window.setDecorFitsSystemWindows(true)
+            WindowCompat.setDecorFitsSystemWindows(window, true)
         } else {
             @Suppress("DEPRECATION")
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
         }
+        applyPlayerVideoViewportCrop()
     }
 
     private fun setPlaybackButtonState(playing: Boolean) {

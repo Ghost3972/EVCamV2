@@ -8,22 +8,13 @@ import java.util.Locale
 
 object V2PlaybackListCache {
     private const val CACHE_FILE_NAME = "v2_playback_video_list.json"
-    @Volatile private var memoryEntries: List<Entry> = emptyList()
+    @Volatile private var memoryEntries: List<V2PlaybackListEntry> = emptyList()
 
-    data class Entry(
-        val key: String,
-        val path: String,
-        val length: Long,
-        val modified: Long,
-        val thumbnailPath: String? = null,
-        val thumbnailModified: Long = 0L,
-    )
-
-    fun load(context: Context): List<Entry> = runCatching {
+    fun load(context: Context): List<V2PlaybackListEntry> = runCatching {
         val cache = cacheFile(context)
         if (!cache.isFile || !cache.canRead() || cache.length() <= 0L) return emptyList()
         val array = JSONArray(cache.readText())
-        val entries = ArrayList<Entry>(array.length())
+        val entries = ArrayList<V2PlaybackListEntry>(array.length())
         for (i in 0 until array.length()) {
             val item = array.optJSONObject(i) ?: continue
             val path = item.optString("path")
@@ -34,7 +25,7 @@ object V2PlaybackListCache {
             if (!isPlayableVideoFile(file)) continue
             if (expectedLength > 0L && file.length() != expectedLength) continue
             if (expectedModified > 0L && file.lastModified() != expectedModified) continue
-            entries += Entry(
+            entries += V2PlaybackListEntry(
                 key = item.optString("key", file.nameWithoutExtension).ifBlank { file.nameWithoutExtension },
                 path = file.absolutePath,
                 length = file.length(),
@@ -46,18 +37,18 @@ object V2PlaybackListCache {
         entries.sortedByDescending { it.key.lowercase(Locale.US) }
     }.getOrDefault(emptyList())
 
-    fun loadFast(context: Context): List<Entry> = runCatching {
+    fun loadFast(context: Context): List<V2PlaybackListEntry> = runCatching {
         memoryEntries.takeIf { it.isNotEmpty() }?.let { return it }
         val cache = cacheFile(context)
         if (!cache.isFile || !cache.canRead() || cache.length() <= 0L) return emptyList()
         val array = JSONArray(cache.readText())
-        val entries = ArrayList<Entry>(array.length())
+        val entries = ArrayList<V2PlaybackListEntry>(array.length())
         for (i in 0 until array.length()) {
             val item = array.optJSONObject(i) ?: continue
             val path = item.optString("path")
             if (path.isBlank()) continue
             val fileName = File(path).nameWithoutExtension
-            entries += Entry(
+            entries += V2PlaybackListEntry(
                 key = item.optString("key", fileName).ifBlank { fileName },
                 path = path,
                 length = item.optLong("length", 0L),
@@ -69,9 +60,9 @@ object V2PlaybackListCache {
         entries.sortedByDescending { it.key.lowercase(Locale.US) }.also { memoryEntries = it }
     }.getOrDefault(emptyList())
 
-    fun save(context: Context, entries: List<Entry>) {
+    fun save(context: Context, entries: List<V2PlaybackListEntry>) {
         runCatching {
-            val normalized = entries.distinctBy { it.key }.sortedByDescending { it.key.lowercase(Locale.US) }
+            val normalized = entries.distinctBy { it.path }.sortedByDescending { it.key.lowercase(Locale.US) }
             if (normalized == memoryEntries) return
             memoryEntries = normalized
             val array = JSONArray()
@@ -95,7 +86,7 @@ object V2PlaybackListCache {
     fun upsertVideo(context: Context, video: File) {
         if (!isPlayableVideoFile(video)) return
         val thumbnail = defaultThumbnailFile(video).takeIf { it.isFile && it.length() > 0L }
-        val next = Entry(
+        val next = V2PlaybackListEntry(
             key = video.nameWithoutExtension,
             path = video.absolutePath,
             length = video.length(),
@@ -103,14 +94,14 @@ object V2PlaybackListCache {
             thumbnailPath = thumbnail?.absolutePath,
             thumbnailModified = thumbnail?.lastModified() ?: 0L,
         )
-        save(context, (loadFast(context).filterNot { it.key == next.key } + next))
+        save(context, (loadFast(context).filterNot { it.path == next.path } + next))
     }
 
     @Synchronized
     fun updateThumbnail(context: Context, video: File, thumbnail: File) {
         if (!isPlayableVideoFile(video) || !thumbnail.isFile || thumbnail.length() <= 0L) return
-        val entries = loadFast(context).filterNot { it.key == video.nameWithoutExtension }
-        val next = Entry(
+        val entries = loadFast(context).filterNot { it.path == video.absolutePath }
+        val next = V2PlaybackListEntry(
             key = video.nameWithoutExtension,
             path = video.absolutePath,
             length = video.length(),
@@ -124,8 +115,7 @@ object V2PlaybackListCache {
     @Synchronized
     fun removeVideo(context: Context, video: File) {
         val path = video.absolutePath
-        val key = video.nameWithoutExtension
-        save(context, loadFast(context).filterNot { it.path == path || it.key == key })
+        save(context, loadFast(context).filterNot { it.path == path })
     }
 
     private fun writeArray(context: Context, array: JSONArray) {

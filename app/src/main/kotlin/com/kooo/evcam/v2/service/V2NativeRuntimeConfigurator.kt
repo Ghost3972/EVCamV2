@@ -4,7 +4,8 @@ import android.content.Context
 import android.util.Size
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.nativebridge.V2NativeCompositor
-import com.kooo.evcam.v2.settings.V2FisheyeSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
+import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 
 object V2NativeRuntimeConfigurator {
     data class SlotConfig(val index: Int, val label: String)
@@ -20,11 +21,13 @@ object V2NativeRuntimeConfigurator {
         layoutMode: Int,
         slots: List<SlotConfig>,
         logPrefix: String,
+        fisheye: V2SettingsSnapshot.Fisheye? = null,
     ): Boolean {
         if (!compositor.isAvailable) return false
 
-        val enabled = V2FisheyeSettings.isEnabled(context)
-        val params = slots.map { V2FisheyeSettings.paramsForIndex(context, it.index) }
+        val fisheyeConfig = fisheye ?: V2SettingsRepository.fisheyeConfig(context)
+        val enabled = fisheyeConfig.enabled
+        val params = List(V2_CAMERA_SLOT_COUNT) { fisheyeConfig.paramsForIndex(it) }
         val ok = compositor.configureRuntime(
             recordingSize.width,
             recordingSize.height,
@@ -33,15 +36,15 @@ object V2NativeRuntimeConfigurator {
             sideLeftRotation,
             sideRightRotation,
             layoutMode,
-            BooleanArray(4) { enabled },
-            FloatArray(4) { params.getOrNull(it)?.k1 ?: V2FisheyeSettings.DEFAULT_K1 },
-            FloatArray(4) { params.getOrNull(it)?.k2 ?: V2FisheyeSettings.DEFAULT_K2 },
-            FloatArray(4) { params.getOrNull(it)?.zoom ?: V2FisheyeSettings.DEFAULT_ZOOM },
-            FloatArray(4) { params.getOrNull(it)?.centerX ?: V2FisheyeSettings.DEFAULT_CENTER_X },
-            FloatArray(4) { params.getOrNull(it)?.centerY ?: V2FisheyeSettings.DEFAULT_CENTER_Y },
+            BooleanArray(V2_CAMERA_SLOT_COUNT) { enabled },
+            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k1 },
+            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k2 },
+            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].zoom },
+            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].centerX },
+            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].centerY },
         )
         val summary = slots.joinToString { slot ->
-            val p = params.getOrNull(slot.index) ?: V2FisheyeSettings.defaultParamsForIndex(slot.index)
+            val p = fisheyeConfig.paramsForIndex(slot.index)
             "${slot.label}:${p.k1}/${p.k2}/${p.zoom}"
         }
         V2AppLog.i(

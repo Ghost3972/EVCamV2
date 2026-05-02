@@ -7,7 +7,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2KeepAliveSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 
 class V2KeepAliveProvider : ContentProvider() {
     override fun onCreate(): Boolean {
@@ -17,7 +17,7 @@ class V2KeepAliveProvider : ContentProvider() {
             V2AppLog.i(TAG, "onCreate early init")
             V2KeepAliveStatus.recordProvider(context)
             V2KeepAliveStatus.recordTrigger(context, "provider", "early_init")
-            if (!V2KeepAliveSettings.isKeepAliveEnabled(context)) {
+            if (!V2SettingsRepository.keepAlivePolicy(context).enabled) {
                 V2AppLog.i(TAG, "early init skipped: keep alive disabled")
                 return false
             }

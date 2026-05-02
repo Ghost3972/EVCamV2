@@ -3,7 +3,8 @@ package com.kooo.evcam.v2.service
 import android.content.Context
 import android.os.Handler
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.settings.V2AvoidanceSettings
+import com.kooo.evcam.v2.settings.V2SettingsRepository
+import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 
 class V2AvoidanceController(
     private val context: Context,
@@ -22,6 +23,7 @@ class V2AvoidanceController(
     private val onScheduleAutoRecording: () -> Unit,
     private val showToast: (String) -> Unit,
 ) {
+    @Volatile private var config: V2SettingsSnapshot.Avoidance = V2SettingsRepository.avoidanceConfig(context)
     private var snapshot: Snapshot? = null
     private var target: String? = null
     private var lastDecisionLogMs = 0L
@@ -38,9 +40,19 @@ class V2AvoidanceController(
     }
 
     fun start() {
+        updateConfig(V2SettingsRepository.avoidanceConfig(context))
         handler.removeCallbacks(tick)
         handler.post(tick)
-        V2AppLog.i(TAG, "avoidance monitor started targets=${V2AvoidanceSettings.targetValues(context).joinToString()} behavior=${V2AvoidanceSettings.behaviorLabels(V2AvoidanceSettings.behaviorMask(context))}")
+        V2AppLog.i(TAG, "avoidance monitor started targets=${config.targets.joinToString()} behavior=${config.behaviorLabels()}")
+    }
+
+    fun updateConfig(next: V2SettingsSnapshot.Avoidance) {
+        val old = config
+        config = next
+        if (!next.enabled && snapshot != null) exit()
+        if (old != next) {
+            V2AppLog.i(TAG, "avoidance config updated targets=${next.targets.joinToString()} behavior=${next.behaviorLabels()}")
+        }
     }
 
     fun stop() {
@@ -54,19 +66,19 @@ class V2AvoidanceController(
     }
 
     fun currentTarget(): String? {
-        val behaviorMask = V2AvoidanceSettings.behaviorMask(context)
+        val behaviorMask = config.behaviorMask
         val displayOn = isDisplayPowerOn()
-        val targets = V2AvoidanceSettings.targetValues(context)
+        val targets = config.targets
         val current = if (behaviorMask == 0 || !displayOn) null else foregroundAppMonitor.findForegroundTarget(targets)
         logDecision("currentTarget", behaviorMask, displayOn, targets, current, current != null)
         return current
     }
 
     fun shouldAvoidBlindSpotWindow(): Boolean {
-        val behaviorMask = V2AvoidanceSettings.behaviorMask(context)
+        val behaviorMask = config.behaviorMask
         val displayOn = isDisplayPowerOn()
-        val hideBlindSpotEnabled = behaviorMask and V2AvoidanceSettings.BEHAVIOR_HIDE_BLIND_SPOT != 0
-        val targets = V2AvoidanceSettings.targetValues(context)
+        val hideBlindSpotEnabled = config.hideBlindSpot
+        val targets = config.targets
         val current = if (hideBlindSpotEnabled && displayOn && !isActive) foregroundAppMonitor.findForegroundTarget(targets) else target
         val avoid = hideBlindSpotEnabled && displayOn && (isActive || current != null)
         logDecision("shouldAvoidBlindSpotWindow", behaviorMask, displayOn, targets, current, avoid)
@@ -74,9 +86,9 @@ class V2AvoidanceController(
     }
 
     private fun checkTarget() {
-        val behaviorMask = V2AvoidanceSettings.behaviorMask(context)
+        val behaviorMask = config.behaviorMask
         val displayOn = isDisplayPowerOn()
-        val targets = V2AvoidanceSettings.targetValues(context)
+        val targets = config.targets
         val currentTarget = if (behaviorMask == 0 || !displayOn) null else foregroundAppMonitor.findForegroundTarget(targets)
         logDecision("checkTarget", behaviorMask, displayOn, targets, currentTarget, currentTarget != null)
         when {
@@ -97,9 +109,9 @@ class V2AvoidanceController(
         )
         snapshot = currentSnapshot
         this.target = target
-        V2AppLog.i(TAG, "enter avoidance target=$target behavior=${V2AvoidanceSettings.behaviorLabels(behaviorMask)} wasRecording=${currentSnapshot.wasRecording} wasUiVisible=${currentSnapshot.wasUiVisible}")
+        V2AppLog.i(TAG, "enter avoidance target=$target behavior=${config.behaviorLabels()} wasRecording=${currentSnapshot.wasRecording} wasUiVisible=${currentSnapshot.wasUiVisible}")
 
-        if (behaviorMask and V2AvoidanceSettings.BEHAVIOR_HIDE_BLIND_SPOT != 0) {
+        if (config.hideBlindSpot) {
             V2AppLog.i(TAG, "avoidance hide blind spot overlay")
             onHideBlindSpot()
         }
@@ -107,11 +119,11 @@ class V2AvoidanceController(
         showToast("避让中")
         onCancelAutoRecording()
 
-        if (behaviorMask and V2AvoidanceSettings.BEHAVIOR_EXIT_FOREGROUND != 0) {
+        if (config.exitForeground) {
             V2AppLog.i(TAG, "avoidance hide UI")
             onHideUi()
         }
-        if (behaviorMask and V2AvoidanceSettings.BEHAVIOR_STOP_RECORDING != 0 && isRecording()) {
+        if (config.stopRecording && isRecording()) {
             V2AppLog.i(TAG, "avoidance stop recording")
             onStopRecording()
         }
@@ -154,7 +166,7 @@ class V2AvoidanceController(
         V2AppLog.i(
             TAG,
             "avoidance decision source=$source result=$result active=$isActive activeTarget=$target " +
-                "behaviorMask=$behaviorMask behavior=${V2AvoidanceSettings.behaviorLabels(behaviorMask)} " +
+                "behaviorMask=$behaviorMask behavior=${config.behaviorLabels()} " +
                 "displayOn=$displayOn targets=${targets.joinToString()} currentTarget=$currentTarget"
         )
     }

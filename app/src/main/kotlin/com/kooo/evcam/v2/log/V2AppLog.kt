@@ -37,6 +37,10 @@ object V2AppLog {
     fun i(tag: String, message: String, throwable: Throwable? = null) = log(Log.INFO, tag, message, throwable)
     fun w(tag: String, message: String, throwable: Throwable? = null) = log(Log.WARN, tag, message, throwable)
     fun e(tag: String, message: String, throwable: Throwable? = null) = log(Log.ERROR, tag, message, throwable)
+    fun perf(tag: String, operation: String, elapsedMs: Long, details: String = "") {
+        val suffix = if (details.isBlank()) "" else " $details"
+        i(tag, "perf $operation=${elapsedMs}ms$suffix")
+    }
 
     fun saveToPersistentLog(context: Context) {
         val snapshot = synchronized(lock) { buffer.toList() }

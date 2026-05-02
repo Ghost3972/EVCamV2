@@ -1,5 +1,6 @@
 package com.kooo.evcam.v2.nativebridge
 
+import android.graphics.Bitmap
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 
@@ -52,6 +53,7 @@ object VulkanNative {
     external fun startRecordingSession(handle: Long, fps: Int, segmentDurationMs: Long, wallClockMs: Long): Long
     external fun stopRecordingSession(handle: Long): Boolean
     external fun recordingTickAndRender(handle: Long, wallClockMs: Long): Long
+    external fun updateRecordingOverlayBitmap(handle: Long, bitmap: Bitmap, x: Float, y: Float): Boolean
     external fun getRecordingNextTickDelayMs(handle: Long): Long
     external fun beginNextRecordingSegment(handle: Long): Long
     external fun completeRecordingSegmentSwitch(handle: Long, success: Boolean): Boolean

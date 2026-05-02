@@ -15,8 +15,7 @@ import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import com.kooo.evcam.v2.nativebridge.V2NativeCompositor
-import com.kooo.evcam.v2.settings.V2RecordingSettings
-import com.kooo.evcam.v2.settings.V2VehicleModelSettings
+import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 import com.kooo.evcam.v2.recording.V2CompositeRecorder
 import com.kooo.evcam.v2.recording.V2RecordingPipelineFactory
 import java.io.File
@@ -25,15 +24,21 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     interface Listener { fun onStatusChanged(status: String) }
 
     companion object {
-        private const val PREVIEW_MAX_FPS = 24
-        private const val RECORDING_PREVIEW_MAX_FPS = 24
+        private const val PREVIEW_MAX_FPS = 25
+        private const val RECORDING_PREVIEW_MAX_FPS = 25
         private const val PREVIEW_LOCK_BUSY_RETRY_MS = 8L
         private const val PREVIEW_LOCK_BUSY_RESULT = -2L
         private const val CAMERA_REOPEN_DELAY_MS = 500L
         private const val EVENT_SEGMENT_GUARD_MS = 5_000L
+        private const val PREVIEW_SLOW_RENDER_MS = 24L
+        private const val PREVIEW_PERF_LOG_INTERVAL_MS = 5_000L
+        private const val SIDE_LEFT_ROTATION = 270
+        private const val SIDE_RIGHT_ROTATION = 90
+        private const val DEFAULT_LAYOUT_MODE = 0
     }
 
-    private val specs = V2CameraSpecProvider.specsForCurrentModel(context)
+    private val specSet = V2CameraSpecProvider.current(context)
+    private val specs = specSet.specs
     private val slots = specs.mapIndexed { index, spec -> Slot(index, spec) }
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -45,6 +50,8 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     private val recordingFps = recordingConfig.fps
     private val segmentDurationMs = recordingConfig.segmentDurationMs
     private val recordingBitrate = recordingConfig.bitrate
+    private val segmentPrecreateEnabled = recordingConfig.segmentPrecreateEnabled
+    private val h265Enabled = recordingConfig.h265Enabled
     private val nativeCompositor = V2NativeCompositor.create(recordingSize)
     private val pipelineHandle = nativeCompositor.handle
     private val statusFormatter = V2CameraStatusFormatter(recordingSize, recordingFps)
@@ -61,18 +68,18 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     @Volatile private var previewRenderingEnabled = true
 
     init {
-        V2AppLog.i("V2CameraEngine", "init model=${V2VehicleModelSettings.getModel(context).label} specs=${specs.joinToString { "${it.label}:${it.cameraId}/rot${it.rotation}" }} recordingSize=${recordingSize.width}x${recordingSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$segmentDurationMs pipelineHandle=$pipelineHandle nativeLoaded=${V2NativeCompositor.isNativeLoaded()}")
+        V2AppLog.i("V2CameraEngine", "init model=${specSet.modelLabel} specs=${specs.joinToString { "${it.label}:${it.cameraId}/rot${it.rotation}" }} recordingSize=${recordingSize.width}x${recordingSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$segmentDurationMs precreate=$segmentPrecreateEnabled h265=$h265Enabled pipelineHandle=$pipelineHandle nativeLoaded=${V2NativeCompositor.isNativeLoaded()}")
         if (!nativeCompositor.isAvailable) V2AppLog.e("V2CameraEngine", "create compositor failed: ${V2NativeCompositor.nativeSummary()} lastError=${V2NativeCompositor.lastError()}")
         configureNativeRuntime(logPrefix = "init")
     }
 
-    fun applyFisheyeSettings() {
+    fun applyFisheyeSettings(fisheye: V2SettingsSnapshot.Fisheye? = null) {
         if (pipelineHandle == 0L) return
-        configureNativeRuntime(logPrefix = "fisheye")
+        configureNativeRuntime(logPrefix = "fisheye", fisheye = fisheye)
         publishStatus()
     }
 
-    private fun configureNativeRuntime(logPrefix: String) {
+    private fun configureNativeRuntime(logPrefix: String, fisheye: V2SettingsSnapshot.Fisheye? = null) {
         if (pipelineHandle == 0L) return
         V2NativeRuntimeConfigurator.configure(
             context = context,
@@ -80,12 +87,17 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             recordingSize = recordingSize,
             recordingFps = recordingFps,
             previewMaxFps = PREVIEW_MAX_FPS,
-            sideLeftRotation = 270,
-            sideRightRotation = 90,
-            layoutMode = 0,
-            slots = slots.map { V2NativeRuntimeConfigurator.SlotConfig(it.index, it.spec.label) },
+            sideLeftRotation = SIDE_LEFT_ROTATION,
+            sideRightRotation = SIDE_RIGHT_ROTATION,
+            layoutMode = DEFAULT_LAYOUT_MODE,
+            slots = nativeSlotConfigs(),
             logPrefix = logPrefix,
+            fisheye = fisheye,
         )
+    }
+
+    private fun nativeSlotConfigs(): List<V2NativeRuntimeConfigurator.SlotConfig> {
+        return slots.map { slot -> V2NativeRuntimeConfigurator.SlotConfig(slot.index, slot.spec.label) }
     }
 
     fun setCameraAccessAllowed(allowed: Boolean) {
@@ -132,13 +144,16 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             V2AppLog.w("V2CameraEngine", "startCameras skipped: screen is off")
             return
         }
-        V2AppLog.i("V2CameraEngine", "startCameras specs=${specs.joinToString { "${it.label}:${it.cameraId}" }}")
+        val startedMs = SystemClock.elapsedRealtime()
+        V2AppLog.i("V2CameraEngine", "startCameras slots=${specs.joinToString { "${it.label}:${it.cameraId}" }}")
         slots.forEach { slot -> slot.ensureInputSurface(); openCamera(slot) }
+        V2AppLog.perf("V2CameraEngine", "startCameras_schedule", SystemClock.elapsedRealtime() - startedMs, "requestedSlots=${slots.size}")
     }
 
     fun stopCameras() {
         cameraGeneration += 1
-        V2AppLog.i("V2CameraEngine", "stopCameras release all camera devices and previews")
+        val startedMs = SystemClock.elapsedRealtime()
+        V2AppLog.i("V2CameraEngine", "stopCameras openSlots=${slots.count { it.device != null || it.session != null }}")
         mainHandler.removeCallbacksAndMessages(null)
         slots.forEach { slot ->
             if (slot.previewAttached) {
@@ -147,6 +162,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             }
             slot.close()
         }
+        V2AppLog.perf("V2CameraEngine", "stopCameras", SystemClock.elapsedRealtime() - startedMs)
         publishStatus()
     }
 
@@ -158,7 +174,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             return
         }
 
-        V2AppLog.i("V2CameraEngine", "attach preview ${slot.spec.name}/${slot.spec.cameraId}")
+        V2AppLog.d("V2CameraEngine", "attach preview ${slot.spec.name}/${slot.spec.cameraId}")
         if (!nativeCompositor.attachPreview(index, surface, applyFisheye, applyNativeTransform)) {
             slot.previewAttached = false
             V2AppLog.e("V2CameraEngine", "attach preview failed ${slot.spec.name}/${slot.spec.cameraId}: ${nativeCompositor.lastError()}")
@@ -174,7 +190,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         val slot = slot(index) ?: return
         if (pipelineHandle == 0L) return
         slot.previewAttached = false
-        V2AppLog.i("V2CameraEngine", "detach preview ${slot.spec.name}/${slot.spec.cameraId}")
+        V2AppLog.d("V2CameraEngine", "detach preview ${slot.spec.name}/${slot.spec.cameraId}")
         nativeCompositor.detachPreview(index)
         statusFormatter.resetSlot(slot.index, slot.frameSignals, slot.renderedFrames)
         publishStatus()
@@ -194,7 +210,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     fun setPreviewRenderingEnabled(enabled: Boolean) {
         if (previewRenderingEnabled == enabled) return
         previewRenderingEnabled = enabled
-        V2AppLog.i("V2CameraEngine", "previewRenderingEnabled=$enabled recording=$recording")
+        V2AppLog.d("V2CameraEngine", "previewRenderingEnabled=$enabled recording=$recording")
         if (enabled) {
             slots.forEach { slot ->
                 if (slot.previewAttached) requestPreviewRenderFromEvent(slot, "preview_rendering_enabled")
@@ -210,7 +226,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     fun previewInputSize(index: Int): Size? = slot(index)?.inputSize ?: recordingSize
 
     fun startRecording() {
-        startRecordingInternal(fileSuffix = "", activeSegmentDurationMs = segmentDurationMs, precreateSegments = V2RecordingSettings.segmentPrecreateEnabled(context))
+        startRecordingInternal(fileSuffix = "", activeSegmentDurationMs = segmentDurationMs, precreateSegments = segmentPrecreateEnabled)
     }
 
     fun startEventRecording(durationMs: Long) {
@@ -235,8 +251,9 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             return
         }
 
+        val startedMs = SystemClock.elapsedRealtime()
         val segmentPrecreate = precreateSegments
-        V2AppLog.i("V2CameraEngine", "startRecording size=${recordingSize.width}x${recordingSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$activeSegmentDurationMs suffix=$fileSuffix precreate=$segmentPrecreate")
+        V2AppLog.i("V2CameraEngine", "startRecording size=${recordingSize.width}x${recordingSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$activeSegmentDurationMs suffix=$fileSuffix precreate=$segmentPrecreate h265=$h265Enabled")
         nativeCompositor.setPreviewMaxFps(RECORDING_PREVIEW_MAX_FPS)
         val next = V2RecordingPipelineFactory.create(
             context = context,
@@ -250,6 +267,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
                 recordingFps = recordingFps,
                 segmentDurationMs = activeSegmentDurationMs,
                 segmentPrecreateEnabled = segmentPrecreate,
+                h265Enabled = h265Enabled,
                 fileSuffix = fileSuffix,
             ),
             onFailure = { message -> handleRecorderFailure(message) },
@@ -266,6 +284,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         recording = true
         recordingStartedAtMs = SystemClock.elapsedRealtime()
         slots.forEach { requestPreviewRenderFromEvent(it, "recording_started", requirePreviewAttached = false) }
+        V2AppLog.perf("V2CameraEngine", "startRecording", SystemClock.elapsedRealtime() - startedMs, "suffix=$fileSuffix")
         publishStatus()
     }
 
@@ -283,6 +302,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
 
     private fun stopRecordingInternal(blockForRelease: Boolean) {
         if (!recording && compositor == null) return
+        val startedMs = SystemClock.elapsedRealtime()
         V2AppLog.i("V2CameraEngine", "stopRecording blockForRelease=$blockForRelease")
         recording = false
         recordingStartedAtMs = 0L
@@ -291,6 +311,8 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         if (blockForRelease) recorder?.stopBlockingForRelease() else recorder?.stop()
         nativeCompositor.setPreviewMaxFps(PREVIEW_MAX_FPS)
         slots.forEach { if (it.previewAttached) restartPreviewAfterRecordingStop(it) }
+        val operation = if (blockForRelease) "stopRecording" else "stopRecording_queue"
+        V2AppLog.perf("V2CameraEngine", operation, SystemClock.elapsedRealtime() - startedMs, "blockForRelease=$blockForRelease")
         publishStatus()
     }
     fun toggleRecording(): Boolean {
@@ -299,27 +321,12 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     }
     fun isRecording() = recording
     fun statusText() = status()
-    fun healthSnapshot(): V2CameraHealthSnapshot = V2CameraHealthSnapshot(
+    fun healthSnapshot(): V2CameraHealthSnapshot = V2CameraEngineStateMapper.healthSnapshot(
         cameraAccessAllowed = cameraAccessAllowed,
         released = released,
         recording = recording,
-        slots = slots.map { slot ->
-            V2CameraSlotHealth(
-                index = slot.index,
-                label = slot.spec.label,
-                cameraId = slot.spec.cameraId,
-                deviceOpen = slot.device != null,
-                sessionOpen = slot.session != null,
-                inputReady = slot.inputSurface != null,
-                previewAttached = slot.previewAttached,
-                frameSignals = slot.frameSignals,
-                renderedFrames = slot.renderedFrames,
-                renderFailures = slot.renderFailures,
-                lastRenderMs = slot.lastRenderMs,
-                lastError = slot.lastPreviewError
-            )
-        },
-        recordingMetrics = compositor?.metricsSnapshot()
+        slots = slotStates(),
+        recordingMetrics = compositor?.metricsSnapshot(),
     )
     fun release() {
         if (released) return
@@ -336,6 +343,26 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
 
     private fun slot(index: Int) = slots.getOrNull(index)
     private fun outputDir() = V2StoragePathHelper.outputDir(context)
+    private fun slotStates(): List<V2CameraSlotState> = slots.map { slot -> slot.toState() }
+
+    private fun Slot.toState(): V2CameraSlotState {
+        return V2CameraEngineStateMapper.slotState(
+            index = index,
+            label = spec.label,
+            cameraId = spec.cameraId,
+            inputSize = inputSize,
+            fallbackSize = recordingSize,
+            deviceOpen = device != null,
+            sessionOpen = session != null,
+            inputReady = inputSurface != null,
+            previewAttached = previewAttached,
+            frameSignals = frameSignals,
+            renderedFrames = renderedFrames,
+            renderFailures = renderFailures,
+            lastRenderMs = lastRenderMs,
+            lastPreviewError = lastPreviewError,
+        )
+    }
 
     private fun requestPreviewRender(slot: Slot) {
         if (released || pipelineHandle == 0L) return
@@ -383,6 +410,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     private fun postPreviewRender(slot: Slot, delayMs: Long = 0L) {
         val now = SystemClock.elapsedRealtime()
         val dueMs = now + delayMs.coerceAtLeast(0L)
+        if (!slot.previewRenderQueued) slot.previewQueuedAtMs = now
         if (!slot.previewRenderQueued || dueMs < slot.previewRenderDueMs) slot.previewRenderDueMs = dueMs
         slot.previewRenderQueued = true
         if (!previewBatchScheduled || dueMs < previewBatchDueMs) {
@@ -418,17 +446,36 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         if (!slot.previewAttached) return
         slot.lastPreviewPostMs = SystemClock.elapsedRealtime()
         val started = SystemClock.elapsedRealtime()
+        val queueDelayMs = (started - slot.previewQueuedAtMs).coerceAtLeast(0L)
         val ok = nativeCompositor.renderScheduledPreview(slot.index)
         slot.previewRetryPending = false
         slot.lastRenderMs = SystemClock.elapsedRealtime() - started
         if (ok) {
             slot.renderedFrames += 1
             slot.lastPreviewError = "无"
+            logPreviewFramePerfIfNeeded(slot, queueDelayMs)
         } else {
             slot.renderFailures += 1
             slot.lastPreviewError = nativeCompositor.lastError()
             V2AppLog.e("V2CameraEngine", "preview render failed ${slot.spec.name}: ${slot.lastPreviewError}")
         }
+    }
+
+    private fun logPreviewFramePerfIfNeeded(slot: Slot, queueDelayMs: Long) {
+        val now = SystemClock.elapsedRealtime()
+        val slow = slot.lastRenderMs >= PREVIEW_SLOW_RENDER_MS || queueDelayMs >= PREVIEW_SLOW_RENDER_MS
+        if (!slow && now - slot.lastPreviewPerfLogMs < PREVIEW_PERF_LOG_INTERVAL_MS) return
+        val elapsedMs = (now - slot.lastPreviewPerfLogMs).takeIf { it > 0L } ?: PREVIEW_PERF_LOG_INTERVAL_MS
+        val frameDelta = (slot.renderedFrames - slot.lastPreviewPerfFrames).coerceAtLeast(0L)
+        val fps = frameDelta * 1000f / elapsedMs.coerceAtLeast(1L)
+        slot.lastPreviewPerfLogMs = now
+        slot.lastPreviewPerfFrames = slot.renderedFrames
+        V2AppLog.perf(
+            "V2PreviewPerf",
+            if (slow) "previewFrame_slow" else "previewFrame",
+            slot.lastRenderMs,
+            "slot=${slot.spec.name}/${slot.spec.cameraId} queueMs=$queueDelayMs fps=${String.format(java.util.Locale.US, "%.1f", fps)} rendered=${slot.renderedFrames} failures=${slot.renderFailures} recording=$recording"
+        )
     }
 
     private fun restartPreviewAfterRecordingStop(slot: Slot) {
@@ -471,14 +518,15 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         }
         if (slot.device != null) return
         val slotHandler = slot.ensureThread()
-        try { V2AppLog.i("V2CameraEngine", "openCamera ${slot.spec.name}/$cameraId"); cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+        val openRequestedMs = SystemClock.elapsedRealtime()
+        try { V2AppLog.d("V2CameraEngine", "openCamera ${slot.spec.name}/$cameraId"); cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 if (released || !cameraAccessAllowed || generation != cameraGeneration || slot.inputSurface == null) {
                     V2AppLog.w("V2CameraEngine", "camera opened after release/disable, closing ${slot.spec.name}/${slot.spec.cameraId}")
                     camera.close()
                     return
                 }
-                V2AppLog.i("V2CameraEngine", "camera opened ${slot.spec.name}/${slot.spec.cameraId}")
+                V2AppLog.perf("V2CameraEngine", "openCamera", SystemClock.elapsedRealtime() - openRequestedMs, "slot=${slot.spec.name}/${slot.spec.cameraId}")
                 slot.device = camera
                 startPreview(slot)
             }
@@ -525,6 +573,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         if (!cameraAccessAllowed) return
         val generation = cameraGeneration
         try {
+            val sessionRequestedMs = SystemClock.elapsedRealtime()
             val builder = slot.device?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW) ?: return
             val inputSurface = slot.inputSurface ?: return
             builder.addTarget(inputSurface)
@@ -541,7 +590,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
                     slot.session?.close()
                     slot.session = session
                     session.setRepeatingRequest(builder.build(), null, slot.handler)
-                    V2AppLog.d("V2CameraEngine", "preview session configured ${slot.spec.name}/${slot.spec.cameraId}")
+                    V2AppLog.perf("V2CameraEngine", "previewSession", SystemClock.elapsedRealtime() - sessionRequestedMs, "slot=${slot.spec.name}/${slot.spec.cameraId}")
                     if (slot.previewAttached) requestPreviewRenderFromEvent(slot, "session_configured")
                 }
                 override fun onConfigureFailed(session: CameraCaptureSession) {
@@ -575,18 +624,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         recording = recording,
         recordingStartedAtMs = recordingStartedAtMs,
         metrics = compositor?.metricsSnapshot(),
-        slots = slots.map { slot ->
-            V2CameraStatusFormatter.SlotStatus(
-                index = slot.index,
-                label = slot.spec.label,
-                inputSizeLabel = slot.inputSizeLabel(),
-                frameSignals = slot.frameSignals,
-                renderedFrames = slot.renderedFrames,
-                renderFailures = slot.renderFailures,
-                lastPreviewError = slot.lastPreviewError,
-                lastRenderMs = slot.lastRenderMs
-            )
-        }
+        slots = V2CameraEngineStateMapper.statusSlots(slotStates()),
     )
 
     private fun publishStatusIfNeeded() { if (SystemClock.elapsedRealtime() - lastPreviewDebugUpdateMs < 1000L) return; lastPreviewDebugUpdateMs = SystemClock.elapsedRealtime(); publishStatus() }
@@ -610,7 +648,9 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         var previewRetryPending = false
         var previewRenderQueued = false
         var previewRenderDueMs = 0L
-
+        var previewQueuedAtMs = 0L
+        var lastPreviewPerfLogMs = 0L
+        var lastPreviewPerfFrames = 0L
         private var thread: HandlerThread? = null
         var handler: Handler? = null
         fun ensureThread(): Handler {
@@ -621,7 +661,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         }
 
         fun close() {
-            V2AppLog.i(
+            V2AppLog.d(
                 "V2CameraEngine",
                 "close slot ${spec.name}/${spec.cameraId} hasSession=${session != null} hasDevice=${device != null} hasInput=${inputSurface != null}"
             )

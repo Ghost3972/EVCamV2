@@ -5,10 +5,13 @@ plugins {
 android {
     namespace = "com.kooo.evcam"
     compileSdk = 36
+    buildToolsVersion = "36.0.0"
+    ndkVersion = "28.2.13676358"
 
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
@@ -27,7 +30,7 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = 75
-        versionName = "2.0.0-test-05021729"
+        versionName = "2.0.0-test-05021848"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -67,6 +70,8 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:model"))
+
     implementation(libs.appcompat)
     implementation(libs.material)
     implementation(libs.activity)

@@ -62,7 +62,7 @@ class V2VideoPlaybackAdapter(
     }
 
     fun addOrUpdate(group: V2VideoGroup): Int {
-        val existing = groups.indexOfFirst { it.timestamp == group.timestamp }
+        val existing = groups.indexOfFirst { it.identityKey == group.identityKey }
         if (existing >= 0) {
             groups[existing] = group
         } else {
@@ -71,15 +71,15 @@ class V2VideoPlaybackAdapter(
         }
         rebuildRows()
         notifyDataSetChanged()
-        return rows.indexOfFirst { it is Row.Video && it.group.timestamp == group.timestamp }
+        return rows.indexOfFirst { it is Row.Video && it.group.identityKey == group.identityKey }
     }
 
-    fun updateThumbnail(timestamp: String, thumbnail: Bitmap) {
-        val index = groups.indexOfFirst { it.timestamp == timestamp }
+    fun updateThumbnail(identityKey: String, thumbnail: Bitmap) {
+        val index = groups.indexOfFirst { it.identityKey == identityKey }
         if (index < 0) return
         val updated = groups[index].copy(thumbnail = thumbnail)
         groups[index] = updated
-        val rowIndex = rows.indexOfFirst { it is Row.Video && it.group.timestamp == timestamp }
+        val rowIndex = rows.indexOfFirst { it is Row.Video && it.group.identityKey == identityKey }
         if (rowIndex >= 0) {
             rows[rowIndex] = Row.Video(updated)
             notifyItemChanged(rowIndex)
