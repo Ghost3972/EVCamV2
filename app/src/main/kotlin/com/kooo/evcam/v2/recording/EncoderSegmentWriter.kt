@@ -53,6 +53,7 @@ internal class EncoderSegmentWriter(
     private var lastDrainPerfLogMs = 0L
     private var lastSlowWriteLogMs = 0L
 
+    override val backend: V2RecordingBackend = V2RecordingBackend.AndroidMedia
     override val surface: Surface? get() = inputSurface
 
     override fun startSegment(segmentIndex: Int, segmentWallClockMs: Long): File {

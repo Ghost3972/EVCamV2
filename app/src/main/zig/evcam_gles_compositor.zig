@@ -9,6 +9,10 @@ const c = @cImport({
     @cInclude("media/NdkMediaCodec.h");
     @cInclude("media/NdkMediaFormat.h");
     @cInclude("media/NdkMediaMuxer.h");
+    @cInclude("camera/NdkCameraManager.h");
+    @cInclude("camera/NdkCameraDevice.h");
+    @cInclude("camera/NdkCameraCaptureSession.h");
+    @cInclude("camera/NdkCaptureRequest.h");
     @cInclude("EGL/egl.h");
     @cInclude("EGL/eglext.h");
     @cInclude("GLES2/gl2.h");
@@ -28,6 +32,7 @@ const JNI_FALSE: c.jboolean = 0;
 const CHECK_RENDER_GL_ERROR = false;
 const PREVIEW_REQUEST_LOCK_BUSY: c.jlong = -2;
 const MAX_NATIVE_WRITERS = 4;
+const MAX_NATIVE_CAMERAS = 4;
 const COLOR_FORMAT_SURFACE: i32 = 0x7F000789;
 const O_RDWR_ANDROID: c_int = 2;
 const O_CREAT_ANDROID: c_int = 64;
@@ -51,6 +56,19 @@ const NativeSegmentWriter = struct {
     bitrate: i32 = 0,
     started: bool = false,
     muxer_started: bool = false,
+};
+
+const NativeCameraPreview = struct {
+    handle: c.jlong = 0,
+    manager: ?*c.ACameraManager = null,
+    device: ?*c.ACameraDevice = null,
+    session: ?*c.ACameraCaptureSession = null,
+    window: ?*c.ANativeWindow = null,
+    outputs: ?*c.ACaptureSessionOutputContainer = null,
+    output: ?*c.ACaptureSessionOutput = null,
+    target: ?*c.ACameraOutputTarget = null,
+    request: ?*c.ACaptureRequest = null,
+    sequence_id: c_int = -1,
 };
 
 const Input = struct {
@@ -213,6 +231,9 @@ var g_presentation_time_android: ?EglPresentationTimeAndroidFn = null;
 var g_native_writers: [MAX_NATIVE_WRITERS]NativeSegmentWriter = [_]NativeSegmentWriter{NativeSegmentWriter{}} ** MAX_NATIVE_WRITERS;
 var g_native_writer_used: [MAX_NATIVE_WRITERS]bool = [_]bool{false} ** MAX_NATIVE_WRITERS;
 var g_next_native_writer_handle: c.jlong = 1;
+var g_native_cameras: [MAX_NATIVE_CAMERAS]NativeCameraPreview = [_]NativeCameraPreview{NativeCameraPreview{}} ** MAX_NATIVE_CAMERAS;
+var g_native_camera_used: [MAX_NATIVE_CAMERAS]bool = [_]bool{false} ** MAX_NATIVE_CAMERAS;
+var g_next_native_camera_handle: c.jlong = 1;
 
 fn initError(comptime s: []const u8) [256:0]u8 {
     var out: [256:0]u8 = [_:0]u8{0} ** 256;
@@ -903,8 +924,9 @@ fn requestEncoderRenderLocked(p: *Pipe) bool {
 fn hasDirtyInput(p: *const Pipe) bool { for (p.input) |inp| if (inp.surface_texture != null and inp.encoder_generation != inp.frame_generation) return true; return false; }
 fn updateDirtyInputsLocked(env: [*c]c.JNIEnv, p: *Pipe) bool {
     for (&p.input) |*inp| {
-        if (inp.surface_texture != null and inp.encoder_generation != inp.frame_generation) {
-            if (inp.latched_generation != inp.frame_generation) {
+        const force_recording_latch = p.recording.recording;
+        if (inp.surface_texture != null and (force_recording_latch or inp.encoder_generation != inp.frame_generation)) {
+            if (force_recording_latch or inp.latched_generation != inp.frame_generation) {
                 inp.dirty_count += 1;
                 if (!updateSurfaceTexture(env, inp.surface_texture)) return false;
                 inp.latched_generation = inp.frame_generation;
@@ -982,6 +1004,47 @@ fn getNativeWriter(handle: c.jlong) ?*NativeSegmentWriter {
     setError("invalid native writer handle", .{});
     return null;
 }
+
+fn getNativeCamera(handle: c.jlong) ?*NativeCameraPreview {
+    for (0..MAX_NATIVE_CAMERAS) |i| if (g_native_camera_used[i] and g_native_cameras[i].handle == handle) return &g_native_cameras[i];
+    setError("invalid native camera handle", .{});
+    return null;
+}
+
+fn releaseNativeCameraResources(cam: *NativeCameraPreview) void {
+    if (cam.session) |session| {
+        _ = c.ACameraCaptureSession_stopRepeating(session);
+        c.ACameraCaptureSession_close(session);
+    }
+    cam.session = null;
+    if (cam.request) |request| c.ACaptureRequest_free(request);
+    cam.request = null;
+    if (cam.target) |target| c.ACameraOutputTarget_free(target);
+    cam.target = null;
+    if (cam.output) |output| c.ACaptureSessionOutput_free(output);
+    cam.output = null;
+    if (cam.outputs) |outputs| c.ACaptureSessionOutputContainer_free(outputs);
+    cam.outputs = null;
+    if (cam.device) |device| _ = c.ACameraDevice_close(device);
+    cam.device = null;
+    if (cam.window) |window| c.ANativeWindow_release(window);
+    cam.window = null;
+    if (cam.manager) |manager| c.ACameraManager_delete(manager);
+    cam.manager = null;
+    cam.sequence_id = -1;
+}
+
+fn onNativeCameraDisconnected(_: ?*anyopaque, _: ?*c.ACameraDevice) callconv(.c) void {
+    logi("NDK camera disconnected", .{});
+}
+
+fn onNativeCameraError(_: ?*anyopaque, _: ?*c.ACameraDevice, err_code: c_int) callconv(.c) void {
+    setError("NDK camera error={d}", .{err_code});
+}
+
+fn onNativeSessionClosed(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void { logd("NDK camera session closed", .{}); }
+fn onNativeSessionReady(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void { logd("NDK camera session ready", .{}); }
+fn onNativeSessionActive(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void { logd("NDK camera session active", .{}); }
 
 fn releaseNativeWriterResources(w: *NativeSegmentWriter) void {
     if (w.muxer) |muxer| {
@@ -1071,11 +1134,11 @@ fn resetInput(env: ?[*c]c.JNIEnv, p: *Pipe, index: usize, delete_texture: bool) 
     inp.encoder_generation = 0;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getNativeVersion(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, "gles-oes-zig-1"); }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_isVulkanAvailable(_: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jboolean { return JNI_FALSE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getVulkanSummary(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, "GLES/OES Zig native compositor"); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getNativeVersion(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, "gles-oes-zig-1"); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_isGlesAvailable(_: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jboolean { return JNI_FALSE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getGlesSummary(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, "GLES/OES Zig native compositor"); }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setCompositorRuntimeConfig(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray) callconv(.c) c.jboolean {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeConfig(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray) callconv(.c) c.jboolean {
     lockGlobal(); defer unlockGlobal();
     const p = getPipe(handle) orelse return JNI_FALSE;
     p.width = width; p.height = height; p.side_left_rotation = side_left_rotation; p.side_right_rotation = side_right_rotation; p.layout_mode = layout_mode;
@@ -1104,14 +1167,14 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setCompositorRuntimeC
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setPreviewMaxFps(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (fps <= 0) { p.preview_max_fps = 0; p.preview_min_interval_ms = 0; } else { p.preview_max_fps = @min(@max(fps, 1), 120); p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps); } logd("preview max fps={d} minIntervalMs={d}", .{ p.preview_max_fps, p.preview_min_interval_ms }); return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setPreviewMaxFps(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (fps <= 0) { p.preview_max_fps = 0; p.preview_min_interval_ms = 0; } else { p.preview_max_fps = @min(@max(fps, 1), 120); p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps); } logd("preview max fps={d} minIntervalMs={d}", .{ p.preview_max_fps, p.preview_min_interval_ms }); return JNI_TRUE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_startRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; p.recording.recording = true; p.recording.generation += 1; p.recording.fps = @min(@max(fps, 1), 120); p.encoder_fps = p.recording.fps; p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms; p.recording.segment_index = 0; p.recording.pending_segment_index = 0; p.recording.segment_switch_pending = false; p.recording.pending_segment_wall_clock_ms = 0; p.recording.requested_frames = 0; p.recording.rendered_frames = 0; p.recording.dropped_frames = 0; p.recording.last_tick_steady_ms = 0; p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; resetOverlayCache(&p.recording, wall_clock_ms); p.encoder_signal_count = 0; p.encoder_scheduled_count = 0; p.encoder_coalesced_count = 0; const first = floorToSegment(wall_clock_ms, p.recording.segment_duration_ms); p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms; p.encoder_pending = false; return first; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_stopRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; p.recording.recording = false; p.recording.segment_switch_pending = false; resetOverlayCache(&p.recording, 0); p.recording.generation += 1; p.encoder_pending = false; return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; p.recording.recording = true; p.recording.generation += 1; p.recording.fps = @min(@max(fps, 1), 120); p.encoder_fps = p.recording.fps; p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms; p.recording.segment_index = 0; p.recording.pending_segment_index = 0; p.recording.segment_switch_pending = false; p.recording.pending_segment_wall_clock_ms = 0; p.recording.requested_frames = 0; p.recording.rendered_frames = 0; p.recording.dropped_frames = 0; p.recording.last_tick_steady_ms = 0; p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; resetOverlayCache(&p.recording, wall_clock_ms); p.encoder_signal_count = 0; p.encoder_scheduled_count = 0; p.encoder_coalesced_count = 0; const first = floorToSegment(wall_clock_ms, p.recording.segment_duration_ms); p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms; p.encoder_pending = false; return first; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; p.recording.recording = false; p.recording.segment_switch_pending = false; resetOverlayCache(&p.recording, 0); p.recording.generation += 1; p.encoder_pending = false; return JNI_TRUE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_recordingTickAndRender(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; if (!p.recording.recording) return 0; p.recording.overlay_wall_clock_ms = wall_clock_ms; p.recording.last_tick_steady_ms = nowMs(); p.recording.requested_frames += 1; var flags: c.jlong = 0; if (requestEncoderRenderLocked(p)) { var rendered = false; const ok = renderEncoderLocked(env, p, true, &rendered); p.encoder_pending = false; if (!ok) return -1; if (rendered) { p.recording.rendered_frames += 1; flags |= 1; } else { p.recording.dropped_frames += 1; flags |= 2; } } else { p.recording.dropped_frames += 1; flags |= 2; } if (wall_clock_ms >= p.recording.next_segment_wall_clock_ms and !p.recording.segment_switch_pending) { p.recording.segment_switch_pending = true; p.recording.pending_segment_index = p.recording.segment_index + 1; p.recording.pending_segment_wall_clock_ms = p.recording.next_segment_wall_clock_ms; flags |= 4; flags |= (@as(c.jlong, p.recording.pending_segment_index) << 32); } return flags; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_recordingTickAndRender(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; if (!p.recording.recording) return 0; p.recording.overlay_wall_clock_ms = wall_clock_ms; p.recording.last_tick_steady_ms = nowMs(); p.recording.requested_frames += 1; var flags: c.jlong = 0; if (requestEncoderRenderLocked(p)) { var rendered = false; const ok = renderEncoderLocked(env, p, false, &rendered); p.encoder_pending = false; if (!ok) return -1; if (rendered) { p.recording.rendered_frames += 1; flags |= 1; } else { p.recording.dropped_frames += 1; flags |= 2; } } else { p.recording.dropped_frames += 1; flags |= 2; } if (wall_clock_ms >= p.recording.next_segment_wall_clock_ms and !p.recording.segment_switch_pending) { p.recording.segment_switch_pending = true; p.recording.pending_segment_index = p.recording.segment_index + 1; p.recording.pending_segment_wall_clock_ms = p.recording.next_segment_wall_clock_ms; flags |= 4; flags |= (@as(c.jlong, p.recording.pending_segment_index) << 32); } return flags; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_updateRecordingOverlayBitmap(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, bitmap: c.jobject, x: c.jfloat, y: c.jfloat) callconv(.c) c.jboolean {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_updateRecordingOverlayBitmap(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, bitmap: c.jobject, x: c.jfloat, y: c.jfloat) callconv(.c) c.jboolean {
     lockGlobal();
     defer unlockGlobal();
     const p = getPipe(handle) orelse return JNI_FALSE;
@@ -1152,11 +1215,11 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_updateRecordingOverla
     p.recording.overlay_geometry_height = 0;
     return JNI_TRUE;
 }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getRecordingNextTickDelayMs(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return -1; if (!p.recording.recording) return -1; const interval = recordingTickIntervalMs(&p.recording); if (p.recording.last_tick_steady_ms <= 0) return 0; const remaining = interval - (nowMs() - p.recording.last_tick_steady_ms); return if (remaining > 0) remaining else 0; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_beginNextRecordingSegment(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; return if (p.recording.segment_switch_pending) p.recording.pending_segment_wall_clock_ms else p.recording.next_segment_wall_clock_ms; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_completeRecordingSegmentSwitch(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, success: c.jboolean) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (!p.recording.segment_switch_pending) return JNI_TRUE; if (success == JNI_TRUE) { p.recording.segment_index = p.recording.pending_segment_index; p.recording.next_segment_wall_clock_ms = p.recording.pending_segment_wall_clock_ms + p.recording.segment_duration_ms; } p.recording.segment_switch_pending = false; p.recording.pending_segment_index = 0; p.recording.pending_segment_wall_clock_ms = 0; return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getRecordingNextTickDelayMs(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return -1; if (!p.recording.recording) return -1; const interval = recordingTickIntervalMs(&p.recording); if (p.recording.last_tick_steady_ms <= 0) return 0; const remaining = interval - (nowMs() - p.recording.last_tick_steady_ms); return if (remaining > 0) remaining else 0; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_beginNextRecordingSegment(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; return if (p.recording.segment_switch_pending) p.recording.pending_segment_wall_clock_ms else p.recording.next_segment_wall_clock_ms; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_completeRecordingSegmentSwitch(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, success: c.jboolean) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (!p.recording.segment_switch_pending) return JNI_TRUE; if (success == JNI_TRUE) { p.recording.segment_index = p.recording.pending_segment_index; p.recording.next_segment_wall_clock_ms = p.recording.pending_segment_wall_clock_ms + p.recording.segment_duration_ms; } p.recording.segment_switch_pending = false; p.recording.pending_segment_index = 0; p.recording.pending_segment_wall_clock_ms = 0; return JNI_TRUE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_createNativeSegmentWriter(env: [*c]c.JNIEnv, _: c.jobject, width: c.jint, height: c.jint, fps: c.jint, bitrate: c.jint, mime_type: c.jstring) callconv(.c) c.jlong {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeSegmentWriter(env: [*c]c.JNIEnv, _: c.jobject, width: c.jint, height: c.jint, fps: c.jint, bitrate: c.jint, mime_type: c.jstring) callconv(.c) c.jlong {
     if (mime_type == null or width <= 0 or height <= 0 or fps <= 0 or bitrate <= 0) {
         setError("invalid native segment writer config", .{});
         return 0;
@@ -1230,7 +1293,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_createNativeSegmentWr
     return handle;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterInputSurface(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jobject {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterInputSurface(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jobject {
     lockGlobal();
     defer unlockGlobal();
     const w = getNativeWriter(writer_handle) orelse return null;
@@ -1241,7 +1304,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterIn
     return c.ANativeWindow_toSurface(env, window);
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterStartSegment(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong, path: c.jstring, segment_index: c.jint, wall_clock_ms: c.jlong) callconv(.c) c.jboolean {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterStartSegment(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong, path: c.jstring, segment_index: c.jint, wall_clock_ms: c.jlong) callconv(.c) c.jboolean {
     _ = segment_index;
     _ = wall_clock_ms;
     if (path == null) {
@@ -1291,14 +1354,14 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterSt
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterDrain(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong, timeout_us: c.jlong) callconv(.c) c.jlong {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterDrain(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong, timeout_us: c.jlong) callconv(.c) c.jlong {
     lockGlobal();
     defer unlockGlobal();
     const w = getNativeWriter(writer_handle) orelse return -1;
     return drainNativeWriterLocked(w, timeout_us);
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterStop(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jboolean {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterStop(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jboolean {
     lockGlobal();
     defer unlockGlobal();
     const w = getNativeWriter(writer_handle) orelse return JNI_FALSE;
@@ -1324,7 +1387,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterSt
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterRelease(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jboolean {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterRelease(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jboolean {
     lockGlobal();
     defer unlockGlobal();
     for (0..MAX_NATIVE_WRITERS) |i| {
@@ -1337,23 +1400,150 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterRe
     return JNI_FALSE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getMetricsSnapshot(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlongArray { lockGlobal(); defer unlockGlobal(); var values = [_]c.jlong{0} ** 48; if (getPipe(handle)) |p| { values[0]=p.preview_render_count; values[1]=p.encoder_render_count; values[2]=p.encoder_drop_count; values[3]=p.no_surface_count; values[4]=p.last_render_ms; values[5]=p.recording.requested_frames; values[6]=p.recording.rendered_frames; values[7]=p.recording.dropped_frames; values[8]=p.recording.segment_index; values[9]=if(p.recording.segment_switch_pending)1 else 0; values[10]=p.recording.pending_segment_index; values[11]=p.recording.next_segment_wall_clock_ms; values[12]=p.encoder_signal_count; values[13]=p.encoder_scheduled_count; values[14]=p.encoder_coalesced_count; values[15]=p.preview_max_fps; values[16]=p.preview_min_interval_ms; values[17]=p.config_version; values[18]=if(p.encoder_pending)1 else 0; values[19]=p.recording.generation; for (0..4) |i| { const base = 20 + i*7; values[base]=p.input[i].frame_signal_count; values[base+1]=p.input[i].preview_scheduled_count; values[base+2]=p.input[i].preview_delayed_count; values[base+3]=p.input[i].preview_coalesced_count; values[base+4]=p.input[i].update_count; values[base+5]=p.input[i].preview_render_count; values[base+6]=p.input[i].preview_drop_count; } } const result = env.*[0].NewLongArray.?(env, 48); if (result != null) env.*[0].SetLongArrayRegion.?(env, result, 0, 48, &values); return result; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPreview(env: [*c]c.JNIEnv, _: c.jobject, camera_id: c.jstring, surface: c.jobject) callconv(.c) c.jlong {
+    if (camera_id == null or surface == null) {
+        setError("invalid native camera args", .{});
+        return 0;
+    }
+    const camera_id_chars = env.*[0].GetStringUTFChars.?(env, camera_id, null) orelse {
+        setError("native camera id unavailable", .{});
+        return 0;
+    };
+    defer env.*[0].ReleaseStringUTFChars.?(env, camera_id, camera_id_chars);
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_createCompositor(_: [*c]c.JNIEnv, _: c.jobject, width: c.jint, height: c.jint) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |i| if (!g_used[i]) { const handle = g_next_handle; g_next_handle += 1; g_pipes[i] = Pipe{}; g_used[i] = true; g_pipes[i].handle = handle; g_pipes[i].width = width; g_pipes[i].height = height; if (!initEgl(&g_pipes[i])) { g_used[i] = false; return 0; } updateEncoderLayout(&g_pipes[i]); return handle; }; setError("no free native pipe slots", .{}); return 0; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_createOesTexture(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jint { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; if (index < 0 or index >= 4 or !initEgl(p) or !makePbufferCurrent(p)) return 0; const i: usize = @intCast(index); if (p.input[i].texture != 0) { c.glDeleteTextures(1, &p.input[i].texture); p.input[i].texture = 0; } var tex: c.GLuint = 0; c.glGenTextures(1, &tex); if (tex == 0) { setError("glGenTextures returned 0", .{}); clearCurrent(p); return 0; } c.glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE); if (glError("createOesTexture")) |e| { setErrorSlice(e); c.glDeleteTextures(1, &tex); clearCurrent(p); return 0; } p.input[i].texture = tex; clearCurrent(p); logd("created OES texture index={d} tex={d}", .{index, tex}); return @intCast(tex); }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_destroyOesInput(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; resetInput(env, p, @intCast(index), true); logd("destroyed OES input index={d}", .{index}); return JNI_TRUE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_createOesInput(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface_texture: c.jobject) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); p.input[i].surface_texture = env.*[0].NewGlobalRef.?(env, surface_texture); p.input[i].dirty = false; p.input[i].has_latched_frame = false; p.input[i].preview_pending = false; p.input[i].frame_generation = 0; p.input[i].latched_generation = 0; p.input[i].preview_generation = 0; p.input[i].encoder_generation = 0; logd("created OES input index={d}", .{index}); return JNI_TRUE; }
+    var cam = NativeCameraPreview{};
+    cam.manager = c.ACameraManager_create() orelse {
+        setError("ACameraManager_create failed", .{});
+        return 0;
+    };
+    cam.window = c.ANativeWindow_fromSurface(env, surface) orelse {
+        releaseNativeCameraResources(&cam);
+        setError("native camera window unavailable", .{});
+        return 0;
+    };
+    var device_callbacks = c.ACameraDevice_StateCallbacks{
+        .context = null,
+        .onDisconnected = onNativeCameraDisconnected,
+        .onError = onNativeCameraError,
+    };
+    var device: ?*c.ACameraDevice = null;
+    var status = c.ACameraManager_openCamera(cam.manager.?, camera_id_chars, &device_callbacks, &device);
+    if (status != c.ACAMERA_OK or device == null) {
+        releaseNativeCameraResources(&cam);
+        setError("ACameraManager_openCamera failed status={d}", .{status});
+        return 0;
+    }
+    cam.device = device;
+
+    status = c.ACaptureSessionOutputContainer_create(&cam.outputs);
+    if (status != c.ACAMERA_OK or cam.outputs == null) {
+        releaseNativeCameraResources(&cam);
+        setError("ACaptureSessionOutputContainer_create failed status={d}", .{status});
+        return 0;
+    }
+    status = c.ACaptureSessionOutput_create(cam.window.?, &cam.output);
+    if (status != c.ACAMERA_OK or cam.output == null) {
+        releaseNativeCameraResources(&cam);
+        setError("ACaptureSessionOutput_create failed status={d}", .{status});
+        return 0;
+    }
+    status = c.ACaptureSessionOutputContainer_add(cam.outputs.?, cam.output.?);
+    if (status != c.ACAMERA_OK) {
+        releaseNativeCameraResources(&cam);
+        setError("ACaptureSessionOutputContainer_add failed status={d}", .{status});
+        return 0;
+    }
+    status = c.ACameraDevice_createCaptureRequest(cam.device.?, c.TEMPLATE_PREVIEW, &cam.request);
+    if (status != c.ACAMERA_OK or cam.request == null) {
+        releaseNativeCameraResources(&cam);
+        setError("ACameraDevice_createCaptureRequest failed status={d}", .{status});
+        return 0;
+    }
+    status = c.ACameraOutputTarget_create(cam.window.?, &cam.target);
+    if (status != c.ACAMERA_OK or cam.target == null) {
+        releaseNativeCameraResources(&cam);
+        setError("ACameraOutputTarget_create failed status={d}", .{status});
+        return 0;
+    }
+    status = c.ACaptureRequest_addTarget(cam.request.?, cam.target.?);
+    if (status != c.ACAMERA_OK) {
+        releaseNativeCameraResources(&cam);
+        setError("ACaptureRequest_addTarget failed status={d}", .{status});
+        return 0;
+    }
+    var session_callbacks = c.ACameraCaptureSession_stateCallbacks{
+        .context = null,
+        .onClosed = onNativeSessionClosed,
+        .onReady = onNativeSessionReady,
+        .onActive = onNativeSessionActive,
+    };
+    status = c.ACameraDevice_createCaptureSession(cam.device.?, cam.outputs.?, &session_callbacks, &cam.session);
+    if (status != c.ACAMERA_OK or cam.session == null) {
+        releaseNativeCameraResources(&cam);
+        setError("ACameraDevice_createCaptureSession failed status={d}", .{status});
+        return 0;
+    }
+    var request_array = [_]?*c.ACaptureRequest{cam.request.?};
+    status = c.ACameraCaptureSession_setRepeatingRequest(cam.session.?, null, 1, @ptrCast(&request_array), &cam.sequence_id);
+    if (status != c.ACAMERA_OK) {
+        releaseNativeCameraResources(&cam);
+        setError("ACameraCaptureSession_setRepeatingRequest failed status={d}", .{status});
+        return 0;
+    }
+
+    lockGlobal();
+    defer unlockGlobal();
+    var slot_index: ?usize = null;
+    for (0..MAX_NATIVE_CAMERAS) |i| {
+        if (!g_native_camera_used[i]) {
+            slot_index = i;
+            break;
+        }
+    }
+    const index = slot_index orelse {
+        releaseNativeCameraResources(&cam);
+        setError("no free native camera slots", .{});
+        return 0;
+    };
+    const handle = g_next_native_camera_handle;
+    g_next_native_camera_handle += 1;
+    cam.handle = handle;
+    g_native_camera_used[index] = true;
+    g_native_cameras[index] = cam;
+    logi("NDK camera preview started handle={d}", .{handle});
+    return handle;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseNativeCameraPreview(_: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong) callconv(.c) c.jboolean {
+    lockGlobal();
+    defer unlockGlobal();
+    for (0..MAX_NATIVE_CAMERAS) |i| {
+        if (!g_native_camera_used[i] or g_native_cameras[i].handle != camera_handle) continue;
+        releaseNativeCameraResources(&g_native_cameras[i]);
+        g_native_camera_used[i] = false;
+        return JNI_TRUE;
+    }
+    setError("native camera release missing handle", .{});
+    return JNI_FALSE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getMetricsSnapshot(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlongArray { lockGlobal(); defer unlockGlobal(); var values = [_]c.jlong{0} ** 48; if (getPipe(handle)) |p| { values[0]=p.preview_render_count; values[1]=p.encoder_render_count; values[2]=p.encoder_drop_count; values[3]=p.no_surface_count; values[4]=p.last_render_ms; values[5]=p.recording.requested_frames; values[6]=p.recording.rendered_frames; values[7]=p.recording.dropped_frames; values[8]=p.recording.segment_index; values[9]=if(p.recording.segment_switch_pending)1 else 0; values[10]=p.recording.pending_segment_index; values[11]=p.recording.next_segment_wall_clock_ms; values[12]=p.encoder_signal_count; values[13]=p.encoder_scheduled_count; values[14]=p.encoder_coalesced_count; values[15]=p.preview_max_fps; values[16]=p.preview_min_interval_ms; values[17]=p.config_version; values[18]=if(p.encoder_pending)1 else 0; values[19]=p.recording.generation; for (0..4) |i| { const base = 20 + i*7; values[base]=p.input[i].frame_signal_count; values[base+1]=p.input[i].preview_scheduled_count; values[base+2]=p.input[i].preview_delayed_count; values[base+3]=p.input[i].preview_coalesced_count; values[base+4]=p.input[i].update_count; values[base+5]=p.input[i].preview_render_count; values[base+6]=p.input[i].preview_drop_count; } } const result = env.*[0].NewLongArray.?(env, 48); if (result != null) env.*[0].SetLongArrayRegion.?(env, result, 0, 48, &values); return result; }
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createCompositor(_: [*c]c.JNIEnv, _: c.jobject, width: c.jint, height: c.jint) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |i| if (!g_used[i]) { const handle = g_next_handle; g_next_handle += 1; g_pipes[i] = Pipe{}; g_used[i] = true; g_pipes[i].handle = handle; g_pipes[i].width = width; g_pipes[i].height = height; if (!initEgl(&g_pipes[i])) { g_used[i] = false; return 0; } updateEncoderLayout(&g_pipes[i]); return handle; }; setError("no free native pipe slots", .{}); return 0; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createOesTexture(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jint { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; if (index < 0 or index >= 4 or !initEgl(p) or !makePbufferCurrent(p)) return 0; const i: usize = @intCast(index); if (p.input[i].texture != 0) { c.glDeleteTextures(1, &p.input[i].texture); p.input[i].texture = 0; } var tex: c.GLuint = 0; c.glGenTextures(1, &tex); if (tex == 0) { setError("glGenTextures returned 0", .{}); clearCurrent(p); return 0; } c.glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE); if (glError("createOesTexture")) |e| { setErrorSlice(e); c.glDeleteTextures(1, &tex); clearCurrent(p); return 0; } p.input[i].texture = tex; clearCurrent(p); logd("created OES texture index={d} tex={d}", .{index, tex}); return @intCast(tex); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_destroyOesInput(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; resetInput(env, p, @intCast(index), true); logd("destroyed OES input index={d}", .{index}); return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createOesInput(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface_texture: c.jobject) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); p.input[i].surface_texture = env.*[0].NewGlobalRef.?(env, surface_texture); p.input[i].dirty = false; p.input[i].has_latched_frame = false; p.input[i].preview_pending = false; p.input[i].frame_generation = 0; p.input[i].latched_generation = 0; p.input[i].preview_generation = 0; p.input[i].encoder_generation = 0; logd("created OES input index={d}", .{index}); return JNI_TRUE; }
 fn attachPreviewSurfaceLocked(env: [*c]c.JNIEnv, p: *Pipe, index: c.jint, surface: c.jobject, apply_fisheye: bool, apply_native_transform: bool) c.jboolean { if (index < 0 or index >= 4 or !initEgl(p)) return JNI_FALSE; const i: usize = @intCast(index); if (p.preview_surface[i] != c.EGL_NO_SURFACE) { if (p.current_surface == p.preview_surface[i]) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.preview_surface[i]); p.preview_surface[i] = c.EGL_NO_SURFACE; } if (p.preview_window[i]) |w| c.ANativeWindow_release(w); p.preview_window[i] = c.ANativeWindow_fromSurface(env, surface); if (p.preview_window[i] == null) { setError("preview window unavailable", .{}); return JNI_FALSE; } p.preview_surface[i] = c.eglCreateWindowSurface(p.display, p.config, p.preview_window[i], null); if (p.preview_surface[i] == c.EGL_NO_SURFACE) { setErrorSlice(eglError("eglCreateWindowSurface preview failed")); c.ANativeWindow_release(p.preview_window[i].?); p.preview_window[i] = null; return JNI_FALSE; } p.preview_apply_fisheye[i] = apply_fisheye; p.preview_apply_native_transform[i] = apply_native_transform; updatePreviewLayout(p, index, c.ANativeWindow_getWidth(p.preview_window[i].?), c.ANativeWindow_getHeight(p.preview_window[i].?)); logd("attached preview surface index={d} size={d}x{d} fisheye={d} nativeTransform={d}", .{index, c.ANativeWindow_getWidth(p.preview_window[i].?), c.ANativeWindow_getHeight(p.preview_window[i].?), if(apply_fisheye)@as(i32,1) else @as(i32,0), if(apply_native_transform)@as(i32,1) else @as(i32,0)}); return JNI_TRUE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_attachPreviewSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; return attachPreviewSurfaceLocked(env, p, index, surface, true, true); }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_attachPreviewSurfaceWithMode(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; return attachPreviewSurfaceLocked(env, p, index, surface, apply_fisheye == JNI_TRUE, apply_native_transform == JNI_TRUE); }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_detachPreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (p.preview_surface[i] != c.EGL_NO_SURFACE) { if (p.current_surface == p.preview_surface[i]) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.preview_surface[i]); p.preview_surface[i] = c.EGL_NO_SURFACE; } if (p.preview_window[i]) |w| { c.ANativeWindow_release(w); p.preview_window[i] = null; } p.input[i].preview_pending = false; return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; return attachPreviewSurfaceLocked(env, p, index, surface, true, true); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurfaceWithMode(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; return attachPreviewSurfaceLocked(env, p, index, surface, apply_fisheye == JNI_TRUE, apply_native_transform == JNI_TRUE); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (p.preview_surface[i] != c.EGL_NO_SURFACE) { if (p.current_surface == p.preview_surface[i]) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.preview_surface[i]); p.preview_surface[i] = c.EGL_NO_SURFACE; } if (p.preview_window[i]) |w| { c.ANativeWindow_release(w); p.preview_window[i] = null; } p.input[i].preview_pending = false; return JNI_TRUE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setFisheyeCorrection(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, enabled: c.jboolean, k1: c.jfloat, k2: c.jfloat, zoom: c.jfloat, center_x: c.jfloat, center_y: c.jfloat) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; for (0..4) |i| { p.fisheye_enabled[i] = enabled == JNI_TRUE; p.fisheye_k1[i] = k1; p.fisheye_k2[i] = k2; p.fisheye_zoom[i] = if (zoom <= 0.01) 1.0 else zoom; p.fisheye_center_x[i] = center_x; p.fisheye_center_y[i] = center_y; } logd("fisheye all enabled={d} k1={d} k2={d} zoom={d} center={d},{d}", .{ if(enabled==JNI_TRUE)@as(i32,1) else @as(i32,0), k1, k2, if(zoom<=0.01)@as(f32,1.0) else zoom, center_x, center_y }); return JNI_TRUE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setFisheyeCorrectionForCamera(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, enabled: c.jboolean, k1: c.jfloat, k2: c.jfloat, zoom: c.jfloat, center_x: c.jfloat, center_y: c.jfloat) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); p.fisheye_enabled[i] = enabled == JNI_TRUE; p.fisheye_k1[i] = k1; p.fisheye_k2[i] = k2; p.fisheye_zoom[i] = if (zoom <= 0.01) 1.0 else zoom; p.fisheye_center_x[i] = center_x; p.fisheye_center_y[i] = center_y; logd("fisheye index={d} enabled={d} k1={d} k2={d} zoom={d} center={d},{d}", .{ index, if(p.fisheye_enabled[i])@as(i32,1) else @as(i32,0), p.fisheye_k1[i], p.fisheye_k2[i], p.fisheye_zoom[i], p.fisheye_center_x[i], p.fisheye_center_y[i] }); return JNI_TRUE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_attachEncoderSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, surface: c.jobject) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (!initEgl(p)) return JNI_FALSE; const new_window = c.ANativeWindow_fromSurface(env, surface); if (new_window == null) { setError("encoder window unavailable", .{}); return JNI_FALSE; } const new_surface = c.eglCreateWindowSurface(p.display, p.config, new_window, null); if (new_surface == c.EGL_NO_SURFACE) { setErrorSlice(eglError("eglCreateWindowSurface encoder failed")); c.ANativeWindow_release(new_window); return JNI_FALSE; } const old_surface = p.encoder_surface; const old_window = p.encoder_window; p.encoder_surface = new_surface; p.encoder_window = new_window; if (old_surface != c.EGL_NO_SURFACE) { if (p.current_surface == old_surface) clearCurrent(p); _ = c.eglDestroySurface(p.display, old_surface); } if (old_window) |w| c.ANativeWindow_release(w); p.encoder_frame_index = 0; if (p.recording.recording) { p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; } p.encoder_pending = false; p.encoder_generation += 1; return JNI_TRUE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_detachEncoderSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (p.encoder_surface != c.EGL_NO_SURFACE) { if (p.current_surface == p.encoder_surface) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.encoder_surface); p.encoder_surface = c.EGL_NO_SURFACE; } if (p.encoder_window) |w| { c.ANativeWindow_release(w); p.encoder_window = null; } p.encoder_generation = 0; p.encoder_frame_index = 0; p.encoder_pending = false; return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setFisheyeCorrection(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, enabled: c.jboolean, k1: c.jfloat, k2: c.jfloat, zoom: c.jfloat, center_x: c.jfloat, center_y: c.jfloat) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; for (0..4) |i| { p.fisheye_enabled[i] = enabled == JNI_TRUE; p.fisheye_k1[i] = k1; p.fisheye_k2[i] = k2; p.fisheye_zoom[i] = if (zoom <= 0.01) 1.0 else zoom; p.fisheye_center_x[i] = center_x; p.fisheye_center_y[i] = center_y; } logd("fisheye all enabled={d} k1={d} k2={d} zoom={d} center={d},{d}", .{ if(enabled==JNI_TRUE)@as(i32,1) else @as(i32,0), k1, k2, if(zoom<=0.01)@as(f32,1.0) else zoom, center_x, center_y }); return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setFisheyeCorrectionForCamera(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, enabled: c.jboolean, k1: c.jfloat, k2: c.jfloat, zoom: c.jfloat, center_x: c.jfloat, center_y: c.jfloat) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); p.fisheye_enabled[i] = enabled == JNI_TRUE; p.fisheye_k1[i] = k1; p.fisheye_k2[i] = k2; p.fisheye_zoom[i] = if (zoom <= 0.01) 1.0 else zoom; p.fisheye_center_x[i] = center_x; p.fisheye_center_y[i] = center_y; logd("fisheye index={d} enabled={d} k1={d} k2={d} zoom={d} center={d},{d}", .{ index, if(p.fisheye_enabled[i])@as(i32,1) else @as(i32,0), p.fisheye_k1[i], p.fisheye_k2[i], p.fisheye_zoom[i], p.fisheye_center_x[i], p.fisheye_center_y[i] }); return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachEncoderSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, surface: c.jobject) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (!initEgl(p)) return JNI_FALSE; const new_window = c.ANativeWindow_fromSurface(env, surface); if (new_window == null) { setError("encoder window unavailable", .{}); return JNI_FALSE; } const new_surface = c.eglCreateWindowSurface(p.display, p.config, new_window, null); if (new_surface == c.EGL_NO_SURFACE) { setErrorSlice(eglError("eglCreateWindowSurface encoder failed")); c.ANativeWindow_release(new_window); return JNI_FALSE; } const old_surface = p.encoder_surface; const old_window = p.encoder_window; p.encoder_surface = new_surface; p.encoder_window = new_window; if (old_surface != c.EGL_NO_SURFACE) { if (p.current_surface == old_surface) clearCurrent(p); _ = c.eglDestroySurface(p.display, old_surface); } if (old_window) |w| c.ANativeWindow_release(w); p.encoder_frame_index = 0; if (p.recording.recording) { p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; } p.encoder_pending = false; p.encoder_generation += 1; return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachEncoderSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (p.encoder_surface != c.EGL_NO_SURFACE) { if (p.current_surface == p.encoder_surface) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.encoder_surface); p.encoder_surface = c.EGL_NO_SURFACE; } if (p.encoder_window) |w| { c.ANativeWindow_release(w); p.encoder_window = null; } p.encoder_generation = 0; p.encoder_frame_index = 0; p.encoder_pending = false; return JNI_TRUE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestPreviewRender(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jlong {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_requestPreviewRender(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jlong {
     const p = tryLockPipeForHandleBounded(handle, 64) orelse return PREVIEW_REQUEST_LOCK_BUSY;
     defer unlockPipe(p);
     if (index < 0 or index >= 4) return -1;
@@ -1376,9 +1566,9 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestPreviewRender(
     if (delay > 0) inp.preview_delayed_count += 1;
     return delay;
 }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_signalPreviewFrame(env: [*c]c.JNIEnv, obj: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jlong { return Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestPreviewRender(env, obj, handle, index); }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderScheduledPreview(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (!p.input[i].preview_pending) return JNI_TRUE; const ok = renderPreviewLocked(env, p, index); p.input[i].preview_pending = false; return if(ok)JNI_TRUE else JNI_FALSE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); return if(renderEncoderLocked(env, p, false, null))JNI_TRUE else JNI_FALSE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_signalPreviewFrame(env: [*c]c.JNIEnv, obj: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jlong { return Java_com_kooo_evcam_v2_nativebridge_GlesNative_requestPreviewRender(env, obj, handle, index); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_renderScheduledPreview(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (!p.input[i].preview_pending) return JNI_TRUE; const ok = renderPreviewLocked(env, p, index); p.input[i].preview_pending = false; return if(ok)JNI_TRUE else JNI_FALSE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_renderCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); return if(renderEncoderLocked(env, p, false, null))JNI_TRUE else JNI_FALSE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_releaseCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) void { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |idx| { if (!g_used[idx] or g_pipes[idx].handle != handle) continue; const p = &g_pipes[idx]; if (p.display != c.EGL_NO_DISPLAY) { _ = makePbufferCurrent(p); for (0..4) |i| { if (p.preview_surface[i] != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.preview_surface[i]); if (p.input[i].texture != 0) c.glDeleteTextures(1, &p.input[i].texture); } if (p.encoder_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.encoder_surface); if (p.overlay_font_texture != 0) c.glDeleteTextures(1, &p.overlay_font_texture); if (p.recording.overlay_bitmap_texture != 0) c.glDeleteTextures(1, &p.recording.overlay_bitmap_texture); if (p.program != 0) c.glDeleteProgram(p.program); if (p.overlay_program != 0) c.glDeleteProgram(p.overlay_program); if (p.overlay_text_program != 0) c.glDeleteProgram(p.overlay_text_program); clearCurrent(p); if (p.pbuffer != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.pbuffer); if (p.context != c.EGL_NO_CONTEXT) _ = c.eglDestroyContext(p.display, p.context); _ = c.eglTerminate(p.display); } for (0..4) |i| { if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); if (p.preview_window[i]) |w| c.ANativeWindow_release(w); } if (p.encoder_window) |w| c.ANativeWindow_release(w); g_used[idx] = false; g_pipes[idx] = Pipe{}; return; } }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getLastError(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, &g_last_error); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) void { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |idx| { if (!g_used[idx] or g_pipes[idx].handle != handle) continue; const p = &g_pipes[idx]; if (p.display != c.EGL_NO_DISPLAY) { _ = makePbufferCurrent(p); for (0..4) |i| { if (p.preview_surface[i] != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.preview_surface[i]); if (p.input[i].texture != 0) c.glDeleteTextures(1, &p.input[i].texture); } if (p.encoder_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.encoder_surface); if (p.overlay_font_texture != 0) c.glDeleteTextures(1, &p.overlay_font_texture); if (p.recording.overlay_bitmap_texture != 0) c.glDeleteTextures(1, &p.recording.overlay_bitmap_texture); if (p.program != 0) c.glDeleteProgram(p.program); if (p.overlay_program != 0) c.glDeleteProgram(p.overlay_program); if (p.overlay_text_program != 0) c.glDeleteProgram(p.overlay_text_program); clearCurrent(p); if (p.pbuffer != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.pbuffer); if (p.context != c.EGL_NO_CONTEXT) _ = c.eglDestroyContext(p.display, p.context); _ = c.eglTerminate(p.display); } for (0..4) |i| { if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); if (p.preview_window[i]) |w| c.ANativeWindow_release(w); } if (p.encoder_window) |w| c.ANativeWindow_release(w); g_used[idx] = false; g_pipes[idx] = Pipe{}; return; } }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getLastError(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, &g_last_error); }

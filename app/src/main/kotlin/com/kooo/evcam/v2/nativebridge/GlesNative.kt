@@ -4,7 +4,7 @@ import android.graphics.Bitmap
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 
-object VulkanNative {
+object GlesNative {
     val isLoaded: Boolean
     val loadError: Throwable?
 
@@ -20,15 +20,15 @@ object VulkanNative {
         isLoaded = loaded
         loadError = error
         if (loaded) {
-            V2AppLog.i("VulkanNative", "native library loaded")
+            V2AppLog.i("GlesNative", "native library loaded")
         } else {
-            V2AppLog.e("VulkanNative", "native library load failed", error)
+            V2AppLog.e("GlesNative", "native library load failed", error)
         }
     }
 
     external fun getNativeVersion(): String
-    external fun isVulkanAvailable(): Boolean
-    external fun getVulkanSummary(): String
+    external fun isGlesAvailable(): Boolean
+    external fun getGlesSummary(): String
     external fun createCompositor(width: Int, height: Int): Long
     external fun createOesTexture(handle: Long, index: Int): Int
     external fun destroyOesInput(handle: Long, index: Int): Boolean
@@ -63,6 +63,8 @@ object VulkanNative {
     external fun nativeSegmentWriterDrain(writerHandle: Long, timeoutUs: Long): Long
     external fun nativeSegmentWriterStop(writerHandle: Long): Boolean
     external fun nativeSegmentWriterRelease(writerHandle: Long): Boolean
+    external fun createNativeCameraPreview(cameraId: String, surface: Surface): Long
+    external fun releaseNativeCameraPreview(cameraHandle: Long): Boolean
     external fun createOesInput(handle: Long, index: Int, surfaceTexture: android.graphics.SurfaceTexture): Boolean
     external fun attachPreviewSurface(handle: Long, index: Int, surface: Surface): Boolean
     external fun attachPreviewSurfaceWithMode(handle: Long, index: Int, surface: Surface, applyFisheye: Boolean, applyNativeTransform: Boolean): Boolean
@@ -79,9 +81,9 @@ object VulkanNative {
 
     fun summaryOrFallback(): String {
         return if (isLoaded) {
-            runCatching { getVulkanSummary() }.getOrElse { "Vulkan native error: ${it.message}" }
+            runCatching { getGlesSummary() }.getOrElse { "GLES native error: ${it.message}" }
         } else {
-            "Vulkan native not loaded: ${loadError?.message ?: "unknown"}"
+            "GLES native not loaded: ${loadError?.message ?: "unknown"}"
         }
     }
 }

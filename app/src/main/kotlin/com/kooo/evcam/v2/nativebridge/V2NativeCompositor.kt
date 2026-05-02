@@ -22,7 +22,7 @@ class V2NativeCompositor private constructor(val handle: Long) {
         zoom: FloatArray,
         centerX: FloatArray,
         centerY: FloatArray
-    ): Boolean = isAvailable && VulkanNative.setCompositorRuntimeConfig(
+    ): Boolean = isAvailable && GlesNative.setCompositorRuntimeConfig(
         handle,
         width,
         height,
@@ -40,31 +40,31 @@ class V2NativeCompositor private constructor(val handle: Long) {
     )
 
     fun attachPreview(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true): Boolean =
-        isAvailable && VulkanNative.attachPreviewSurfaceWithMode(handle, index, surface, applyFisheye, applyNativeTransform)
-    fun detachPreview(index: Int): Boolean = isAvailable && VulkanNative.detachPreviewSurface(handle, index)
-    fun setPreviewMaxFps(fps: Int): Boolean = isAvailable && VulkanNative.setPreviewMaxFps(handle, fps)
-    fun signalPreviewFrame(index: Int): Long = if (isAvailable) VulkanNative.signalPreviewFrame(handle, index) else -1L
-    fun renderScheduledPreview(index: Int): Boolean = isAvailable && VulkanNative.renderScheduledPreview(handle, index)
-    fun createOesTexture(index: Int): Int = if (isAvailable) VulkanNative.createOesTexture(handle, index) else 0
-    fun createOesInput(index: Int, surfaceTexture: SurfaceTexture): Boolean = isAvailable && VulkanNative.createOesInput(handle, index, surfaceTexture)
-    fun destroyOesInput(index: Int): Boolean = isAvailable && VulkanNative.destroyOesInput(handle, index)
-    fun release() { if (isAvailable) VulkanNative.releaseCompositor(handle) }
-    fun lastError(): String = VulkanNative.getLastError()
+        isAvailable && GlesNative.attachPreviewSurfaceWithMode(handle, index, surface, applyFisheye, applyNativeTransform)
+    fun detachPreview(index: Int): Boolean = isAvailable && GlesNative.detachPreviewSurface(handle, index)
+    fun setPreviewMaxFps(fps: Int): Boolean = isAvailable && GlesNative.setPreviewMaxFps(handle, fps)
+    fun signalPreviewFrame(index: Int): Long = if (isAvailable) GlesNative.signalPreviewFrame(handle, index) else -1L
+    fun renderScheduledPreview(index: Int): Boolean = isAvailable && GlesNative.renderScheduledPreview(handle, index)
+    fun createOesTexture(index: Int): Int = if (isAvailable) GlesNative.createOesTexture(handle, index) else 0
+    fun createOesInput(index: Int, surfaceTexture: SurfaceTexture): Boolean = isAvailable && GlesNative.createOesInput(handle, index, surfaceTexture)
+    fun destroyOesInput(index: Int): Boolean = isAvailable && GlesNative.destroyOesInput(handle, index)
+    fun release() { if (isAvailable) GlesNative.releaseCompositor(handle) }
+    fun lastError(): String = GlesNative.getLastError()
 
     companion object {
         fun create(size: Size): V2NativeCompositor {
-            if (!VulkanNative.isLoaded) {
-                V2AppLog.e("V2NativeCompositor", "native library unavailable: ${VulkanNative.summaryOrFallback()}")
+            if (!GlesNative.isLoaded) {
+                V2AppLog.e("V2NativeCompositor", "native library unavailable: ${GlesNative.summaryOrFallback()}")
                 return V2NativeCompositor(0L)
             }
-            val handle = runCatching { VulkanNative.createCompositor(size.width, size.height) }
+            val handle = runCatching { GlesNative.createCompositor(size.width, size.height) }
                 .onFailure { V2AppLog.e("V2NativeCompositor", "create compositor crashed", it) }
                 .getOrDefault(0L)
             return V2NativeCompositor(handle)
         }
 
-        fun nativeSummary(): String = VulkanNative.summaryOrFallback()
-        fun lastError(): String = VulkanNative.getLastError()
-        fun isNativeLoaded(): Boolean = VulkanNative.isLoaded
+        fun nativeSummary(): String = GlesNative.summaryOrFallback()
+        fun lastError(): String = GlesNative.getLastError()
+        fun isNativeLoaded(): Boolean = GlesNative.isLoaded
     }
 }

@@ -84,9 +84,13 @@ class V2CompositeRecorder(
     private var lastFramePerfDropped = 0L
     @Volatile private var stoppedWallClockMs = 0L
 
+    init {
+        V2RecordingBackend.forceNativeExperimentalDefault(context)
+    }
+
     fun start(): Boolean {
         val startedMs = SystemClock.elapsedRealtime()
-        V2AppLog.i("V2CompositeRecorder", "start size=${outputWidth}x${outputHeight} bitrate=$videoBitrate fps=$recordingFps segmentMs=$segmentDurationMs precreate=$segmentPrecreateEnabled mime=$videoMimeType")
+        V2AppLog.i("V2CompositeRecorder", "start size=${outputWidth}x${outputHeight} bitrate=$videoBitrate fps=$recordingFps segmentMs=$segmentDurationMs precreate=$segmentPrecreateEnabled mime=$videoMimeType backend=$recordingBackend outputDir=${outputDir.absolutePath}")
         metrics.apply {
             requestedFrames = 0; renderedFrames = 0; encodedSamples = 0; droppedFrames = 0
             segmentIndex = 0; segmentSwitchMs = 0; firstSampleLatencyMs = -1; lastError = "无"
@@ -247,15 +251,29 @@ class V2CompositeRecorder(
             releaseWriterAsync(oldWriter, finish = true, generateThumbnail = true, segmentEndWallClockMs = actualSegmentStartWallClockMs)
             writer = null
         }
-        val segmentWriter = newWriter
-            ?: createSegmentWriter().also {
-                it.startSegment(segmentIndex, segmentWallClockMs)
-            }
+        val segmentWriter = newWriter ?: createStartedSegmentWriter(segmentIndex, segmentWallClockMs)
         val surface = segmentWriter.surface ?: throw IllegalStateException("Encoder surface unavailable")
         try {
             if (!native.isAvailable) throw java.lang.IllegalStateException(native.lastError())
             if (!native.attachEncoderSurface(surface)) throw java.lang.IllegalStateException(native.lastError())
         } catch (t: Throwable) {
+            if (newWriter == null && recordingBackend == V2RecordingBackend.NativeExperimental) {
+                releaseWriterAsync(segmentWriter, finish = false, generateThumbnail = false)
+                V2AppLog.w("V2CompositeRecorder", "native writer attach failed; falling back to AndroidMedia for segment index=$segmentIndex", t)
+                val fallbackWriter = createStartedSegmentWriter(segmentIndex, segmentWallClockMs, V2RecordingBackend.AndroidMedia)
+                val fallbackSurface = fallbackWriter.surface ?: throw IllegalStateException("Fallback encoder surface unavailable")
+                if (!native.attachEncoderSurface(fallbackSurface)) {
+                    releaseWriterAsync(fallbackWriter, finish = false, generateThumbnail = false)
+                    throw IllegalStateException(native.lastError())
+                }
+                fallbackWriter.markAttached(segmentIndex, actualSegmentStartWallClockMs)
+                writer = fallbackWriter
+                metrics.segmentIndex = segmentIndex
+                V2AppLog.perf("V2CompositeRecorder", "segmentAttach", SystemClock.elapsedRealtime() - segmentStartMs, "index=$segmentIndex prepared=false fallback=AndroidMedia file=${fallbackWriter.currentFile()?.name}")
+                prepareNextSegment(segmentIndex + 1, segmentWallClockMs + segmentDurationMs)
+                scheduleStorageCleanup()
+                return
+            }
             releaseWriterAsync(segmentWriter, finish = false, generateThumbnail = false)
             throw t
         }
@@ -270,6 +288,10 @@ class V2CompositeRecorder(
 
     private fun prepareNextSegment(segmentIndex: Int, segmentWallClockMs: Long) {
         if (!segmentPrecreateEnabled) return
+        if (recordingBackend == V2RecordingBackend.NativeExperimental) {
+            V2AppLog.d("V2CompositeRecorder", "native backend skips precreate index=$segmentIndex")
+            return
+        }
         val existing = preparedSegmentFuture
         if (existing != null && !existing.isDone && preparedSegmentIndex == segmentIndex && preparedSegmentWallClockMs == segmentWallClockMs) return
         if (existing != null && existing.isDone && preparedSegmentIndex == segmentIndex && preparedSegmentWallClockMs == segmentWallClockMs) return
@@ -278,15 +300,34 @@ class V2CompositeRecorder(
         preparedSegmentWallClockMs = segmentWallClockMs
         preparedSegmentFuture = segmentPrepareExecutor.submit<V2SegmentWriter> {
             val startedMs = SystemClock.elapsedRealtime()
-            createSegmentWriter().also {
-                it.startSegment(segmentIndex, segmentWallClockMs)
-                V2AppLog.perf("V2CompositeRecorder", "prepareSegment", SystemClock.elapsedRealtime() - startedMs, "index=$segmentIndex file=${it.currentFile()?.name}")
+            createStartedSegmentWriter(segmentIndex, segmentWallClockMs).also {
+                V2AppLog.perf("V2CompositeRecorder", "prepareSegment", SystemClock.elapsedRealtime() - startedMs, "index=$segmentIndex backend=$recordingBackend file=${it.currentFile()?.name}")
             }
         }
     }
 
-    private fun createSegmentWriter(): V2SegmentWriter = V2SegmentWriterFactory.create(
-        backend = recordingBackend,
+    private fun createStartedSegmentWriter(
+        segmentIndex: Int,
+        segmentWallClockMs: Long,
+        backend: V2RecordingBackend = recordingBackend,
+    ): V2SegmentWriter {
+        return runCatching {
+            createSegmentWriter(backend).also {
+                it.startSegment(segmentIndex, segmentWallClockMs)
+                check(it.surface != null) { "Encoder surface unavailable" }
+            }
+        }.getOrElse { error ->
+            if (backend != V2RecordingBackend.NativeExperimental) throw error
+            V2AppLog.w("V2CompositeRecorder", "native writer start failed; falling back to AndroidMedia index=$segmentIndex", error)
+            createSegmentWriter(V2RecordingBackend.AndroidMedia).also {
+                it.startSegment(segmentIndex, segmentWallClockMs)
+                check(it.surface != null) { "Fallback encoder surface unavailable" }
+            }
+        }
+    }
+
+    private fun createSegmentWriter(backend: V2RecordingBackend): V2SegmentWriter = V2SegmentWriterFactory.create(
+        backend = backend,
         config = V2SegmentWriterConfig(
             context = context,
             outputDir = outputDir,
@@ -363,7 +404,7 @@ class V2CompositeRecorder(
 
             if (shouldRender) {
                 metrics.renderedFrames += 1
-                writer?.requestDrain()
+                drainCurrentWriterOrFallback(wallClockMs)
             }
             logRecordingFramePerfIfNeeded(renderMs, shouldRender, dropped)
 
@@ -445,6 +486,47 @@ class V2CompositeRecorder(
             bitmap.eraseColor(Color.TRANSPARENT)
             canvas.drawText(text, 0f, -fontMetrics.ascent, paint)
         }
+    }
+
+    private fun drainCurrentWriterOrFallback(wallClockMs: Long) {
+        val currentWriter = writer ?: return
+        runCatching { currentWriter.requestDrain() }
+            .onSuccess { return }
+            .onFailure { drainError ->
+                if (currentWriter.backend != V2RecordingBackend.NativeExperimental || !recording) throw drainError
+                metrics.lastError = drainError.javaClass.simpleName + ": " + (drainError.message ?: "native drain failed")
+                V2AppLog.w(
+                    "V2CompositeRecorder",
+                    "native writer drain failed; switching current segment to AndroidMedia index=${metrics.segmentIndex} file=${currentWriter.currentFile()?.name}",
+                    drainError,
+                )
+                switchCurrentSegmentToAndroidMedia(currentWriter, wallClockMs)
+            }
+    }
+
+    private fun switchCurrentSegmentToAndroidMedia(failedWriter: V2SegmentWriter, wallClockMs: Long) {
+        if (writer !== failedWriter) return
+        runCatching { native.detachEncoderSurface() }
+            .onFailure { V2AppLog.e("V2CompositeRecorder", "detach native writer after drain failure failed", it) }
+        releaseWriterAsync(failedWriter, finish = false, generateThumbnail = false)
+        val fallbackWriter = createStartedSegmentWriter(
+            metrics.segmentIndex,
+            failedWriter.segmentWallClockMs().takeIf { it > 0L } ?: wallClockMs,
+            V2RecordingBackend.AndroidMedia,
+        )
+        val fallbackSurface = fallbackWriter.surface ?: throw IllegalStateException("Fallback encoder surface unavailable after native drain failure")
+        if (!native.attachEncoderSurface(fallbackSurface)) {
+            releaseWriterAsync(fallbackWriter, finish = false, generateThumbnail = false)
+            throw IllegalStateException(native.lastError())
+        }
+        fallbackWriter.markAttached(metrics.segmentIndex, wallClockMs)
+        writer = fallbackWriter
+        V2AppLog.perf(
+            "V2CompositeRecorder",
+            "nativeDrainFallback",
+            0L,
+            "index=${metrics.segmentIndex} fallbackFile=${fallbackWriter.currentFile()?.name}",
+        )
     }
 
     private fun logRecordingFramePerfIfNeeded(renderMs: Long, shouldRender: Boolean, dropped: Boolean) {

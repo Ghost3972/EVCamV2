@@ -13,6 +13,7 @@ import android.os.SystemClock
 import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.nativebridge.GlesNative
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import com.kooo.evcam.v2.nativebridge.V2NativeCompositor
 import com.kooo.evcam.v2.settings.V2SettingsSnapshot
@@ -36,6 +37,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         private const val SIDE_LEFT_ROTATION = 270
         private const val SIDE_RIGHT_ROTATION = 90
         private const val DEFAULT_LAYOUT_MODE = 0
+        private const val USE_NDK_CAMERA2 = true
     }
 
     private val specSet = V2CameraSpecProvider.current(context)
@@ -367,8 +369,8 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             cameraId = spec.cameraId,
             inputSize = inputSize,
             fallbackSize = recordingSize,
-            deviceOpen = device != null,
-            sessionOpen = session != null,
+            deviceOpen = device != null || nativeCameraHandle != 0L,
+            sessionOpen = session != null || nativeCameraHandle != 0L,
             inputReady = inputSurface != null,
             previewAttached = previewAttached,
             frameSignals = frameSignals,
@@ -576,6 +578,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
                 V2AppLog.e("V2CameraEngine", "openCamera skipped: input surface missing ${slot.spec.name}/$cameraId")
                 return
             }
+            if (USE_NDK_CAMERA2 && openNativeCamera(slot, cameraId, generation)) return
             if (slot.device != null) return
             val slotHandler = slot.ensureThread()
             val openRequestedMs = SystemClock.elapsedRealtime()
@@ -601,8 +604,36 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             }, slotHandler) } catch (error: Exception) { V2AppLog.e("V2CameraEngine", "openCamera failed ${slot.spec.name}/$cameraId", error) }
         }
 
+        private fun openNativeCamera(slot: Slot, cameraId: String, generation: Int): Boolean {
+            if (slot.nativeCameraHandle != 0L) return true
+            val inputSurface = slot.inputSurface ?: return false
+            if (!GlesNative.isLoaded) return false
+            val startedMs = SystemClock.elapsedRealtime()
+            val handle = runCatching { GlesNative.createNativeCameraPreview(cameraId, inputSurface) }
+                .onFailure { V2AppLog.e("V2CameraEngine", "NDK openCamera crashed ${slot.spec.name}/$cameraId", it) }
+                .getOrDefault(0L)
+            if (released || !cameraAccessAllowed || generation != cameraGeneration || slot.inputSurface == null) {
+                if (handle != 0L) runCatching { GlesNative.releaseNativeCameraPreview(handle) }
+                return true
+            }
+            if (handle == 0L) {
+                V2AppLog.w("V2CameraEngine", "NDK openCamera failed ${slot.spec.name}/$cameraId: ${GlesNative.getLastError()}, fallback=Camera2")
+                return false
+            }
+            slot.nativeCameraHandle = handle
+            slot.lastPreviewError = "无"
+            V2AppLog.perf("V2CameraEngine", "openNativeCamera", SystemClock.elapsedRealtime() - startedMs, "slot=${slot.spec.name}/${slot.spec.cameraId}")
+            if (slot.previewAttached) requestPreviewRenderFromEvent(slot, "native_session_configured")
+            publishStatus()
+            return true
+        }
+
         private fun handleCameraDeviceLost(slot: Slot, camera: CameraDevice, reason: String) {
             val generation = cameraGeneration
+            if (slot.nativeCameraHandle != 0L) {
+                runCatching { GlesNative.releaseNativeCameraPreview(slot.nativeCameraHandle) }
+                slot.nativeCameraHandle = 0L
+            }
             runCatching { slot.session?.close() }
             slot.session = null
             runCatching { camera.close() }
@@ -667,6 +698,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     private inner class Slot(val index: Int, val spec: V2CameraSpec) {
         var device: CameraDevice? = null
         var session: CameraCaptureSession? = null
+        var nativeCameraHandle: Long = 0L
 
         var inputSurfaceTexture: SurfaceTexture? = null
         var inputSurface: Surface? = null
@@ -697,11 +729,16 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         fun close() {
             V2AppLog.d(
                 "V2CameraEngine",
-                "close slot ${spec.name}/${spec.cameraId} hasSession=${session != null} hasDevice=${device != null} hasInput=${inputSurface != null}"
+                "close slot ${spec.name}/${spec.cameraId} hasSession=${session != null} hasDevice=${device != null} hasNative=${nativeCameraHandle != 0L} hasInput=${inputSurface != null}"
             )
             handler?.removeCallbacksAndMessages(null)
             resetRenderState()
             previewRetryPending = false
+            if (nativeCameraHandle != 0L) {
+                runCatching { GlesNative.releaseNativeCameraPreview(nativeCameraHandle) }
+                    .onFailure { V2AppLog.w("V2CameraEngine", "release NDK camera failed ${spec.name}/${spec.cameraId}", it) }
+                nativeCameraHandle = 0L
+            }
             session?.close()
             session = null
             device?.close()

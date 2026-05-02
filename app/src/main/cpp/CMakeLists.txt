@@ -40,6 +40,7 @@ add_custom_command(
                 ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/28/liblog.so
                 ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/28/libandroid.so
                 ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/28/libmediandk.so
+                ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/28/libcamera2ndk.so
                 ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/28/libjnigraphics.so
                 ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/28/libEGL.so
                 ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/28/libGLESv2.so

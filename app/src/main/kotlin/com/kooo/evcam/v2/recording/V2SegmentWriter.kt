@@ -4,6 +4,7 @@ import android.view.Surface
 import java.io.File
 
 internal interface V2SegmentWriter {
+    val backend: V2RecordingBackend
     val surface: Surface?
 
     fun startSegment(segmentIndex: Int, segmentWallClockMs: Long): File
