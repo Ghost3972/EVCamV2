@@ -16,7 +16,7 @@ object V2RecordingSettings {
     private const val KEY_SEGMENT_MINUTES = "segment_minutes"
     private const val KEY_SEGMENT_PRECREATE = "segment_precreate"
 
-    private const val DEFAULT_RESOLUTION = "1280x720"
+    private const val FALLBACK_RESOLUTION = "1280x720"
     const val BITRATE_LOW = "low"
     const val BITRATE_MEDIUM = "medium"
     const val BITRATE_HIGH = "high"
@@ -29,7 +29,7 @@ object V2RecordingSettings {
     val fpsOptions = listOf(10, 15, 20, 25, 30)
     val segmentMinuteOptions = listOf(1, 3, 5, 10)
 
-    fun resolution(context: Context): String = prefs(context).getString(KEY_RESOLUTION, DEFAULT_RESOLUTION) ?: DEFAULT_RESOLUTION
+    fun resolution(context: Context): String = prefs(context).getString(KEY_RESOLUTION, null) ?: maxSupportedResolution(context)
     fun bitrateLevel(context: Context): String = prefs(context).getString(KEY_BITRATE_LEVEL, BITRATE_MEDIUM) ?: BITRATE_MEDIUM
     fun fps(context: Context): Int = prefs(context).getInt(KEY_FPS, 30).coerceIn(1, 60)
     fun segmentMinutes(context: Context): Int = prefs(context).getInt(KEY_SEGMENT_MINUTES, 1).coerceAtLeast(1)
@@ -39,7 +39,7 @@ object V2RecordingSettings {
     fun setResolution(context: Context, value: String) {
         val next = supportedResolutionOptions(context).firstOrNull { it.value == value }?.value
             ?: supportedResolutionOptions(context).firstOrNull()?.value
-            ?: DEFAULT_RESOLUTION
+            ?: FALLBACK_RESOLUTION
         prefs(context).edit().putString(KEY_RESOLUTION, next).apply()
         V2AppLog.i("V2RecordingSettings", "resolution=$next")
     }
@@ -74,6 +74,8 @@ object V2RecordingSettings {
         val fallback = listOf(Size(1280, 720), Size(1920, 1080))
         return fallback.map { Option(valueForSize(it), "${it.width}×${it.height}") }
     }
+
+    private fun maxSupportedResolution(context: Context): String = supportedResolutionOptions(context).firstOrNull()?.value ?: FALLBACK_RESOLUTION
 
     fun recordingSize(context: Context, screenSize: Size): Size {
         val selected = parseSize(resolution(context))

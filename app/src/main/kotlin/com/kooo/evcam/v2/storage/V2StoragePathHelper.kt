@@ -5,50 +5,51 @@ import android.os.Environment
 import java.io.File
 
 object V2StoragePathHelper {
-    enum class StorageLocation { INTERNAL, USB }
+    enum class StorageLocation { INTERNAL, USB, PUBLIC_DCIM }
 
     private const val OUTPUT_DIR_NAME = "EVCam_Video"
+    private const val PHOTO_DIR_NAME = "EVCam_Photo"
 
     fun preferredLocation(context: Context): StorageLocation =
         V2StorageLocationSettings.selectedLocation(context)
 
     fun availableUsbMount(context: Context): File? {
-        val candidates = mutableSetOf<String>()
-        runCatching {
-            File("/proc/mounts").forEachLine { line ->
-                val parts = line.trim().split(Regex("\\s+"))
-                if (parts.size >= 2 && parts[1].matches(Regex("/storage/[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}"))) {
-                    candidates += parts[1]
-                }
-            }
-        }
-        candidates += context.getExternalFilesDirs(null)
-            .mapNotNull { it?.absolutePath }
-            .mapNotNull { path -> File(path).absoluteFile.parentFile?.parentFile?.parentFile?.parentFile?.absolutePath }
-            .filter { it.matches(Regex("/storage/[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}")) }
-        return candidates.sorted().firstOrNull()?.let { File(it, "DCIM/$OUTPUT_DIR_NAME") }
+        return context.getExternalFilesDirs(Environment.DIRECTORY_MOVIES)
+            .filterNotNull()
+            .firstOrNull { it.absolutePath.matches(Regex("/storage/[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}/Android/data/.+")) }
+            ?.let { File(it, OUTPUT_DIR_NAME) }
     }
 
     fun outputDir(context: Context): File {
         val preferred = preferredLocation(context)
         val usb = availableUsbMount(context)
         return when (preferred) {
-            StorageLocation.USB -> usb ?: internalDir()
-            StorageLocation.INTERNAL -> internalDir()
+            StorageLocation.USB -> usb ?: internalDir(context)
+            StorageLocation.INTERNAL -> internalDir(context)
+            StorageLocation.PUBLIC_DCIM -> publicDcimDir()
         }.apply { mkdirs() }
     }
 
     fun playbackScanDirs(context: Context): List<File> {
-        val dirs = mutableListOf(internalDir())
+        val dirs = mutableListOf(internalDir(context), publicDcimDir())
         availableUsbMount(context)?.let { dirs += it }
         return dirs
             .distinctBy { it.toPath().toAbsolutePath().normalize().toString() }
             .filter { it.isDirectory && it.canRead() }
     }
 
+    fun photoDir(context: Context): File = File(
+        context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: File(context.filesDir, Environment.DIRECTORY_PICTURES),
+        PHOTO_DIR_NAME
+    ).apply { mkdirs() }
+
+    fun photoScanDirs(context: Context): List<File> = listOf(photoDir(context))
+        .filter { it.isDirectory && it.canRead() }
+
     fun selectedLocationLabel(context: Context): String = when (preferredLocation(context)) {
-        StorageLocation.INTERNAL -> "内部存储"
-        StorageLocation.USB -> if (availableUsbMount(context) != null) "U盘" else "U盘（未检测到，已回退内部存储）"
+        StorageLocation.INTERNAL -> "App内部存储"
+        StorageLocation.USB -> if (availableUsbMount(context) != null) "App U盘目录" else "App U盘目录（未检测到，已回退App内部存储）"
+        StorageLocation.PUBLIC_DCIM -> "公共DCIM目录"
     }
 
     fun storageSummary(context: Context): String {
@@ -57,15 +58,21 @@ object V2StoragePathHelper {
     }
 
     fun storageOptions(context: Context): List<String> = listOf(
-        "内部存储",
-        if (availableUsbMount(context) != null) "U盘" else "U盘（未检测到）"
+        "App内部",
+        if (availableUsbMount(context) != null) "App U盘" else "App U盘(未检测到)",
+        "公共DCIM"
     )
 
     fun saveLocation(context: Context, location: StorageLocation) {
         V2StorageLocationSettings.setSelectedLocation(context, location)
     }
 
-    private fun internalDir(): File = File(
+    private fun internalDir(context: Context): File = File(
+        context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: File(context.filesDir, Environment.DIRECTORY_MOVIES),
+        OUTPUT_DIR_NAME
+    )
+
+    private fun publicDcimDir(): File = File(
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
         OUTPUT_DIR_NAME
     )

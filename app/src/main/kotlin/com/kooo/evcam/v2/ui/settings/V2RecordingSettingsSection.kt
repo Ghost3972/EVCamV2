@@ -106,7 +106,7 @@ class V2RecordingSettingsSection(
     }
 
     private fun restartNotice() {
-        Toast.makeText(activity, "录制设置已保存，重启应用/服务后生效", Toast.LENGTH_SHORT).show()
+        Toast.makeText(activity, "需重启生效", Toast.LENGTH_SHORT).show()
         V2AppLog.i("V2SettingsActivity", "recording settings changed ${V2RecordingSettings.summary(activity).replace('\n', ' ')}")
         onRefreshRequired()
     }

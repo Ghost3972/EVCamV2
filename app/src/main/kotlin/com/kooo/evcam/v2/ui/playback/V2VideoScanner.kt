@@ -16,6 +16,7 @@ import java.util.Locale
 data class V2VideoGroup(
     val timestamp: String,
     val composite: File?,
+    val isPhoto: Boolean = false,
     val thumbnail: Bitmap? = null,
     val thumbnailPath: String? = null,
     private val cachedTotalBytes: Long? = null,
@@ -41,6 +42,7 @@ object V2VideoScanner {
         "^(\\d{8}_\\d{4}(?:\\d{2})?)(?:_[A-Za-z0-9]+)?(?:_\\d{2}(?:_\\d{3})?)?(?:(?:_seg\\d{3})?(?:_[A-Za-z0-9_]+)?_composite)?(?:_\\d{3})?\\.mp4$",
         RegexOption.IGNORE_CASE
     )
+    private val imageNamePattern = Regex("^(\\d{8}_\\d{4}(?:\\d{2})?)_snapshot(?:_\\d{3})?\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE)
 
     fun parseTimestamp(timestamp: String): Date? {
         val prefix = Regex("^(\\d{8}_\\d{4}(?:\\d{2})?)").find(timestamp)?.value ?: return null
@@ -98,6 +100,17 @@ object V2VideoScanner {
         }
     }.getOrDefault(emptyList())
 
+    fun loadCachedGroups(context: Context, eventOnly: Boolean): List<V2VideoGroup> = loadCachedGroups(context)
+        .filter { group -> group.composite?.name?.contains("_event", ignoreCase = true) == eventOnly }
+
+    fun scanPhotoGroups(context: Context): List<V2VideoGroup> = V2StoragePathHelper.photoScanDirs(context)
+        .asSequence()
+        .flatMap { dir -> dir.listFiles().orEmpty().asSequence() }
+        .filter { isImageFile(it) && imageNamePattern.matches(it.name) }
+        .sortedByDescending { it.nameWithoutExtension.lowercase(Locale.US) }
+        .map { file -> V2VideoGroup(timestamp = file.nameWithoutExtension, composite = file, isPhoto = true, thumbnailPath = file.absolutePath, cachedTotalBytes = file.length(), cachedModified = file.lastModified()) }
+        .toList()
+
     fun loadCachedGroupsIncremental(
         context: Context,
         isCancelled: () -> Boolean = { false },
@@ -149,6 +162,10 @@ object V2VideoScanner {
             file.extension.equals("mp4", ignoreCase = true) &&
             !file.name.endsWith(".recording", ignoreCase = true)
 
+    private fun isImageFile(file: File): Boolean =
+        file.isFile && file.exists() && file.canRead() && file.length() > 0L &&
+            (file.extension.equals("jpg", ignoreCase = true) || file.extension.equals("jpeg", ignoreCase = true) || file.extension.equals("png", ignoreCase = true))
+
     fun cachedThumbnail(file: File): Bitmap? {
         val thumb = findThumbnailFile(file) ?: return null
         return decodeThumbnailFile(thumb)
@@ -160,6 +177,8 @@ object V2VideoScanner {
         if (!thumb.isFile || !thumb.canRead() || thumb.length() <= 0L) return null
         return decodeThumbnailFile(thumb)
     }
+
+    fun imageThumbnail(file: File): Bitmap? = if (isImageFile(file)) decodeThumbnailFile(file) else null
 
     fun cachedThumbnail(context: Context, file: File): Bitmap? {
         val thumb = findThumbnailFile(file) ?: return null

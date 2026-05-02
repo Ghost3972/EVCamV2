@@ -92,6 +92,7 @@ class V2VideoPlaybackAdapter(
 
     private fun bindVideo(holder: VideoVH, group: V2VideoGroup) {
         holder.binding.videoTime.text = group.displayTime
+        holder.binding.videoPlayIcon.visibility = if (group.isPhoto) android.view.View.GONE else android.view.View.VISIBLE
         if (group.thumbnail != null) {
             holder.binding.videoThumbnail.setImageBitmap(group.thumbnail)
             holder.binding.videoThumbnail.alpha = 1f

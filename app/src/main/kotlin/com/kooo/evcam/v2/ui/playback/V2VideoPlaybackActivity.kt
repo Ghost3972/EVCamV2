@@ -1,6 +1,8 @@
 package com.kooo.evcam.v2.ui.playback
 
 import android.content.Intent
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,9 +23,12 @@ import androidx.recyclerview.widget.GridLayoutManager
 import com.kooo.evcam.R
 import com.kooo.evcam.databinding.ActivityV2VideoPlaybackBinding
 import com.kooo.evcam.v2.storage.V2PlaybackCacheMaintainer
+import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import com.kooo.evcam.v2.ui.settings.V2SettingsActivity
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -41,6 +46,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     private var playerUiVisible = true
     private var playerSystemTopInset = 0
     private var playerSystemBottomInset = 0
+    private var playbackMode = PlaybackMode.NORMAL
     private val playerUiInterpolator = AccelerateDecelerateInterpolator()
     private val playerTitleDateFormat = SimpleDateFormat("yyyy年MM月dd日", Locale.CHINA)
     private val playerTitleTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.CHINA)
@@ -73,17 +79,20 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         binding.swipeRefresh.setColorSchemeColors(ContextCompat.getColor(this, R.color.button_accent))
         binding.swipeRefresh.setProgressBackgroundColorSchemeColor(ContextCompat.getColor(this, R.color.page_background))
         binding.swipeRefresh.setOnRefreshListener { refreshVideos() }
-        binding.tabNormalVideo.setOnClickListener { showListMode(stopPlayback = true) }
+        binding.tabNormalVideo.setOnClickListener { switchMode(PlaybackMode.NORMAL) }
+        binding.tabEventVideo.setOnClickListener { switchMode(PlaybackMode.EVENT) }
+        binding.tabPhoto.setOnClickListener { switchMode(PlaybackMode.PHOTO) }
         binding.btnHome.setOnClickListener { finish() }
         binding.btnRefresh.setOnClickListener { refreshVideos() }
         binding.btnSetting.setOnClickListener { startActivity(Intent(this, V2SettingsActivity::class.java)) }
         binding.btnPlayPause.setOnClickListener { togglePlayback() }
         binding.btnPlayerBack.setOnClickListener { showListMode(stopPlayback = true) }
-        binding.btnSnapshot.setOnClickListener { Toast.makeText(this, "截图功能待接入", Toast.LENGTH_SHORT).show() }
+        binding.btnSnapshot.setOnClickListener { saveSnapshot() }
         binding.btnPlayerMove.setOnClickListener { Toast.makeText(this, "导出功能待接入", Toast.LENGTH_SHORT).show() }
         binding.btnPlayerDelete.setOnClickListener { Toast.makeText(this, "删除功能待接入", Toast.LENGTH_SHORT).show() }
         binding.gridContainer.setOnClickListener { togglePlayerUi() }
         binding.videoFront.setOnClickListener { togglePlayerUi() }
+        binding.photoPreview.setOnClickListener { togglePlayerUi() }
         binding.placeholderFront.setOnClickListener { togglePlayerUi() }
         installPlayerInsetsListener()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -109,6 +118,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
             }
         })
         binding.videoFront.setOnErrorListener { _, _, _ -> showPlaybackError("视频无法播放或文件未完成: ${pendingVideo?.name ?: "未知文件"}"); true }
+        updateTabs()
         loadVideos(autoSelect = false)
     }
 
@@ -123,6 +133,11 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     }
 
     override fun onPause() { exitPlayerImmersive(); pauseAll(); super.onPause() }
+
+    override fun finish() {
+        exitPlayerImmersive()
+        super.finish()
+    }
 
     private fun refreshVideos() {
         showListMode(stopPlayback = true)
@@ -140,7 +155,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         var autoSelected = false
         executor.execute {
             if (preferCache) {
-                val cachedGroups = V2VideoScanner.loadCachedGroups(this)
+                val cachedGroups = loadGroupsForCurrentMode()
                 runOnUiThread {
                     if (generation != loadGeneration) return@runOnUiThread
                     adapter.replaceAll(cachedGroups)
@@ -159,8 +174,8 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
                 return@execute
             }
 
-            V2PlaybackCacheMaintainer.refreshNow(this)
-            val refreshedGroups = V2VideoScanner.loadCachedGroups(this)
+            if (playbackMode != PlaybackMode.PHOTO) V2PlaybackCacheMaintainer.refreshNow(this)
+            val refreshedGroups = loadGroupsForCurrentMode()
             runOnUiThread {
                 if (generation != loadGeneration) return@runOnUiThread
                 adapter.replaceAll(refreshedGroups)
@@ -180,8 +195,12 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
 
     private fun loadThumbnailAsync(generation: Int, group: V2VideoGroup) {
         thumbnailExecutor.execute {
-            val thumbnail = V2VideoScanner.cachedThumbnailPath(group.thumbnailPath)
-                ?: group.composite?.let { V2VideoScanner.videoFrameThumbnail(this, it) }
+            val thumbnail = if (group.isPhoto) {
+                group.composite?.let { V2VideoScanner.imageThumbnail(it) }
+            } else {
+                V2VideoScanner.cachedThumbnailPath(group.thumbnailPath)
+                    ?: group.composite?.let { V2VideoScanner.videoFrameThumbnail(this, it) }
+            }
                 ?: return@execute
             runOnUiThread {
                 if (generation != loadGeneration) return@runOnUiThread
@@ -193,6 +212,9 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     private fun stopCurrentPlaybackUi() {
         stopProgressUpdater()
         binding.videoFront.stopPlayback()
+        binding.videoFront.visibility = View.VISIBLE
+        binding.photoPreview.visibility = View.GONE
+        binding.photoPreview.setImageDrawable(null)
         binding.placeholderFront.visibility = View.VISIBLE
         setPlaybackButtonState(playing = false)
         binding.currentTime.text = "00:00"
@@ -288,6 +310,10 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
 
     private fun playVideo(group: V2VideoGroup) {
         selected = group
+        group.composite?.takeIf { group.isPhoto }?.let {
+            showPhoto(group, it)
+            return
+        }
         showPlayerMode()
         updatePlayerTitle(group)
         val primary = group.composite
@@ -303,6 +329,9 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
             return
         }
         pendingVideo = file
+        updatePlayerActionsForMode(isPhoto = false)
+        binding.photoPreview.visibility = View.GONE
+        binding.videoFront.visibility = View.VISIBLE
         binding.placeholderFront.visibility = View.GONE
         setPlaybackButtonState(playing = false)
         view.setVideoURI(Uri.fromFile(file))
@@ -331,6 +360,8 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     private fun showPlaybackError(message: String) {
         binding.videoFront.stopPlayback()
         stopProgressUpdater()
+        binding.videoFront.visibility = View.VISIBLE
+        binding.photoPreview.visibility = View.GONE
         binding.placeholderFront.visibility = View.VISIBLE
         setPlaybackButtonState(playing = false)
         binding.currentTime.text = "00:00"
@@ -340,6 +371,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     }
 
     private fun togglePlayback() {
+        if (selected?.isPhoto == true) return
         if (binding.videoFront.isPlaying) {
             pauseAll()
         } else {
@@ -369,8 +401,20 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
             if (visible) showPlayerSystemBarsKeepingLayout() else hidePlayerSystemBars()
         }
 
-        val targets = listOf(binding.playerTitleBar, binding.btnSnapshot, binding.controlsLayout)
+        val photoMode = selected?.isPhoto == true
+        updatePlayerActionsForMode(isPhoto = photoMode)
+        val targets = if (photoMode) {
+            listOf(binding.playerTitleBar)
+        } else {
+            listOf(binding.playerTitleBar, binding.btnSnapshot, binding.controlsLayout)
+        }
         targets.forEach { it.animate().cancel() }
+        if (photoMode) {
+            binding.btnSnapshot.animate().cancel()
+            binding.controlsLayout.animate().cancel()
+            binding.btnSnapshot.visibility = View.GONE
+            binding.controlsLayout.visibility = View.GONE
+        }
 
         if (!animate) {
             val visibility = if (visible) View.VISIBLE else View.GONE
@@ -498,7 +542,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     }
 
     private fun showPlayerSystemBarsKeepingLayout() {
-        enterPlayerFullscreenLayout(showBars = true)
+        exitPlayerImmersive()
     }
 
     private fun exitPlayerImmersive() {
@@ -524,6 +568,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         setPlaybackButtonState(playing = false)
     }
     private fun startAll() {
+        if (selected?.isPhoto == true) return
         binding.videoFront.start()
         startProgressUpdater()
         setPlaybackButtonState(playing = true)
@@ -531,4 +576,115 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     private fun startProgressUpdater() { progressHandler.removeCallbacks(progressUpdater); progressHandler.post(progressUpdater) }
     private fun stopProgressUpdater() { progressHandler.removeCallbacks(progressUpdater) }
     private fun formatTime(ms: Int): String = String.format(java.util.Locale.getDefault(), "%02d:%02d", (ms.coerceAtLeast(0) / 1000) / 60, (ms.coerceAtLeast(0) / 1000) % 60)
+
+    private fun showPhoto(group: V2VideoGroup, file: File) {
+        showPlayerMode()
+        updatePlayerTitle(group)
+        pendingVideo = null
+        stopProgressUpdater()
+        updatePlayerActionsForMode(isPhoto = true)
+        binding.videoFront.stopPlayback()
+        binding.videoFront.visibility = View.GONE
+        binding.photoPreview.visibility = View.VISIBLE
+        binding.photoPreview.setImageURI(Uri.fromFile(file))
+        binding.placeholderFront.visibility = View.GONE
+        binding.currentTime.text = "00:00"
+        binding.totalTime.text = "00:00"
+        binding.seekBar.progress = 0
+        binding.seekBar.max = 100
+        setPlaybackButtonState(playing = false)
+    }
+
+    private fun updatePlayerActionsForMode(isPhoto: Boolean) {
+        binding.btnSnapshot.visibility = if (isPhoto) View.GONE else binding.btnSnapshot.visibility
+        binding.controlsLayout.visibility = if (isPhoto) View.GONE else binding.controlsLayout.visibility
+        binding.btnPlayerMove.visibility = if (isPhoto) View.GONE else View.VISIBLE
+        binding.btnPlayerDelete.visibility = if (isPhoto) View.GONE else View.VISIBLE
+    }
+
+    private fun switchMode(mode: PlaybackMode) {
+        if (playbackMode == mode) return
+        playbackMode = mode
+        updateTabs()
+        showListMode(stopPlayback = true)
+        selected = null
+        pendingVideo = null
+        requestedThumbnailKeys.clear()
+        loadVideos(autoSelect = false, preferCache = mode != PlaybackMode.PHOTO)
+    }
+
+    private fun loadGroupsForCurrentMode(): List<V2VideoGroup> = when (playbackMode) {
+        PlaybackMode.NORMAL -> V2VideoScanner.loadCachedGroups(this, eventOnly = false)
+        PlaybackMode.EVENT -> V2VideoScanner.loadCachedGroups(this, eventOnly = true)
+        PlaybackMode.PHOTO -> V2VideoScanner.scanPhotoGroups(this)
+    }
+
+    private fun updateTabs() {
+        val selectedBg = R.drawable.v2_playback_tab_checked_bg
+        val accent = ContextCompat.getColor(this, R.color.playback_accent)
+        val normal = ContextCompat.getColor(this, R.color.text_secondary)
+
+        binding.tabNormalVideo.setBackgroundResource(if (playbackMode == PlaybackMode.NORMAL) selectedBg else 0)
+        binding.tabEventVideo.setBackgroundResource(if (playbackMode == PlaybackMode.EVENT) selectedBg else 0)
+        binding.tabPhoto.setBackgroundResource(if (playbackMode == PlaybackMode.PHOTO) selectedBg else 0)
+        binding.tabNormalVideo.getChildAt(0)?.visibility = if (playbackMode == PlaybackMode.NORMAL) View.VISIBLE else View.INVISIBLE
+        binding.toolbarTitle.setTextColor(if (playbackMode == PlaybackMode.NORMAL) accent else normal)
+        binding.tabEventVideoText.setTextColor(if (playbackMode == PlaybackMode.EVENT) accent else normal)
+        binding.tabPhotoText.setTextColor(if (playbackMode == PlaybackMode.PHOTO) accent else normal)
+        binding.emptyText.text = when (playbackMode) {
+            PlaybackMode.NORMAL -> "暂无循环录像"
+            PlaybackMode.EVENT -> "暂无紧急录像"
+            PlaybackMode.PHOTO -> "暂无图片"
+        }
+    }
+
+    private fun saveSnapshot() {
+        val file = selected?.composite?.takeIf { selected?.isPhoto != true && it.isFile && it.canRead() }
+        if (file == null) {
+            Toast.makeText(this, "无视频", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val positionUs = binding.videoFront.currentPosition.coerceAtLeast(0).toLong() * 1000L
+        val snapshot = runCatching {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(file.absolutePath)
+                retriever.getFrameAtTime(positionUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                    ?: retriever.frameAtTime
+            } finally {
+                retriever.release()
+            }
+        }.getOrNull()
+
+        if (snapshot == null) {
+            Toast.makeText(this, "截图失败", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val out = uniqueSnapshotFile()
+        val saved = runCatching {
+            out.parentFile?.mkdirs()
+            FileOutputStream(out).use { stream ->
+                snapshot.compress(Bitmap.CompressFormat.JPEG, 92, stream)
+            }
+        }.isSuccess
+        snapshot.recycle()
+        Toast.makeText(this, if (saved) "已截图" else "截图失败", Toast.LENGTH_SHORT).show()
+        if (saved && playbackMode == PlaybackMode.PHOTO) loadVideos(autoSelect = false, preferCache = false)
+    }
+
+    private fun uniqueSnapshotFile(): File {
+        val dir = V2StoragePathHelper.photoDir(this)
+        val base = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + "_snapshot"
+        val first = File(dir, "$base.jpg")
+        if (!first.exists()) return first
+        for (index in 1..999) {
+            val candidate = File(dir, "%s_%03d.jpg".format(Locale.US, base, index))
+            if (!candidate.exists()) return candidate
+        }
+        return File(dir, "$base-${System.currentTimeMillis()}.jpg")
+    }
+
+    private enum class PlaybackMode { NORMAL, EVENT, PHOTO }
 }

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.ComponentName
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -15,6 +16,7 @@ import android.os.SystemClock
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
+import android.view.WindowInsets
 import android.view.animation.LinearInterpolator
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -45,6 +47,7 @@ class V2MainActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var service: V2CameraForegroundService? = null
     private var bound = false
+    private var bindingService = false
     private val fpsCounters = Array(4) { FpsCounter() }
     private val previewSizeLabels = Array(4) { "--×--" }
     private val previewSurfaces = arrayOfNulls<Surface>(4)
@@ -59,6 +62,7 @@ class V2MainActivity : AppCompatActivity() {
     private var autoStartFromBoot = false
     private var silentMode = false
     private var autoRecordingRequested = false
+    private var startServiceWhenPermissionsGranted = false
     private val dateTimeTicker = object : Runnable {
         override fun run() {
             binding.tvDatetime.text = dateTimeFormat.format(Date())
@@ -84,7 +88,9 @@ class V2MainActivity : AppCompatActivity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             service = (binder as? V2CameraForegroundService.LocalBinder)?.service()
             bound = true
+            bindingService = false
             V2AppLog.i("V2MainActivity", "service connected name=$name serviceReady=${service != null}")
+            service?.ensureReadyAfterPermissions()
             service?.setUiStatusListener { status ->
                 binding.tvRecordingStats.post {
                     binding.tvRecordingStats.text = status
@@ -98,7 +104,7 @@ class V2MainActivity : AppCompatActivity() {
             syncRecordButtonFromService()
             maybeStartBootRecording()
         }
-        override fun onServiceDisconnected(name: ComponentName?) { V2AppLog.w("V2MainActivity", "service disconnected name=$name"); bound = false; service = null }
+        override fun onServiceDisconnected(name: ComponentName?) { V2AppLog.w("V2MainActivity", "service disconnected name=$name"); bound = false; bindingService = false; service = null }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -112,6 +118,7 @@ class V2MainActivity : AppCompatActivity() {
         binding.btnExit.setOnClickListener {
             startActivity(Intent(this, V2VideoPlaybackActivity::class.java))
         }
+        binding.btnClose.setOnClickListener { closeApp() }
         binding.btnVideoPlayback.setOnClickListener { startEmergencyRecordingWithToast() }
         dateTimeTicker.run()
         updateRecordButton(lastKnownRecording)
@@ -120,8 +127,21 @@ class V2MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        restoreMainWindowMode()
         V2AppLog.i("V2MainActivity", "onResume hasPermissions=${hasPermissions()}")
-        if (hasPermissions()) startAndBindService()
+        if (hasPermissions()) continueAfterPermissionsGranted("resume")
+    }
+
+    private fun restoreMainWindowMode() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(true)
+            window.insetsController?.show(WindowInsets.Type.systemBars())
+        } else {
+            @Suppress("DEPRECATION")
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -186,6 +206,12 @@ class V2MainActivity : AppCompatActivity() {
                 }
             }, BOOT_MOVE_BACK_DELAY_MS)
         }, BOOT_RECORDING_DELAY_MS)
+    }
+
+    private fun closeApp() {
+        V2AppLog.w("V2MainActivity", "close app requested")
+        service?.shutdownFromUi() ?: V2CameraServiceCommands.stop(this)
+        finishAndRemoveTask()
     }
 
     private fun updateRecordButton(recording: Boolean) {
@@ -334,24 +360,39 @@ class V2MainActivity : AppCompatActivity() {
         val perms = arrayOf(Manifest.permission.CAMERA)
         val missing = perms.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         V2AppLog.i("V2MainActivity", "ensurePermissions missing=$missing")
-        if (missing) ActivityCompat.requestPermissions(this, perms, 2001) else startAndBindService()
+        if (missing) {
+            startServiceWhenPermissionsGranted = true
+            ActivityCompat.requestPermissions(this, perms, 2001)
+        } else {
+            continueAfterPermissionsGranted("ensure")
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 2001) {
             V2AppLog.i("V2MainActivity", "permission result grants=${grantResults.joinToString()} hasPermissions=${hasPermissions()}")
-            if (hasPermissions()) startAndBindService() else Toast.makeText(this, "相机权限未授予", Toast.LENGTH_SHORT).show()
+            if (hasPermissions()) continueAfterPermissionsGranted("permission_result") else Toast.makeText(this, "相机权限未授予", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun hasPermissions() = arrayOf(Manifest.permission.CAMERA).all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
 
+    private fun continueAfterPermissionsGranted(reason: String) {
+        if (!startServiceWhenPermissionsGranted && bound) return
+        startServiceWhenPermissionsGranted = false
+        V2AppLog.i("V2MainActivity", "continueAfterPermissionsGranted reason=$reason bound=$bound")
+        binding.root.post { startAndBindService() }
+    }
+
     private fun startAndBindService() {
-        V2AppLog.i("V2MainActivity", "startAndBindService bound=$bound")
+        V2AppLog.i("V2MainActivity", "startAndBindService bound=$bound binding=$bindingService")
         val intent = Intent(this, V2CameraForegroundService::class.java)
         V2CameraServiceCommands.start(this)
-        if (!bound) bindService(intent, connection, BIND_AUTO_CREATE)
+        if (!bound && !bindingService) {
+            bindingService = true
+            if (!bindService(intent, connection, BIND_AUTO_CREATE)) bindingService = false
+        }
     }
 
     private fun bindPreviews() {

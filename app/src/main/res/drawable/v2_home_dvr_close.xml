@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="60dp"
+    android:height="61dp"
+    android:viewportWidth="60"
+    android:viewportHeight="61">
+    <path
+        android:fillColor="@color/home_back_button_background"
+        android:pathData="M0,7.025C0,4.785 0,3.665 0.436,2.809C0.819,2.056 1.431,1.444 2.184,1.061C3.04,0.625 4.16,0.625 6.4,0.625H53.6C55.84,0.625 56.96,0.625 57.816,1.061C58.569,1.444 59.181,2.056 59.564,2.809C60,3.665 60,4.785 60,7.025V54.225C60,56.465 60,57.585 59.564,58.441C59.181,59.194 58.569,59.806 57.816,60.189C56.96,60.625 55.84,60.625 53.6,60.625H6.4C4.16,60.625 3.04,60.625 2.184,60.189C1.431,59.806 0.819,59.194 0.436,58.441C0,57.585 0,56.465 0,54.225V7.025Z" />
+    <path
+        android:fillColor="@color/home_back_button_icon"
+        android:pathData="M22.818,21.322L30,28.504L37.182,21.322L39.303,23.443L32.121,30.625L39.303,37.807L37.182,39.928L30,32.746L22.818,39.928L20.697,37.807L27.879,30.625L20.697,23.443L22.818,21.322Z" />
+</vector>

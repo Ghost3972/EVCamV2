@@ -74,6 +74,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     private var emergencyRecordingActive = false
     private var resumeNormalRecordingAfterEmergency = false
     private var emergencyRecordingStopRunnable: Runnable? = null
+    private var resumeRecordingAfterDisplayOn = false
     private val previewSurfaces = arrayOfNulls<Surface>(4)
     private lateinit var displayPowerController: V2DisplayPowerController
     private lateinit var cameraWatchdog: V2CameraWatchdog
@@ -278,6 +279,19 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     fun isRecording(): Boolean = engine.isRecording()
     fun statusText(): String = engine.statusText()
     fun isPreviewPausedByAvoidance(): Boolean = false
+    fun ensureReadyAfterPermissions() {
+        V2AppLog.i("V2CameraService", "ensureReadyAfterPermissions displayPowerOn=${isDisplayPowerOn()} recording=${engine.isRecording()}")
+        if (!isDisplayPowerOn()) return
+        engine.setCameraAccessAllowed(true)
+        engine.startCameras()
+        previewSurfaces.forEachIndexed { index, surface ->
+            previewLeaseManager.restoreMain(index, surface)
+        }
+        cameraWatchdog.reset("permission_ready")
+        updatePlaybackCacheRecordingState()
+        updateStatusBarPluginState()
+        uiStatusListener?.invoke(engine.statusText())
+    }
     fun previewInputSizeLabel(index: Int): String = engine.previewInputSizeLabel(index)
     fun previewInputSize(index: Int): android.util.Size? = engine.previewInputSize(index)
     fun attachPreviewSurface(index: Int, surface: Surface) {
@@ -418,7 +432,8 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
 
     private fun handleDisplayOff(action: String?) {
         displayPowerController.markOff(action)
-        V2AppLog.i("V2CameraService", "display off/pre-STR action=$action: stop recording, detach preview, release cameras")
+        resumeRecordingAfterDisplayOn = engine.isRecording()
+        V2AppLog.i("V2CameraService", "display off/pre-STR action=$action: stop recording, detach preview, release cameras resumeRecording=$resumeRecordingAfterDisplayOn")
         cameraWatchdog.reset("display_off")
         autoRecordingController.cancelPending()
         avoidanceController.clear("display off")
@@ -450,10 +465,35 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         previewSurfaces.forEachIndexed { index, surface ->
             previewLeaseManager.restoreMain(index, surface)
         }
+        restoreRecordingAfterDisplayOnIfNeeded()
         autoRecordingController.cancelPending()
         cameraWatchdog.reset("display_on")
         cameraWatchdog.start()
         uiStatusListener?.invoke(engine.statusText())
+    }
+
+    private fun restoreRecordingAfterDisplayOnIfNeeded() {
+        if (!resumeRecordingAfterDisplayOn) return
+        resumeRecordingAfterDisplayOn = false
+        mainHandler.postDelayed({
+            if (!isDisplayPowerOn()) {
+                V2AppLog.i("V2CameraService", "display-on recording restore skipped: display off")
+                return@postDelayed
+            }
+            if (avoidanceController.isActive) {
+                V2AppLog.i("V2CameraService", "display-on recording restore skipped: avoidance active target=${avoidanceController.activeTarget}")
+                return@postDelayed
+            }
+            if (engine.isRecording()) {
+                V2AppLog.i("V2CameraService", "display-on recording restore skipped: already recording")
+                return@postDelayed
+            }
+            V2AppLog.i("V2CameraService", "display-on recording restore start")
+            engine.startRecording()
+            updatePlaybackCacheRecordingState()
+            updateStatusBarPluginState()
+            uiStatusListener?.invoke(engine.statusText())
+        }, 500L)
     }
 
     private fun showUiFromCustomKey() {

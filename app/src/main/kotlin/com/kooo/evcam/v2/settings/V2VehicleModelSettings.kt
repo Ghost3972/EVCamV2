@@ -20,7 +20,7 @@ object V2VehicleModelSettings {
         VehicleModel(MODEL_A7_2025, "25款A7", CameraMapping(front = "2", back = "1", left = "3", right = "0"))
     )
 
-    fun getModelId(context: Context): String = prefs(context).getString(KEY_VEHICLE_MODEL, MODEL_E5_2025) ?: MODEL_E5_2025
+    fun getModelId(context: Context): String = prefs(context).getString(KEY_VEHICLE_MODEL, MODEL_A7_2025) ?: MODEL_A7_2025
 
     fun setModelId(context: Context, modelId: String) {
         val model = models.firstOrNull { it.id == modelId }

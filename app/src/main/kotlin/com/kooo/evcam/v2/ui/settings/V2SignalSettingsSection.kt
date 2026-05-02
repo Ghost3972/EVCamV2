@@ -27,20 +27,27 @@ class V2SignalSettingsSection(
 ) {
     private var blindSpotCorrectionPreviewSide: String? = null
 
-    fun blindSpotCard(): View = propIdSwitchCard(
-        title = "转向补盲",
-        subtitle = "监听 VHAL 转向灯属性；左=${V2BlindSpotSettings.LEFT_VALUE} 右=${V2BlindSpotSettings.RIGHT_VALUE} 关=${V2BlindSpotSettings.OFF_VALUE}；归零稳定 ${V2BlindSpotSettings.HIDE_DELAY_MS / 1000} 秒后关闭悬浮窗",
-        propId = V2BlindSpotSettings.turnSignalPropId(activity),
-        defaultPropId = V2BlindSpotSettings.DEFAULT_TURN_SIGNAL_PROP_ID,
-        checked = V2BlindSpotSettings.isEnabled(activity),
-        invalidToast = "转向灯属性ID无效",
-        successToast = "补盲设置已生效",
-        logPrefix = "blindSpot",
-        refreshAction = V2CameraForegroundService.ACTION_REFRESH_BLIND_SPOT,
-        propIdReader = { V2BlindSpotSettings.turnSignalPropId(activity) },
-        propIdWriter = { V2BlindSpotSettings.setTurnSignalPropId(activity, it) },
-        enabledWriter = { V2BlindSpotSettings.setEnabled(activity, it) }
-    )
+    fun blindSpotCard(): View {
+        val card = propIdSwitchCard(
+            title = "转向补盲",
+            subtitle = "监听 VHAL 转向灯属性；左=${V2BlindSpotSettings.LEFT_VALUE} 右=${V2BlindSpotSettings.RIGHT_VALUE} 关=${V2BlindSpotSettings.OFF_VALUE}；归零稳定 ${V2BlindSpotSettings.HIDE_DELAY_MS / 1000} 秒后关闭悬浮窗",
+            propId = V2BlindSpotSettings.turnSignalPropId(activity),
+            defaultPropId = V2BlindSpotSettings.DEFAULT_TURN_SIGNAL_PROP_ID,
+            checked = V2BlindSpotSettings.isEnabled(activity),
+            invalidToast = "转向灯属性ID无效",
+            successToast = "补盲设置已生效",
+            logPrefix = "blindSpot",
+            refreshAction = V2CameraForegroundService.ACTION_REFRESH_BLIND_SPOT,
+            propIdReader = { V2BlindSpotSettings.turnSignalPropId(activity) },
+            propIdWriter = { V2BlindSpotSettings.setTurnSignalPropId(activity, it) },
+            enabledWriter = { V2BlindSpotSettings.setEnabled(activity, it) }
+        ) { enabled ->
+            blindSpotCorrectionSection().apply {
+                visibility = if (enabled) View.VISIBLE else View.GONE
+            }
+        }
+        return card
+    }
 
     fun customKeyCard(): View = propIdSwitchCard(
         title = "定制键调出/隐藏",
@@ -57,11 +64,14 @@ class V2SignalSettingsSection(
         enabledWriter = { V2CustomKeySettings.setEnabled(activity, it) }
     )
 
-    fun blindSpotCorrectionCard(): View {
-        val card = cards.cardContainer()
+    private fun blindSpotCorrectionSection(): View {
+        val card = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(12), 0, 0)
+        }
         card.addView(cards.cardTexts(
             title = "补盲画面矫正",
-            subtitle = "对齐旧版补盲矫正：左右独立缩放、平移、镜像；点击预览后拖动参数可实时查看效果",
+            subtitle = "左右独立缩放、平移、镜像；点击预览后拖动参数可实时查看效果",
             useWeight = false
         ))
         val paramsContainer = LinearLayout(activity).apply {
@@ -88,7 +98,8 @@ class V2SignalSettingsSection(
         refreshAction: String,
         propIdReader: () -> Int,
         propIdWriter: (Int) -> Unit,
-        enabledWriter: (Boolean) -> Unit
+        enabledWriter: (Boolean) -> Unit,
+        extraContent: ((Boolean) -> View)? = null
     ): View {
         val row = cards.cardContainer()
         row.addView(cards.cardTexts(title, subtitle, useWeight = false))
@@ -125,11 +136,16 @@ class V2SignalSettingsSection(
             if (showToast) Toast.makeText(activity, successToast, Toast.LENGTH_SHORT).show()
         }
 
-        switch.setOnCheckedChangeListener { _, _ -> saveAndRefresh(true) }
+        val extraView = extraContent?.invoke(checked)
+        switch.setOnCheckedChangeListener { _, isChecked ->
+            extraView?.visibility = if (isChecked) View.VISIBLE else View.GONE
+            saveAndRefresh(true)
+        }
         propEdit.setOnEditorActionListener { _, _, _ -> saveAndRefresh(true); true }
         propEdit.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) saveAndRefresh(false) }
         row.setOnClickListener { switch.toggle() }
         row.addView(controls)
+        if (extraView != null) row.addView(extraView)
         return row
     }
 

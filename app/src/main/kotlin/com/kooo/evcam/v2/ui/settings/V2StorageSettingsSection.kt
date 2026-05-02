@@ -3,6 +3,9 @@ package com.kooo.evcam.v2.ui.settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
+import android.Manifest
+import android.os.Build
+import android.os.Environment
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -12,6 +15,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.settings.V2StorageCleanupSettings
@@ -34,13 +38,35 @@ class V2StorageSettingsSection(
         val selectedIndex = when (V2StoragePathHelper.preferredLocation(activity)) {
             V2StoragePathHelper.StorageLocation.INTERNAL -> 0
             V2StoragePathHelper.StorageLocation.USB -> 1
+            V2StoragePathHelper.StorageLocation.PUBLIC_DCIM -> 2
+        }
+        val currentPathText = TextView(activity).apply {
+            text = V2StoragePathHelper.storageSummary(activity)
+            textSize = 14f
+            setPadding(0, cards.dp(4), 0, 0)
+            setTextColor(ContextCompat.getColor(activity, R.color.text_secondary))
         }
         row.addView(spinnerRow("存储位置", locationOptions, selectedIndex) { position ->
-            val location = if (position == 1) V2StoragePathHelper.StorageLocation.USB else V2StoragePathHelper.StorageLocation.INTERNAL
+            val location = when (position) {
+                1 -> V2StoragePathHelper.StorageLocation.USB
+                2 -> V2StoragePathHelper.StorageLocation.PUBLIC_DCIM
+                else -> V2StoragePathHelper.StorageLocation.INTERNAL
+            }
+            if (location == V2StoragePathHelper.StorageLocation.USB && V2StoragePathHelper.availableUsbMount(activity) == null) {
+                Toast.makeText(activity, "未检测到U盘", Toast.LENGTH_SHORT).show()
+                return@spinnerRow false
+            }
+            if (location == V2StoragePathHelper.StorageLocation.PUBLIC_DCIM && !hasPublicStoragePermission()) {
+                Toast.makeText(activity, "无存储权限", Toast.LENGTH_SHORT).show()
+                return@spinnerRow false
+            }
             V2StoragePathHelper.saveLocation(activity, location)
-            onStorageLocationChanged()
+            currentPathText.text = V2StoragePathHelper.storageSummary(activity)
+            true
         })
-        row.addView(cards.cardTexts("当前路径", V2StoragePathHelper.storageSummary(activity), 0, useWeight = false))
+        row.addView(cards.cardTexts("当前路径", "", 0, useWeight = false).apply {
+            addView(currentPathText)
+        })
         row.addView(reservedSpaceRow())
         return row
     }
@@ -76,7 +102,7 @@ class V2StorageSettingsSection(
         return inputRow
     }
 
-    private fun spinnerRow(label: String, labels: List<String>, selectedIndex: Int, onSelected: (Int) -> Unit): View {
+    private fun spinnerRow(label: String, labels: List<String>, selectedIndex: Int, onSelected: (Int) -> Boolean): View {
         val row = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -90,20 +116,35 @@ class V2StorageSettingsSection(
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         var initialized = false
+        var suppressSelection = false
+        var currentIndex = selectedIndex
         val spinner = Spinner(activity).apply {
             adapter = spinnerAdapter(labels)
             setSelection(selectedIndex)
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                     if (!initialized) { initialized = true; return }
-                    onSelected(position)
+                    if (suppressSelection) return
+                    if (onSelected(position)) {
+                        currentIndex = position
+                    } else {
+                        suppressSelection = true
+                        setSelection(currentIndex)
+                        suppressSelection = false
+                    }
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
         }
         row.setOnClickListener { spinner.performClick() }
-        row.addView(spinner, LinearLayout.LayoutParams(cards.dp(170), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(spinner, LinearLayout.LayoutParams(cards.dp(240), ViewGroup.LayoutParams.WRAP_CONTENT))
         return row
+    }
+
+    private fun hasPublicStoragePermission(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager()
+    } else {
+        ContextCompat.checkSelfPermission(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
     private fun spinnerAdapter(labels: List<String>) = object : ArrayAdapter<String>(activity, android.R.layout.simple_spinner_item, labels) {

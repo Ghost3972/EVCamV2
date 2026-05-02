@@ -118,11 +118,10 @@ class V2SettingsActivity : AppCompatActivity() {
         content.addView(generalSection.recordingSwitchCard())
         content.addView(recordingSettingsCard())
         content.addView(storageCleanupCard())
-        content.addView(avoidanceBehaviorCard())
-        content.addView(fisheyeSwitchCard())
-        content.addView(signalSection.blindSpotCard())
-        content.addView(signalSection.blindSpotCorrectionCard())
         content.addView(signalSection.customKeyCard())
+        content.addView(avoidanceBehaviorCard())
+        content.addView(signalSection.blindSpotCard())
+        content.addView(fisheyeSwitchCard())
         return scroll
     }
 

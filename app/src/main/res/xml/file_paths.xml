@@ -28,4 +28,9 @@
     <files-path
         name="files"
         path="." />
+
+    <!-- 应用专属外部目录，用于录制视频分享/回放 -->
+    <external-files-path
+        name="app_external_files"
+        path="." />
 </paths>

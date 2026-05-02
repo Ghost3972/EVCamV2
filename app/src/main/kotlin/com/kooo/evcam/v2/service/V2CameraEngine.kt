@@ -30,6 +30,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         private const val PREVIEW_LOCK_BUSY_RETRY_MS = 8L
         private const val PREVIEW_LOCK_BUSY_RESULT = -2L
         private const val CAMERA_REOPEN_DELAY_MS = 500L
+        private const val EVENT_SEGMENT_GUARD_MS = 5_000L
     }
 
     private val specs = V2CameraSpecProvider.specsForCurrentModel(context)
@@ -209,14 +210,14 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     fun previewInputSize(index: Int): Size? = slot(index)?.inputSize ?: recordingSize
 
     fun startRecording() {
-        startRecordingInternal(fileSuffix = "", activeSegmentDurationMs = segmentDurationMs)
+        startRecordingInternal(fileSuffix = "", activeSegmentDurationMs = segmentDurationMs, precreateSegments = V2RecordingSettings.segmentPrecreateEnabled(context))
     }
 
     fun startEventRecording(durationMs: Long) {
-        startRecordingInternal(fileSuffix = "_event", activeSegmentDurationMs = durationMs)
+        startRecordingInternal(fileSuffix = "_event", activeSegmentDurationMs = durationMs + EVENT_SEGMENT_GUARD_MS, precreateSegments = false)
     }
 
-    private fun startRecordingInternal(fileSuffix: String, activeSegmentDurationMs: Long) {
+    private fun startRecordingInternal(fileSuffix: String, activeSegmentDurationMs: Long, precreateSegments: Boolean) {
         if (!cameraAccessAllowed) {
             V2AppLog.w("V2CameraEngine", "startRecording skipped: screen is off")
             return
@@ -230,7 +231,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
             return
         }
 
-        val segmentPrecreate = V2RecordingSettings.segmentPrecreateEnabled(context)
+        val segmentPrecreate = precreateSegments
         V2AppLog.i("V2CameraEngine", "startRecording size=${recordingSize.width}x${recordingSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$activeSegmentDurationMs suffix=$fileSuffix precreate=$segmentPrecreate")
         nativeCompositor.setPreviewMaxFps(RECORDING_PREVIEW_MAX_FPS)
         val next = V2RecordingPipelineFactory.create(

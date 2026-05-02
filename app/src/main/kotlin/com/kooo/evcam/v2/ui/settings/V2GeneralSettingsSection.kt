@@ -63,7 +63,7 @@ class V2GeneralSettingsSection(
                     }
                     V2VehicleModelSettings.setModelId(activity, models[position].id)
                     V2AppLog.i(TAG, "vehicle model changed to ${models[position].label} ${V2VehicleModelSettings.mappingSummary(activity).replace('\n', ' ')}")
-                    Toast.makeText(activity, "车型已切换，重启应用后生效", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(activity, "需重启生效", Toast.LENGTH_SHORT).show()
                     onRefreshHome()
                 }
 
