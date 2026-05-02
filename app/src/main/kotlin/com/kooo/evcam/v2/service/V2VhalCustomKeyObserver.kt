@@ -10,7 +10,7 @@ class V2VhalCustomKeyObserver(
     private val listener: Listener,
 ) {
     fun interface Listener {
-        fun onCustomKeyLongPress()
+        fun onCustomKeyValue4()
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -70,7 +70,7 @@ class V2VhalCustomKeyObserver(
     private fun handleButtonState(state: Int, extra: Int) {
         if (state == LONG_PRESS_VALUE && lastButtonState != LONG_PRESS_VALUE) {
             Log.d(TAG, "Custom key long press triggered, value=$state extra=$extra events=$customKeyEventCount")
-            mainHandler.post(listener::onCustomKeyLongPress)
+            mainHandler.post(listener::onCustomKeyValue4)
         } else if (state != lastButtonState) {
             Log.d(TAG, "Custom key state changed $lastButtonState -> $state extra=$extra")
         }

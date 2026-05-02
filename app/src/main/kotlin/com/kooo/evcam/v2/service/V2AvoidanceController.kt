@@ -161,7 +161,7 @@ class V2AvoidanceController(
 
     private companion object {
         private const val TAG = "V2CameraService"
-        private const val CHECK_INTERVAL_MS = 1_000L
-        private const val DECISION_LOG_INTERVAL_MS = 1_000L
+        private const val CHECK_INTERVAL_MS = 2_000L
+        private const val DECISION_LOG_INTERVAL_MS = 10_000L
     }
 }

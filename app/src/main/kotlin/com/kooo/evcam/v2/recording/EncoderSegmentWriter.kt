@@ -13,6 +13,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class EncoderSegmentWriter(
     context: Context,
@@ -37,6 +38,8 @@ class EncoderSegmentWriter(
     private var segmentStartedAtMs = 0L
     private var currentFile: File? = null
     private var tempFile: File? = null
+    private var segmentWallClockMs = 0L
+    private var attachedWallClockMs = 0L
     private val drainExecutor = Executors.newSingleThreadExecutor()
     private val drainPending = AtomicBoolean(false)
     private val bufferInfo = MediaCodec.BufferInfo()
@@ -51,6 +54,7 @@ class EncoderSegmentWriter(
         finishing = false
         drainPending.set(false)
         segmentStartedAtMs = SystemClock.elapsedRealtime()
+        this.segmentWallClockMs = segmentWallClockMs
         val formatStamp = V2SegmentFileNamer.timestamp(segmentWallClockMs)
         currentFile = V2SegmentFileNamer.uniqueFile(outputDir, formatStamp, fileSuffix)
         tempFile = File(outputDir, currentFile!!.name + ".recording")
@@ -92,9 +96,10 @@ class EncoderSegmentWriter(
         return currentFile!!
     }
 
-    fun markAttached(segmentIndex: Int) {
+    fun markAttached(segmentIndex: Int, attachedWallClockMs: Long = System.currentTimeMillis()) {
         metrics.segmentIndex = segmentIndex
         segmentStartedAtMs = SystemClock.elapsedRealtime()
+        this.attachedWallClockMs = attachedWallClockMs
     }
 
     fun requestDrain() {
@@ -176,9 +181,10 @@ class EncoderSegmentWriter(
             .getOrNull()
     }
 
-    fun finishAndReleaseBlocking(generateThumbnail: Boolean = true, timeoutMs: Long = 10_000L) {
+    fun finishAndReleaseBlocking(generateThumbnail: Boolean = true, timeoutMs: Long = 10_000L): File? {
         finishing = true
         val latch = CountDownLatch(1)
+        val result = AtomicReference<File?>()
         drainExecutor.execute {
             try {
                 val eosSignaled = runCatching { codec?.signalEndOfInputStream() }
@@ -186,30 +192,33 @@ class EncoderSegmentWriter(
                     .isSuccess
                 runCatching { drainInternal(eosSignaled) }
                     .onFailure { V2AppLog.e("EncoderSegmentWriter", "final drain failed file=${currentFile?.name}", it) }
-                releaseInternal(generateThumbnail)
+                result.set(releaseInternal(generateThumbnail))
             } finally {
                 latch.countDown()
             }
         }
         latch.await(timeoutMs, TimeUnit.MILLISECONDS)
         drainExecutor.shutdown()
+        return result.get()
     }
 
-    fun releaseBlocking(generateThumbnail: Boolean = false, timeoutMs: Long = 1500L) {
+    fun releaseBlocking(generateThumbnail: Boolean = false, timeoutMs: Long = 1500L): File? {
         finishing = true
         val latch = CountDownLatch(1)
+        val result = AtomicReference<File?>()
         drainExecutor.execute {
             try {
-                releaseInternal(generateThumbnail)
+                result.set(releaseInternal(generateThumbnail))
             } finally {
                 latch.countDown()
             }
         }
         latch.await(timeoutMs, TimeUnit.MILLISECONDS)
         drainExecutor.shutdown()
+        return result.get()
     }
 
-    private fun releaseInternal(generateThumbnail: Boolean) {
+    private fun releaseInternal(generateThumbnail: Boolean): File? {
         val muxerStopOk = if (muxerStarted && writtenSamples > 0L) {
             runCatching { muxer?.stop() }
                 .onFailure {
@@ -234,9 +243,12 @@ class EncoderSegmentWriter(
             V2PlaybackListCache.upsertVideo(appContext, file)
             if (generateThumbnail) V2RecordingThumbnailer.generateFirstFrameAsync(appContext, file)
         }
+        return finishedFile
     }
 
     fun currentFile(): File? = currentFile
+    fun segmentWallClockMs(): Long = segmentWallClockMs
+    fun mediaStartWallClockMs(): Long = attachedWallClockMs.takeIf { it > 0L } ?: segmentWallClockMs
     fun currentSizeBytes(): Long = tempFile?.takeIf { it.exists() }?.length() ?: currentFile?.takeIf { it.exists() }?.length() ?: 0L
 
     private fun finalizeTempFile(muxerStopOk: Boolean): File? {

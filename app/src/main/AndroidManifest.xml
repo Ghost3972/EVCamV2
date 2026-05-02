@@ -129,6 +129,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="com.kooo.evcam.v2.action.PLUGIN_TOGGLE_RECORDING" />
+                <action android:name="com.kooo.evcam.v2.action.PLUGIN_START_EMERGENCY" />
             </intent-filter>
         </receiver>
 

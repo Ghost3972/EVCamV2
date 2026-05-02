@@ -22,7 +22,10 @@ class V2CustomKeyController(
             return
         }
         val buttonPropId = V2CustomKeySettings.buttonPropId(context)
-        observer = V2VhalCustomKeyObserver(buttonPropId) { handleToggle() }.also { it.start() }
+        observer = V2VhalCustomKeyObserver(
+            buttonPropId = buttonPropId,
+            listener = V2VhalCustomKeyObserver.Listener { handleValue4() }
+        ).also { it.start() }
         V2AppLog.i(TAG, "VHAL custom key observer started buttonPropId=$buttonPropId")
     }
 
@@ -38,19 +41,23 @@ class V2CustomKeyController(
         V2AppLog.i(TAG, "VHAL custom key observer stopped")
     }
 
-    private fun handleToggle() {
+    private fun handleValue4() {
         handler.post {
-            if (!isDisplayPowerOn()) {
-                V2AppLog.w(TAG, "custom key toggle ignored: display off")
-                return@post
-            }
-            if (isUiVisible()) {
-                V2AppLog.i(TAG, "custom key value 4: hide UI")
-                hideUi()
-            } else {
-                V2AppLog.i(TAG, "custom key value 4: show UI")
-                showUi()
-            }
+            toggleUiFromCustomKey()
+        }
+    }
+
+    private fun toggleUiFromCustomKey() {
+        if (!isDisplayPowerOn()) {
+            V2AppLog.w(TAG, "custom key toggle ignored: display off")
+            return
+        }
+        if (isUiVisible()) {
+            V2AppLog.i(TAG, "custom key value 4: hide UI")
+            hideUi()
+        } else {
+            V2AppLog.i(TAG, "custom key value 4: show UI")
+            showUi()
         }
     }
 

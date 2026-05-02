@@ -29,7 +29,7 @@ internal class V2CameraNotificationHelper(private val service: V2CameraForegroun
         return NotificationCompat.Builder(service, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_name)
             .setContentTitle("EVCam V2")
-            .setContentText(text)
+            .setContentText(displayText(text))
             .setOngoing(true)
             .addExtras(flymeStatusIconExtras(text))
             .build()
@@ -58,6 +58,10 @@ internal class V2CameraNotificationHelper(private val service: V2CameraForegroun
         )
         channelCreated = true
     }
+
+    private fun displayText(text: String): String = text.lineSequence()
+        .filterNot { it.startsWith("emg=") || it.startsWith("emgEnd=") }
+        .joinToString("\n")
 
     private companion object {
         private const val CHANNEL_ID = "v2_camera"

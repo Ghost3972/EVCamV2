@@ -51,7 +51,7 @@ class V2SignalSettingsSection(
 
     fun customKeyCard(): View = propIdSwitchCard(
         title = "定制键调出/隐藏",
-        subtitle = "监听 VHAL 按钮属性值变为 4，触发软件调出/隐藏",
+        subtitle = "监听 VHAL 按钮属性值变为 4 时切换主界面显示状态",
         propId = V2CustomKeySettings.buttonPropId(activity),
         defaultPropId = V2CustomKeySettings.DEFAULT_BUTTON_PROP_ID,
         checked = V2CustomKeySettings.isEnabled(activity),

@@ -25,8 +25,8 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     interface Listener { fun onStatusChanged(status: String) }
 
     companion object {
-        private const val PREVIEW_MAX_FPS = 30
-        private const val RECORDING_PREVIEW_MAX_FPS = 30
+        private const val PREVIEW_MAX_FPS = 24
+        private const val RECORDING_PREVIEW_MAX_FPS = 24
         private const val PREVIEW_LOCK_BUSY_RETRY_MS = 8L
         private const val PREVIEW_LOCK_BUSY_RESULT = -2L
         private const val CAMERA_REOPEN_DELAY_MS = 500L
@@ -215,6 +215,10 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
 
     fun startEventRecording(durationMs: Long) {
         startRecordingInternal(fileSuffix = "_event", activeSegmentDurationMs = durationMs + EVENT_SEGMENT_GUARD_MS, precreateSegments = false)
+    }
+
+    fun requestEmergencyClip(durationMs: Long): Boolean {
+        return compositor?.requestEmergencyClip(System.currentTimeMillis(), durationMs) == true
     }
 
     private fun startRecordingInternal(fileSuffix: String, activeSegmentDurationMs: Long, precreateSegments: Boolean) {

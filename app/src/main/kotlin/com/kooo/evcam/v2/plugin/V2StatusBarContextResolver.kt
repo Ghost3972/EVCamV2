@@ -9,14 +9,13 @@ internal class V2StatusBarContextResolver(
     private val tag: String,
 ) {
     fun stateContext(pluginContext: Context?, hostContext: Context?): Context? {
-        pluginContext?.let { return it }
-        if (hostContext == null) return null
-        return try {
+        val appContext = if (hostContext != null) try {
             hostContext.createPackageContext(appPackage, Context.CONTEXT_IGNORE_SECURITY)
         } catch (error: PackageManager.NameNotFoundException) {
             Log.w(tag, "createPackageContext failed", error)
             null
-        }
+        } else null
+        return appContext ?: pluginContext
     }
 
     fun hostContextOrNull(sysuiContext: Context?): Context? = sysuiContext ?: initialApplication()

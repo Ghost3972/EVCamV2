@@ -36,6 +36,8 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         internal const val AUTO_START_RECORDING_DELAY_MS = 0L
         private const val WATCHDOG_RECORDING_RESTART_DELAY_MS = 3_000L
         private const val SERVICE_RESTART_DELAY_MS = 1_000L
+        private const val KEEP_ALIVE_CHAIN_INTERVAL_MS = 60_000L
+        private const val STATUS_BAR_STATE_INTERVAL_MS = 15_000L
         const val EMERGENCY_RECORDING_DURATION_MS = 15_000L
     }
 
@@ -58,6 +60,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         showToast = { showServiceToast(it) }
     )
     private var uiStatusListener: ((String) -> Unit)? = null
+    private var uiEmergencyRecordingListener: ((Boolean, Long) -> Unit)? = null
     private var uiHideListener: (() -> Unit)? = null
     private var uiVisible = false
     private var manualShutdown = false
@@ -71,7 +74,15 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     private var lastNotificationText: String? = null
     private var lastNotificationMs = 0L
     private var lastNotificationRecording: Boolean? = null
+    private var lastNotificationEmergency: Boolean? = null
+    private var lastKeepAliveChainMs = 0L
+    private var lastUiStatusText: String? = null
+    private var lastStatusBarStatus: String? = null
+    private var lastStatusBarRecording: Boolean? = null
+    private var lastStatusBarEmergency: Boolean? = null
+    private var lastStatusBarUpdateMs = 0L
     private var emergencyRecordingActive = false
+    private var emergencyRecordingEndsAtMs = 0L
     private var resumeNormalRecordingAfterEmergency = false
     private var emergencyRecordingStopRunnable: Runnable? = null
     private var resumeRecordingAfterDisplayOn = false
@@ -247,6 +258,12 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     }
 
     private fun ensureKeepAliveChain(reason: String) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (isDisplayPowerOn() && now - lastKeepAliveChainMs < KEEP_ALIVE_CHAIN_INTERVAL_MS) {
+            refreshWakeLock()
+            return
+        }
+        lastKeepAliveChainMs = now
         releaseCamerasIfSystemAlreadyNonInteractive("keep_alive:$reason")
         V2KeepAliveReceiver.registerTimeTick(this)
         V2KeepAliveScheduler.schedule(this)
@@ -354,16 +371,27 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         if (emergencyRecordingActive) return false
 
         emergencyRecordingActive = true
+        emergencyRecordingEndsAtMs = android.os.SystemClock.elapsedRealtime() + durationMs
         resumeNormalRecordingAfterEmergency = engine.isRecording()
         emergencyRecordingStopRunnable?.let(mainHandler::removeCallbacks)
         emergencyRecordingStopRunnable = null
         onStateChanged?.invoke(true)
+        notifyEmergencyRecordingState(true)
         updateStatusBarPluginState()
 
-        if (engine.isRecording()) {
-            engine.stopRecordingBlockingForSwitch()
+        if (resumeNormalRecordingAfterEmergency) {
+            if (!engine.requestEmergencyClip(durationMs)) {
+                emergencyRecordingActive = false
+                emergencyRecordingEndsAtMs = 0L
+                resumeNormalRecordingAfterEmergency = false
+                onStateChanged?.invoke(false)
+                notifyEmergencyRecordingState(false)
+                updateStatusBarPluginState()
+                return false
+            }
+        } else {
+            engine.startEventRecording(durationMs)
         }
-        engine.startEventRecording(durationMs)
         updatePlaybackCacheRecordingState()
         updateStatusBarPluginState()
         uiStatusListener?.invoke(engine.statusText())
@@ -379,19 +407,13 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         V2AppLog.i("V2CameraService", "emergency finish resumeNormal=$resumeNormalRecordingAfterEmergency recording=${engine.isRecording()}")
         emergencyRecordingActive = false
         emergencyRecordingStopRunnable = null
-        engine.stopRecording()
+        emergencyRecordingEndsAtMs = 0L
+        if (!resumeNormalRecordingAfterEmergency) engine.stopRecording()
         updatePlaybackCacheRecordingState()
         updateStatusBarPluginState()
         uiStatusListener?.invoke(engine.statusText())
         onStateChanged?.invoke(false)
-        if (resumeNormalRecordingAfterEmergency && isDisplayPowerOn() && !avoidanceController.isActive) {
-            mainHandler.postDelayed({
-                engine.startRecording()
-                updatePlaybackCacheRecordingState()
-                updateStatusBarPluginState()
-                uiStatusListener?.invoke(engine.statusText())
-            }, 500L)
-        }
+        notifyEmergencyRecordingState(false)
         resumeNormalRecordingAfterEmergency = false
     }
 
@@ -417,6 +439,15 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     fun setUiStatusListener(listener: ((String) -> Unit)?) {
         uiStatusListener = listener
         listener?.invoke(engine.statusText())
+    }
+
+    fun setUiEmergencyRecordingListener(listener: ((Boolean, Long) -> Unit)?) {
+        uiEmergencyRecordingListener = listener
+        listener?.invoke(emergencyRecordingActive, emergencyRecordingEndsAtMs)
+    }
+
+    private fun notifyEmergencyRecordingState(active: Boolean) {
+        uiEmergencyRecordingListener?.invoke(active, emergencyRecordingEndsAtMs)
     }
     fun setUiVisibility(visible: Boolean, hideListener: (() -> Unit)? = null) {
         uiVisible = visible
@@ -595,23 +626,48 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     private fun releaseWakeLock() = wakeLockHolder.release()
 
     override fun onStatusChanged(status: String) {
-        uiStatusListener?.invoke(status)
-        parseRecordingState(status)?.let { V2PlaybackCacheMaintainer.setRecordingActive(it) }
+        val recording = parseRecordingState(status)
+        updateUiStatusIfChanged(status)
+        recording?.let { V2PlaybackCacheMaintainer.setRecordingActive(it) }
         updateStatusBarPluginState(status)
         if (shouldUpdateNotification(status)) {
-            notificationHelper.update(status)
-            lastNotificationText = status
-            lastNotificationMs = System.currentTimeMillis()
-            lastNotificationRecording = parseRecordingState(status)
+            updateStatusBarNotification(status, recording)
         }
+    }
+
+    private fun updateStatusBarNotification(status: String, recording: Boolean? = parseRecordingState(status)) {
+        notificationHelper.update(statusBarNotificationText(status))
+        lastNotificationText = status
+        lastNotificationMs = System.currentTimeMillis()
+        lastNotificationRecording = recording
+        lastNotificationEmergency = emergencyRecordingActive
+    }
+
+    private fun statusBarNotificationText(status: String): String {
+        val emergencyLine = if (emergencyRecordingActive) "emg=ON" else "emg=OFF"
+        val endLine = if (emergencyRecordingActive) "emgEnd=${emergencyRecordingEndsAtWallClockMs()}" else "emgEnd=0"
+        return if (status.contains("emg=")) status else "$status\n$emergencyLine\n$endLine"
+    }
+
+    private fun emergencyRecordingEndsAtWallClockMs(): Long {
+        if (!emergencyRecordingActive || emergencyRecordingEndsAtMs <= 0L) return 0L
+        val remainingMs = emergencyRecordingEndsAtMs - android.os.SystemClock.elapsedRealtime()
+        return if (remainingMs > 0L) System.currentTimeMillis() + remainingMs else 0L
+    }
+
+    private fun updateUiStatusIfChanged(status: String) {
+        if (status == lastUiStatusText) return
+        lastUiStatusText = status
+        uiStatusListener?.invoke(status)
     }
 
     private fun shouldUpdateNotification(status: String): Boolean {
         val now = System.currentTimeMillis()
         val recording = parseRecordingState(status)
         val recordingChanged = recording != null && lastNotificationRecording != recording
+        val emergencyChanged = lastNotificationEmergency != emergencyRecordingActive
         val textChanged = lastNotificationText != status
-        return recordingChanged || lastNotificationText == null || textChanged && now - lastNotificationMs >= 15_000L
+        return recordingChanged || emergencyChanged || lastNotificationText == null || textChanged && now - lastNotificationMs >= 15_000L
     }
 
     private fun parseRecordingState(status: String): Boolean? {
@@ -635,12 +691,26 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
 
     private fun startEmergencyRecordingFromPlugin() {
         V2AppLog.i("V2CameraService", "plugin emergency recording")
+        if (emergencyRecordingActive) {
+            showServiceToast("紧急录制已在进行")
+            return
+        }
         val started = startEmergencyRecording()
         if (!started) showServiceToast("紧急录制启动失败")
     }
 
     private fun updateStatusBarPluginState(status: String = if (::engine.isInitialized) engine.statusText() else "") {
         if (!::engine.isInitialized) return
-        V2StatusBarStateStore.update(this, true, engine.isRecording(), emergencyRecordingActive, status)
+        val now = android.os.SystemClock.elapsedRealtime()
+        val recording = engine.isRecording()
+        val stateChanged = recording != lastStatusBarRecording || emergencyRecordingActive != lastStatusBarEmergency
+        val textRefreshDue = status != lastStatusBarStatus && now - lastStatusBarUpdateMs >= STATUS_BAR_STATE_INTERVAL_MS
+        if (!stateChanged && !textRefreshDue && lastStatusBarStatus != null) return
+        lastStatusBarRecording = recording
+        lastStatusBarEmergency = emergencyRecordingActive
+        lastStatusBarStatus = status
+        lastStatusBarUpdateMs = now
+        V2StatusBarStateStore.update(this, true, recording, emergencyRecordingActive, status, emergencyRecordingEndsAtWallClockMs())
+        if (stateChanged) updateStatusBarNotification(status, recording)
     }
 }

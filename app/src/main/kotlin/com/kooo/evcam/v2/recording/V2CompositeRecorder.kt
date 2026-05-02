@@ -46,6 +46,11 @@ class V2CompositeRecorder(
         private const val STOP_WRITER_TIMEOUT_MS = 2_500L
     }
 
+    private data class EmergencyClipRequest(
+        val startWallClockMs: Long,
+        val endWallClockMs: Long,
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val metrics = RecordingMetrics()
     private var recording = false
@@ -54,6 +59,7 @@ class V2CompositeRecorder(
     private val releaseExecutor = Executors.newSingleThreadExecutor()
     private val cleanupExecutor = Executors.newSingleThreadExecutor()
     private val segmentPrepareExecutor = Executors.newSingleThreadExecutor()
+    private val eventClipExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var cleanupFuture: Future<V2StorageCleaner.CleanupResult>? = null
     private var recordingSessionId = ""
     private var preparedSegmentIndex = -1
@@ -62,6 +68,10 @@ class V2CompositeRecorder(
     private var segmentPrecreateEnabled = segmentPrecreateEnabled
     private val overlayTimeFormat = SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss", Locale.CHINA)
     private var lastOverlaySecond = Long.MIN_VALUE
+    private val emergencyClipLock = Any()
+    private val pendingEmergencyClips = mutableListOf<EmergencyClipRequest>()
+    private val finalizedSegments = mutableListOf<V2EmergencyClipExtractor.SourceSegment>()
+    @Volatile private var stoppedWallClockMs = 0L
 
     fun start(): Boolean {
         V2AppLog.i("V2CompositeRecorder", "start output=${outputDir.absolutePath} size=${outputWidth}x${outputHeight} bitrate=$videoBitrate fps=$recordingFps segmentMs=$segmentDurationMs precreate=$segmentPrecreateEnabled")
@@ -103,6 +113,8 @@ class V2CompositeRecorder(
         VulkanNative.stopRecordingSession(nativeHandle)
         val stopGeneration = ++generation
         val writerToStop = writer
+        val stopWallClockMs = System.currentTimeMillis()
+        stoppedWallClockMs = stopWallClockMs
         writer = null
         val releaseQueued = AtomicBoolean(false)
         val latch = CountDownLatch(1)
@@ -126,7 +138,7 @@ class V2CompositeRecorder(
             } finally {
                 latch.countDown()
                 writerToStop?.let {
-                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, generateThumbnail = true)
+                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, generateThumbnail = true, segmentEndWallClockMs = stopWallClockMs)
                 }
                 releasePreparedSegmentAsync()
                 releaseExecutor.shutdown()
@@ -137,7 +149,7 @@ class V2CompositeRecorder(
                 V2AppLog.e("V2CompositeRecorder", "stop timed out; release writer without final render")
                 generation += 1
                 writerToStop?.let {
-                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, generateThumbnail = true)
+                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, generateThumbnail = true, segmentEndWallClockMs = stopWallClockMs)
                 }
                 releasePreparedSegmentAsync()
                 releaseExecutor.shutdown()
@@ -157,6 +169,8 @@ class V2CompositeRecorder(
         VulkanNative.stopRecordingSession(nativeHandle)
         val stopGeneration = ++generation
         val writerToStop = writer
+        val stopWallClockMs = System.currentTimeMillis()
+        stoppedWallClockMs = stopWallClockMs
         writer = null
         val latch = CountDownLatch(1)
         val renderTask = Runnable {
@@ -184,7 +198,11 @@ class V2CompositeRecorder(
         if (Looper.myLooper() != renderHandler.looper && !latch.await(STOP_RENDER_TIMEOUT_MS.coerceAtMost(timeoutMs), TimeUnit.MILLISECONDS)) {
             V2AppLog.e("V2CompositeRecorder", "stopBlockingForRelease render detach timed out")
         }
-        writerToStop?.finishAndReleaseBlocking(generateThumbnail = true, timeoutMs = STOP_WRITER_TIMEOUT_MS.coerceAtMost(timeoutMs))
+        val finished = writerToStop?.finishAndReleaseBlocking(generateThumbnail = true, timeoutMs = STOP_WRITER_TIMEOUT_MS.coerceAtMost(timeoutMs))
+        if (finished != null && fileSuffix.isEmpty()) {
+            onSegmentFinalized(finished, writerToStop.mediaStartWallClockMs(), stopWallClockMs)
+        }
+        finishEmergencyClipExportsIfStopped()
         releasePreparedSegmentAsync()
         cleanupFuture?.cancel(false)
         cleanupFuture = null
@@ -193,10 +211,20 @@ class V2CompositeRecorder(
         releaseExecutor.shutdown()
     }
 
+    fun requestEmergencyClip(startWallClockMs: Long, durationMs: Long): Boolean {
+        if (fileSuffix.isNotEmpty() || durationMs <= 0L) return false
+        val request = EmergencyClipRequest(startWallClockMs, startWallClockMs + durationMs)
+        synchronized(emergencyClipLock) { pendingEmergencyClips += request }
+        V2AppLog.i("V2CompositeRecorder", "emergency clip requested start=$startWallClockMs durationMs=$durationMs")
+        tryExportPendingEmergencyClips()
+        return true
+    }
+
     fun metricsSnapshot(): RecordingMetrics = metrics.copy()
 
     private fun startNewSegment(segmentIndex: Int, segmentWallClockMs: Long) {
         val segmentStartMs = SystemClock.elapsedRealtime()
+        val actualSegmentStartWallClockMs = System.currentTimeMillis()
         V2AppLog.i("V2CompositeRecorder", "start segment index=$segmentIndex wallClockMs=$segmentWallClockMs preparedFuture=${preparedSegmentFuture != null} precreate=$segmentPrecreateEnabled")
         consumeFinishedCleanupResult()
         val newWriter = takePreparedSegment(segmentIndex, segmentWallClockMs)
@@ -204,7 +232,7 @@ class V2CompositeRecorder(
         if (newWriter == null && oldWriter != null) {
             runCatching { VulkanNative.detachEncoderSurface(nativeHandle) }
                 .onFailure { V2AppLog.e("V2CompositeRecorder", "detach encoder surface before sync segment switch failed", it) }
-            releaseWriterAsync(oldWriter, finish = true, generateThumbnail = true)
+            releaseWriterAsync(oldWriter, finish = true, generateThumbnail = true, segmentEndWallClockMs = actualSegmentStartWallClockMs)
             writer = null
         }
         val segmentWriter = newWriter
@@ -219,9 +247,9 @@ class V2CompositeRecorder(
             releaseWriterAsync(segmentWriter, finish = false, generateThumbnail = false)
             throw t
         }
-        segmentWriter.markAttached(segmentIndex)
+        segmentWriter.markAttached(segmentIndex, actualSegmentStartWallClockMs)
         writer = segmentWriter
-        if (newWriter != null) oldWriter?.let { releaseWriterAsync(it, finish = true, generateThumbnail = true) }
+        if (newWriter != null) oldWriter?.let { releaseWriterAsync(it, finish = true, generateThumbnail = true, segmentEndWallClockMs = actualSegmentStartWallClockMs) }
         metrics.segmentIndex = segmentIndex
         V2AppLog.i("V2CompositeRecorder", "segment attached index=$segmentIndex file=${segmentWriter.currentFile()?.name} prepared=${newWriter != null} switchSetupMs=${SystemClock.elapsedRealtime() - segmentStartMs}")
         prepareNextSegment(segmentIndex + 1, segmentWallClockMs + segmentDurationMs)
@@ -421,12 +449,74 @@ class V2CompositeRecorder(
         }
     }
 
-    private fun releaseWriterAsync(writer: EncoderSegmentWriter, finish: Boolean, generateThumbnail: Boolean) {
+    private fun onSegmentFinalized(file: File, startWallClockMs: Long, endWallClockMs: Long) {
+        if (startWallClockMs <= 0L || endWallClockMs <= startWallClockMs) return
+        synchronized(emergencyClipLock) {
+            finalizedSegments += V2EmergencyClipExtractor.SourceSegment(file, startWallClockMs, endWallClockMs)
+            val oldestPendingStart = pendingEmergencyClips.minOfOrNull { it.startWallClockMs } ?: (System.currentTimeMillis() - segmentDurationMs * 2)
+            finalizedSegments.removeAll { it.endWallClockMs < oldestPendingStart - segmentDurationMs }
+        }
+        V2AppLog.i("V2CompositeRecorder", "normal segment finalized for emergency clips file=${file.name} start=$startWallClockMs end=$endWallClockMs")
+        tryExportPendingEmergencyClips()
+    }
+
+    private fun tryExportPendingEmergencyClips() {
+        data class ReadyClip(val request: EmergencyClipRequest, val exportEndWallClockMs: Long, val sources: List<V2EmergencyClipExtractor.SourceSegment>)
+        val ready = synchronized(emergencyClipLock) {
+            val stoppedAt = stoppedWallClockMs
+            val readyRequests = pendingEmergencyClips.mapNotNull { request ->
+                val exportEnd = if (stoppedAt > 0L && request.endWallClockMs > stoppedAt) stoppedAt else request.endWallClockMs
+                if (exportEnd <= request.startWallClockMs) return@mapNotNull null
+                if (finalizedSegments.any { it.startWallClockMs <= request.startWallClockMs && it.endWallClockMs > request.startWallClockMs } &&
+                    finalizedSegments.any { it.startWallClockMs < exportEnd && it.endWallClockMs >= exportEnd }) {
+                    ReadyClip(request, exportEnd, finalizedSegments.filter { it.endWallClockMs > request.startWallClockMs && it.startWallClockMs < exportEnd })
+                } else {
+                    null
+                }
+            }
+            pendingEmergencyClips.removeAll(readyRequests.map { it.request }.toSet())
+            readyRequests
+        }
+        for (clip in ready) {
+            eventClipExecutor.execute {
+                V2EmergencyClipExtractor.extract(
+                    context = context.applicationContext,
+                    outputDir = outputDir,
+                    clipStartWallClockMs = clip.request.startWallClockMs,
+                    clipEndWallClockMs = clip.exportEndWallClockMs,
+                    sources = clip.sources,
+                )
+            }
+        }
+    }
+
+    private fun releaseWriterAsync(
+        writer: EncoderSegmentWriter,
+        finish: Boolean,
+        generateThumbnail: Boolean,
+        segmentEndWallClockMs: Long? = null,
+    ) {
         releaseExecutor.execute {
             V2AppLog.i("V2CompositeRecorder", "release writer finish=$finish thumbnail=$generateThumbnail file=${writer.currentFile()?.name}")
-            if (finish) writer.finishAndReleaseBlocking(generateThumbnail = generateThumbnail)
+            val finished = if (finish) writer.finishAndReleaseBlocking(generateThumbnail = generateThumbnail)
             else writer.releaseBlocking(generateThumbnail = generateThumbnail)
+            if (finish && finished != null && fileSuffix.isEmpty() && segmentEndWallClockMs != null) {
+                onSegmentFinalized(finished, writer.mediaStartWallClockMs(), segmentEndWallClockMs)
+            }
+            finishEmergencyClipExportsIfStopped()
         }
+    }
+
+    private fun finishEmergencyClipExportsIfStopped() {
+        if (recording || stoppedWallClockMs <= 0L) return
+        synchronized(emergencyClipLock) {
+            val dropped = pendingEmergencyClips.size
+            if (dropped > 0) {
+                V2AppLog.w("V2CompositeRecorder", "drop uncovered emergency clip requests on stop count=$dropped")
+                pendingEmergencyClips.clear()
+            }
+        }
+        eventClipExecutor.shutdown()
     }
 
     private fun runOnCaptureSync(block: () -> Unit): Result<Unit> {

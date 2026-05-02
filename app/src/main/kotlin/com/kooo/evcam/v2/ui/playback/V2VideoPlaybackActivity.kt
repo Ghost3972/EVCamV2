@@ -16,12 +16,14 @@ import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import com.kooo.evcam.R
 import com.kooo.evcam.databinding.ActivityV2VideoPlaybackBinding
+import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import com.kooo.evcam.v2.storage.V2PlaybackCacheMaintainer
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import com.kooo.evcam.v2.ui.settings.V2SettingsActivity
@@ -58,7 +60,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
                 binding.currentTime.text = formatTime(pos)
                 binding.seekBar.progress = pos.coerceAtMost(binding.seekBar.max.coerceAtLeast(1))
             }
-            progressHandler.postDelayed(this, 500L)
+            progressHandler.postDelayed(this, 1_000L)
         }
     }
 
@@ -89,7 +91,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         binding.btnPlayerBack.setOnClickListener { showListMode(stopPlayback = true) }
         binding.btnSnapshot.setOnClickListener { saveSnapshot() }
         binding.btnPlayerMove.setOnClickListener { Toast.makeText(this, "导出功能待接入", Toast.LENGTH_SHORT).show() }
-        binding.btnPlayerDelete.setOnClickListener { Toast.makeText(this, "删除功能待接入", Toast.LENGTH_SHORT).show() }
+        binding.btnPlayerDelete.setOnClickListener { confirmDeleteCurrentVideo() }
         binding.gridContainer.setOnClickListener { togglePlayerUi() }
         binding.videoFront.setOnClickListener { togglePlayerUi() }
         binding.photoPreview.setOnClickListener { togglePlayerUi() }
@@ -600,6 +602,66 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         binding.controlsLayout.visibility = if (isPhoto) View.GONE else binding.controlsLayout.visibility
         binding.btnPlayerMove.visibility = if (isPhoto) View.GONE else View.VISIBLE
         binding.btnPlayerDelete.visibility = if (isPhoto) View.GONE else View.VISIBLE
+    }
+
+    private fun confirmDeleteCurrentVideo() {
+        val group = selected?.takeIf { !it.isPhoto }
+        val file = pendingVideo ?: group?.composite
+        if (group == null || file == null || !file.exists()) {
+            Toast.makeText(this, "无可删除的视频", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pauseAll()
+        AlertDialog.Builder(this)
+            .setTitle("删除视频")
+            .setMessage("确定删除当前视频？删除后无法恢复。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("删除") { _, _ -> deleteCurrentVideo(group, file) }
+            .show()
+    }
+
+    private fun deleteCurrentVideo(group: V2VideoGroup, file: File) {
+        binding.btnPlayerDelete.isEnabled = false
+        val appContext = applicationContext
+        executor.execute {
+            val deletedFiles = mutableListOf<File>()
+            val success = runCatching {
+                val targets = group.files.ifEmpty { listOf(file) }
+                    .filter { it.exists() }
+                    .distinctBy { it.absolutePath }
+                targets.forEach { target ->
+                    if (target.delete()) deletedFiles += target
+                }
+                deleteThumbnailFiles(file)
+                V2PlaybackListCache.removeVideo(appContext, file)
+                V2PlaybackCacheMaintainer.refreshNow(appContext)
+                deletedFiles.isNotEmpty() && targets.none { it.exists() }
+            }.getOrDefault(false)
+            runOnUiThread {
+                binding.btnPlayerDelete.isEnabled = true
+                Toast.makeText(this, if (success) "已删除" else "删除失败", Toast.LENGTH_SHORT).show()
+                if (success) {
+                    selected = null
+                    pendingVideo = null
+                    showListMode(stopPlayback = true)
+                    loadVideos(autoSelect = false, preferCache = false)
+                }
+            }
+        }
+    }
+
+    private fun deleteThumbnailFiles(video: File) {
+        val parent = video.parentFile ?: return
+        val stem = video.nameWithoutExtension
+        listOf(
+            File(parent, "$stem.jpg"),
+            File(parent, "$stem.jpeg"),
+            File(parent, "${stem}_thumb.jpg"),
+            File(parent, "${stem}_thumbnail.jpg"),
+            File(parent, "${stem.removeSuffix("_composite")}.jpg"),
+            File(parent, "${stem.removeSuffix("_composite")}.jpeg"),
+        ).distinctBy { it.absolutePath }
+            .forEach { candidate -> if (candidate.isFile) runCatching { candidate.delete() } }
     }
 
     private fun switchMode(mode: PlaybackMode) {

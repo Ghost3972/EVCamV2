@@ -8,10 +8,20 @@ import com.kooo.evcam.v2.log.V2AppLog
 
 class V2ForegroundAppMonitor(private val context: Context) {
     private var lastUsageEventsLogMs = 0L
+    private var lastLookupMs = 0L
+    private var lastTargetsKey = ""
+    private var lastResult: String? = null
 
     fun findForegroundTarget(targets: List<String>): String? {
         if (targets.isEmpty()) return null
-        return findByRunningTasks(targets) ?: findByUsageEvents(targets) ?: findByAccessibility(targets)
+        val now = System.currentTimeMillis()
+        val targetsKey = targets.joinToString("|")
+        if (targetsKey == lastTargetsKey && now - lastLookupMs < LOOKUP_CACHE_MS) return lastResult
+        val result = findByAccessibility(targets) ?: findByRunningTasks(targets) ?: findByUsageEvents(targets, now)
+        lastTargetsKey = targetsKey
+        lastLookupMs = now
+        lastResult = result
+        return result
     }
 
     private fun findByAccessibility(targets: List<String>): String? {
@@ -32,16 +42,16 @@ class V2ForegroundAppMonitor(private val context: Context) {
         }
     }.onFailure { V2AppLog.e("V2ForegroundAppMonitor", "running task foreground check failed", it) }.getOrNull()
 
-    private fun findByUsageEvents(targets: List<String>): String? = runCatching {
+    private fun findByUsageEvents(targets: List<String>, now: Long): String? = runCatching {
         val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val lastStates = LinkedHashMap<String, Boolean>()
-        val now = System.currentTimeMillis()
-        val events = usageStatsManager.queryEvents(now - 300_000L, now) ?: return@runCatching null
+        val events = usageStatsManager.queryEvents(now - USAGE_EVENTS_WINDOW_MS, now) ?: return@runCatching null
         val event = UsageEvents.Event()
-        val samples = mutableListOf<String>()
+        val shouldCollectSamples = now - lastUsageEventsLogMs >= USAGE_EVENTS_LOG_INTERVAL_MS
+        val samples = if (shouldCollectSamples) mutableListOf<String>() else null
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
-            if (shouldSampleUsageEvent(targets, event.packageName, event.className, event.eventType) && samples.size < MAX_USAGE_EVENT_SAMPLES) {
+            if (samples != null && shouldSampleUsageEvent(targets, event.packageName, event.className, event.eventType) && samples.size < MAX_USAGE_EVENT_SAMPLES) {
                 samples += "type=${eventName(event.eventType)} package=${event.packageName} class=${event.className}"
             }
             val matched = matchTarget(targets, event.packageName, event.className) ?: continue
@@ -51,7 +61,7 @@ class V2ForegroundAppMonitor(private val context: Context) {
                 UsageEvents.Event.MOVE_TO_BACKGROUND, UsageEvents.Event.ACTIVITY_PAUSED -> lastStates[matched] = false
             }
         }
-        logUsageSamples(now, samples, lastStates)
+        if (samples != null) logUsageSamples(now, samples, lastStates)
         targets.firstOrNull { lastStates[it] == true }?.also {
             V2AppLog.i("V2ForegroundAppMonitor", "usage events foreground target=$it states=$lastStates")
         }
@@ -114,7 +124,9 @@ class V2ForegroundAppMonitor(private val context: Context) {
     }
 
     private companion object {
+        private const val LOOKUP_CACHE_MS = 2_000L
+        private const val USAGE_EVENTS_WINDOW_MS = 60_000L
         private const val MAX_USAGE_EVENT_SAMPLES = 12
-        private const val USAGE_EVENTS_LOG_INTERVAL_MS = 5_000L
+        private const val USAGE_EVENTS_LOG_INTERVAL_MS = 30_000L
     }
 }

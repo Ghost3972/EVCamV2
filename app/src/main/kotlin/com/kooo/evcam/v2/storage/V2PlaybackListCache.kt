@@ -120,6 +120,13 @@ object V2PlaybackListCache {
         save(context, entries + next)
     }
 
+    @Synchronized
+    fun removeVideo(context: Context, video: File) {
+        val path = video.absolutePath
+        val key = video.nameWithoutExtension
+        save(context, loadFast(context).filterNot { it.path == path || it.key == key })
+    }
+
     private fun writeArray(context: Context, array: JSONArray) {
         val cache = cacheFile(context)
         cache.parentFile?.mkdirs()

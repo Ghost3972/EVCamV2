@@ -26,12 +26,14 @@ object V2RecordingSettings {
         Option(BITRATE_MEDIUM, "标准"),
         Option(BITRATE_HIGH, "高")
     )
-    val fpsOptions = listOf(10, 15, 20, 25, 30)
+    val fpsOptions = listOf(12, 24)
     val segmentMinuteOptions = listOf(1, 3, 5, 10)
 
     fun resolution(context: Context): String = prefs(context).getString(KEY_RESOLUTION, null) ?: maxSupportedResolution(context)
     fun bitrateLevel(context: Context): String = prefs(context).getString(KEY_BITRATE_LEVEL, BITRATE_MEDIUM) ?: BITRATE_MEDIUM
-    fun fps(context: Context): Int = prefs(context).getInt(KEY_FPS, 30).coerceIn(1, 60)
+    fun fps(context: Context): Int = fpsOptions.minByOrNull {
+        kotlin.math.abs(it - prefs(context).getInt(KEY_FPS, 24).coerceAtMost(24))
+    } ?: 24
     fun segmentMinutes(context: Context): Int = prefs(context).getInt(KEY_SEGMENT_MINUTES, 1).coerceAtLeast(1)
     fun segmentDurationMs(context: Context): Long = segmentMinutes(context) * 60_000L
     fun segmentPrecreateEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_SEGMENT_PRECREATE, true)

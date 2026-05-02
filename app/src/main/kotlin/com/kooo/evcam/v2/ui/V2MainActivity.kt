@@ -98,6 +98,9 @@ class V2MainActivity : AppCompatActivity() {
                     syncRecordButtonFromService()
                 }
             }
+            service?.setUiEmergencyRecordingListener { active, endsAtMs ->
+                runOnUiThread { setEmergencyRecordingActive(active, endsAtMs) }
+            }
             service?.setUiVisibility(true) { moveTaskToBack(true) }
             bindPreviews()
             updatePreviewPlaceholders(service?.isPreviewPausedByAvoidance() == true)
@@ -155,6 +158,7 @@ class V2MainActivity : AppCompatActivity() {
         V2AppLog.i("V2MainActivity", "onPause")
         if (isFinishing) unbindPreviews()
         service?.setUiStatusListener(null)
+        service?.setUiEmergencyRecordingListener(null)
         service?.setUiVisibility(false)
         if (bound) { unbindService(connection); bound = false; service = null }
         super.onPause()
@@ -217,7 +221,7 @@ class V2MainActivity : AppCompatActivity() {
     private fun updateRecordButton(recording: Boolean) {
         lastKnownRecording = recording
         binding.tvRecordingPill.visibility = if (recording || emergencyRecording) View.VISIBLE else View.GONE
-        val normalRecording = recording && !emergencyRecording
+        val normalRecording = recording
         binding.btnStartRecord.isChecked = normalRecording
         binding.normalRecordingProgress.visibility = if (normalRecording) View.VISIBLE else View.GONE
         if (normalRecording) startNormalRecordingAnimation() else stopNormalRecordingAnimation()
@@ -226,16 +230,17 @@ class V2MainActivity : AppCompatActivity() {
         updateRecordingPillText()
     }
 
-    private fun setEmergencyRecordingActive(active: Boolean) {
+    private fun setEmergencyRecordingActive(active: Boolean, endsAtMs: Long = 0L) {
         emergencyRecording = active
         binding.btnVideoPlayback.isChecked = active
-        binding.btnStartRecord.isEnabled = !active
+        binding.btnStartRecord.isEnabled = !active || lastKnownRecording
         binding.emergencyRecordingProgress.visibility = if (active) View.VISIBLE else View.GONE
         stopEmergencyProgressAnimation()
         binding.btnVideoPlayback.contentDescription = if (active) "停止紧急录制" else "紧急录制"
         mainHandler.removeCallbacks(emergencyRecordingTicker)
         if (active) {
-            emergencyRecordingEndsAtMs = SystemClock.elapsedRealtime() + EMERGENCY_RECORDING_DURATION_MS
+            emergencyRecordingEndsAtMs = endsAtMs.takeIf { it > SystemClock.elapsedRealtime() }
+                ?: (SystemClock.elapsedRealtime() + EMERGENCY_RECORDING_DURATION_MS)
             startEmergencyProgressAnimation()
             emergencyRecordingTicker.run()
         } else {
@@ -277,9 +282,12 @@ class V2MainActivity : AppCompatActivity() {
     }
 
     private fun startEmergencyProgressAnimation() {
-        binding.emergencyRecordingProgress.progress = 0f
-        emergencyProgressAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = EMERGENCY_RECORDING_DURATION_MS
+        val remainingMs = (emergencyRecordingEndsAtMs - SystemClock.elapsedRealtime())
+            .coerceIn(0L, EMERGENCY_RECORDING_DURATION_MS)
+        val progress = 1f - (remainingMs.toFloat() / EMERGENCY_RECORDING_DURATION_MS.toFloat())
+        binding.emergencyRecordingProgress.progress = progress
+        emergencyProgressAnimator = ValueAnimator.ofFloat(progress, 1f).apply {
+            duration = remainingMs
             interpolator = LinearInterpolator()
             addUpdateListener { animator ->
                 binding.emergencyRecordingProgress.progress = animator.animatedValue as Float

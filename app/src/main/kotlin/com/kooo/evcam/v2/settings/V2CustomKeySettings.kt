@@ -34,4 +34,5 @@ object V2CustomKeySettings {
             .apply()
         V2AppLog.i("V2CustomKeySettings", "buttonPropId=$propId")
     }
+
 }
