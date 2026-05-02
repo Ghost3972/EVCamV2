@@ -54,6 +54,11 @@ const Quad = struct {
     tex: [8]c.GLfloat = [_]c.GLfloat{ 0, 0, 1, 0, 0, 1, 1, 1 },
 };
 
+const OverlayBatch = struct {
+    verts: [2048]c.GLfloat = [_]c.GLfloat{0} ** 2048,
+    len: usize = 0,
+};
+
 const RecordingState = struct {
     recording: bool = false,
     segment_switch_pending: bool = false,
@@ -71,6 +76,14 @@ const RecordingState = struct {
     encoder_segment_start_steady_ms: i64 = 0,
     last_presentation_time_ns: i64 = -1,
     overlay_wall_clock_ms: i64 = 0,
+    overlay_cached_second: i64 = -1,
+    overlay_text: [24]u8 = [_]u8{0} ** 24,
+    overlay_text_len: usize = 0,
+    overlay_geometry_second: i64 = -1,
+    overlay_geometry_width: i32 = 0,
+    overlay_geometry_height: i32 = 0,
+    overlay_bg_batch: OverlayBatch = OverlayBatch{},
+    overlay_text_batch: OverlayBatch = OverlayBatch{},
 };
 
 const Pipe = struct {
@@ -499,6 +512,21 @@ fn formatOverlayTime(buf: *[24]u8, wall_ms: i64) []const u8 {
     }) catch "";
 }
 
+fn cachedOverlayTime(r: *RecordingState) []const u8 {
+    if (r.overlay_wall_clock_ms <= 0) return "";
+    const second = @divTrunc(r.overlay_wall_clock_ms, 1000);
+    if (r.overlay_cached_second != second) {
+        var buf: [24]u8 = undefined;
+        const text = formatOverlayTime(&buf, r.overlay_wall_clock_ms);
+        const len = @min(text.len, r.overlay_text.len);
+        @memset(r.overlay_text[0..], 0);
+        if (len > 0) @memcpy(r.overlay_text[0..len], text[0..len]);
+        r.overlay_text_len = len;
+        r.overlay_cached_second = second;
+    }
+    return r.overlay_text[0..r.overlay_text_len];
+}
+
 fn overlayCharAdvance(ch: u8, scale: f32) f32 {
     if (ch >= '0' and ch <= '9') return 20.0 * scale;
     if (ch == '-') return 12.0 * scale;
@@ -512,47 +540,77 @@ fn overlayTextWidth(text: []const u8, scale: f32) f32 {
     return width;
 }
 
-fn drawOverlayRect(p: *Pipe, x: f32, y: f32, w: f32, h: f32, color: [4]f32) void {
+fn appendOverlayRect(batch: *OverlayBatch, p: *Pipe, x: f32, y: f32, w: f32, h: f32) void {
     if (w <= 0 or h <= 0) return;
+    if (batch.len + 12 > batch.verts.len) return;
     const cw = if (p.width <= 0) 1.0 else @as(f32, @floatFromInt(p.width));
     const ch = if (p.height <= 0) 1.0 else @as(f32, @floatFromInt(p.height));
     const x0 = x / cw * 2.0 - 1.0;
     const x1 = (x + w) / cw * 2.0 - 1.0;
     const y0 = 1.0 - y / ch * 2.0;
     const y1 = 1.0 - (y + h) / ch * 2.0;
-    var verts = [_]c.GLfloat{ x0, y0, x1, y0, x0, y1, x1, y1 };
-    c.glVertexAttribPointer(@intCast(p.overlay_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &verts);
-    c.glUniform4f(p.overlay_color_loc, color[0], color[1], color[2], color[3]);
-    c.glDrawArrays(c.GL_TRIANGLE_STRIP, 0, 4);
+    const quad = [_]c.GLfloat{ x0, y0, x1, y0, x0, y1, x1, y0, x1, y1, x0, y1 };
+    @memcpy(batch.verts[batch.len..][0..quad.len], quad[0..]);
+    batch.len += quad.len;
 }
 
-fn drawOverlayDigit(p: *Pipe, digit: u8, x: f32, y: f32, scale: f32, color: [4]f32) void {
+fn flushOverlayBatch(p: *Pipe, batch: *OverlayBatch, color: [4]f32) void {
+    if (batch.len == 0) return;
+    c.glVertexAttribPointer(@intCast(p.overlay_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &batch.verts);
+    c.glUniform4f(p.overlay_color_loc, color[0], color[1], color[2], color[3]);
+    c.glDrawArrays(c.GL_TRIANGLES, 0, @intCast(batch.len / 2));
+}
+
+fn drawOverlayDigit(batch: *OverlayBatch, p: *Pipe, digit: u8, x: f32, y: f32, scale: f32) void {
     const mask = DIGIT_SEGMENTS[digit];
     const w = 16.0 * scale;
     const h = 30.0 * scale;
     const s = @max(2.0 * scale, 1.0);
     const half = h * 0.5;
-    if ((mask & SEG_A) != 0) drawOverlayRect(p, x + s, y, w - 2.0 * s, s, color);
-    if ((mask & SEG_B) != 0) drawOverlayRect(p, x + w - s, y + s, s, half - s, color);
-    if ((mask & SEG_C) != 0) drawOverlayRect(p, x + w - s, y + half, s, half - s, color);
-    if ((mask & SEG_D) != 0) drawOverlayRect(p, x + s, y + h - s, w - 2.0 * s, s, color);
-    if ((mask & SEG_E) != 0) drawOverlayRect(p, x, y + half, s, half - s, color);
-    if ((mask & SEG_F) != 0) drawOverlayRect(p, x, y + s, s, half - s, color);
-    if ((mask & SEG_G) != 0) drawOverlayRect(p, x + s, y + half - s * 0.5, w - 2.0 * s, s, color);
+    if ((mask & SEG_A) != 0) appendOverlayRect(batch, p, x + s, y, w - 2.0 * s, s);
+    if ((mask & SEG_B) != 0) appendOverlayRect(batch, p, x + w - s, y + s, s, half - s);
+    if ((mask & SEG_C) != 0) appendOverlayRect(batch, p, x + w - s, y + half, s, half - s);
+    if ((mask & SEG_D) != 0) appendOverlayRect(batch, p, x + s, y + h - s, w - 2.0 * s, s);
+    if ((mask & SEG_E) != 0) appendOverlayRect(batch, p, x, y + half, s, half - s);
+    if ((mask & SEG_F) != 0) appendOverlayRect(batch, p, x, y + s, s, half - s);
+    if ((mask & SEG_G) != 0) appendOverlayRect(batch, p, x + s, y + half - s * 0.5, w - 2.0 * s, s);
 }
 
-fn drawOverlayChar(p: *Pipe, ch: u8, x: f32, y: f32, scale: f32, color: [4]f32) void {
+fn appendOverlayChar(batch: *OverlayBatch, p: *Pipe, ch: u8, x: f32, y: f32, scale: f32) void {
     const w = 16.0 * scale;
     const h = 30.0 * scale;
     const s = @max(2.0 * scale, 1.0);
     if (ch >= '0' and ch <= '9') {
-        drawOverlayDigit(p, ch - '0', x, y, scale, color);
+        drawOverlayDigit(batch, p, ch - '0', x, y, scale);
     } else if (ch == '-') {
-        drawOverlayRect(p, x + s, y + h * 0.5 - s * 0.5, w * 0.55, s, color);
+        appendOverlayRect(batch, p, x + s, y + h * 0.5 - s * 0.5, w * 0.55, s);
     } else if (ch == ':') {
-        drawOverlayRect(p, x + w * 0.25, y + h * 0.32, s * 1.3, s * 1.3, color);
-        drawOverlayRect(p, x + w * 0.25, y + h * 0.66, s * 1.3, s * 1.3, color);
+        appendOverlayRect(batch, p, x + w * 0.25, y + h * 0.32, s * 1.3, s * 1.3);
+        appendOverlayRect(batch, p, x + w * 0.25, y + h * 0.66, s * 1.3, s * 1.3);
     }
+}
+
+fn rebuildOverlayGeometry(p: *Pipe, text: []const u8, second: i64, scale: f32, x: f32, y: f32) void {
+    const r = &p.recording;
+    if (r.overlay_geometry_second == second and r.overlay_geometry_width == p.width and r.overlay_geometry_height == p.height) return;
+    r.overlay_bg_batch.len = 0;
+    r.overlay_text_batch.len = 0;
+
+    const text_width = overlayTextWidth(text, scale);
+    const text_height = 30.0 * scale;
+    const padding_x = 10.0 * scale;
+    const padding_y = 8.0 * scale;
+    appendOverlayRect(&r.overlay_bg_batch, p, x - padding_x, y - padding_y, text_width + padding_x * 2.0, text_height + padding_y * 2.0);
+
+    var cursor = x;
+    for (text) |ch| {
+        appendOverlayChar(&r.overlay_text_batch, p, ch, cursor, y, scale);
+        cursor += overlayCharAdvance(ch, scale);
+    }
+
+    r.overlay_geometry_second = second;
+    r.overlay_geometry_width = p.width;
+    r.overlay_geometry_height = p.height;
 }
 
 fn drawOverlay(p: *Pipe, encoder: bool) void {
@@ -560,27 +618,18 @@ fn drawOverlay(p: *Pipe, encoder: bool) void {
     const scale = @max(@min(@as(f32, @floatFromInt(p.height)) / 1600.0, 1.0), 0.45);
     const x = 50.0 * scale;
     const y = 40.0 * scale;
-    var buf: [24]u8 = undefined;
-    const text = formatOverlayTime(&buf, p.recording.overlay_wall_clock_ms);
+    const second = @divTrunc(p.recording.overlay_wall_clock_ms, 1000);
+    const text = cachedOverlayTime(&p.recording);
     if (text.len == 0) return;
+    rebuildOverlayGeometry(p, text, second, scale, x, y);
 
     c.glUseProgram(p.overlay_program);
     c.glEnableVertexAttribArray(@intCast(p.overlay_pos_loc));
     c.glEnable(c.GL_BLEND);
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
 
-    const text_width = overlayTextWidth(text, scale);
-    const text_height = 30.0 * scale;
-    const padding_x = 10.0 * scale;
-    const padding_y = 8.0 * scale;
-    drawOverlayRect(p, x - padding_x, y - padding_y, text_width + padding_x * 2.0, text_height + padding_y * 2.0, .{ 0.0, 0.0, 0.0, 0.45 });
-
-    var cursor = x;
-    const text_color = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
-    for (text) |ch| {
-        drawOverlayChar(p, ch, cursor, y, scale, text_color);
-        cursor += overlayCharAdvance(ch, scale);
-    }
+    flushOverlayBatch(p, &p.recording.overlay_bg_batch, .{ 0.0, 0.0, 0.0, 0.45 });
+    flushOverlayBatch(p, &p.recording.overlay_text_batch, .{ 1.0, 1.0, 1.0, 1.0 });
 
     c.glDisable(c.GL_BLEND);
     c.glDisableVertexAttribArray(@intCast(p.overlay_pos_loc));
@@ -784,8 +833,8 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setCompositorRuntimeC
 
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setPreviewMaxFps(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (fps <= 0) { p.preview_max_fps = 0; p.preview_min_interval_ms = 0; } else { p.preview_max_fps = @min(@max(fps, 1), 120); p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps); } logd("preview max fps={d} minIntervalMs={d}", .{ p.preview_max_fps, p.preview_min_interval_ms }); return JNI_TRUE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_startRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; p.recording.recording = true; p.recording.generation += 1; p.recording.fps = @min(@max(fps, 1), 120); p.encoder_fps = p.recording.fps; p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms; p.recording.segment_index = 0; p.recording.pending_segment_index = 0; p.recording.segment_switch_pending = false; p.recording.pending_segment_wall_clock_ms = 0; p.recording.requested_frames = 0; p.recording.rendered_frames = 0; p.recording.dropped_frames = 0; p.recording.last_tick_steady_ms = 0; p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; p.recording.overlay_wall_clock_ms = wall_clock_ms; p.encoder_signal_count = 0; p.encoder_scheduled_count = 0; p.encoder_coalesced_count = 0; const first = floorToSegment(wall_clock_ms, p.recording.segment_duration_ms); p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms; p.encoder_pending = false; return first; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_stopRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; p.recording.recording = false; p.recording.segment_switch_pending = false; p.recording.overlay_wall_clock_ms = 0; p.recording.generation += 1; p.encoder_pending = false; return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_startRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; p.recording.recording = true; p.recording.generation += 1; p.recording.fps = @min(@max(fps, 1), 120); p.encoder_fps = p.recording.fps; p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms; p.recording.segment_index = 0; p.recording.pending_segment_index = 0; p.recording.segment_switch_pending = false; p.recording.pending_segment_wall_clock_ms = 0; p.recording.requested_frames = 0; p.recording.rendered_frames = 0; p.recording.dropped_frames = 0; p.recording.last_tick_steady_ms = 0; p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; p.recording.overlay_wall_clock_ms = wall_clock_ms; p.recording.overlay_cached_second = -1; p.recording.overlay_text_len = 0; p.recording.overlay_geometry_second = -1; p.recording.overlay_bg_batch.len = 0; p.recording.overlay_text_batch.len = 0; p.encoder_signal_count = 0; p.encoder_scheduled_count = 0; p.encoder_coalesced_count = 0; const first = floorToSegment(wall_clock_ms, p.recording.segment_duration_ms); p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms; p.encoder_pending = false; return first; }
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_stopRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; p.recording.recording = false; p.recording.segment_switch_pending = false; p.recording.overlay_wall_clock_ms = 0; p.recording.overlay_cached_second = -1; p.recording.overlay_text_len = 0; p.recording.overlay_geometry_second = -1; p.recording.overlay_bg_batch.len = 0; p.recording.overlay_text_batch.len = 0; p.recording.generation += 1; p.encoder_pending = false; return JNI_TRUE; }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_recordingTickAndRender(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; if (!p.recording.recording) return 0; p.recording.overlay_wall_clock_ms = wall_clock_ms; p.recording.last_tick_steady_ms = nowMs(); p.recording.requested_frames += 1; var flags: c.jlong = 0; if (requestEncoderRenderLocked(p)) { var rendered = false; const ok = renderEncoderLocked(env, p, true, &rendered); p.encoder_pending = false; if (!ok) return -1; if (rendered) { p.recording.rendered_frames += 1; flags |= 1; } else { p.recording.dropped_frames += 1; flags |= 2; } } else { p.recording.dropped_frames += 1; flags |= 2; } if (wall_clock_ms >= p.recording.next_segment_wall_clock_ms and !p.recording.segment_switch_pending) { p.recording.segment_switch_pending = true; p.recording.pending_segment_index = p.recording.segment_index + 1; p.recording.pending_segment_wall_clock_ms = p.recording.next_segment_wall_clock_ms; flags |= 4; flags |= (@as(c.jlong, p.recording.pending_segment_index) << 32); } return flags; }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getRecordingNextTickDelayMs(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return -1; if (!p.recording.recording) return -1; const interval = recordingTickIntervalMs(&p.recording); if (p.recording.last_tick_steady_ms <= 0) return 0; const remaining = interval - (nowMs() - p.recording.last_tick_steady_ms); return if (remaining > 0) remaining else 0; }
