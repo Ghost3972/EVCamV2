@@ -6,6 +6,7 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.SystemClock
+import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import java.io.File
@@ -15,7 +16,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-class EncoderSegmentWriter(
+internal class EncoderSegmentWriter(
     context: Context,
     private val outputDir: File,
     private val metrics: RecordingMetrics,
@@ -26,7 +27,7 @@ class EncoderSegmentWriter(
     private val recordingSessionId: String,
     private val fileSuffix: String = "",
     private val mimeType: String = MediaFormat.MIMETYPE_VIDEO_AVC
-) {
+) : V2SegmentWriter {
     private companion object {
         private const val SLOW_WRITE_MS = 8L
         private const val SLOW_WRITE_LOG_INTERVAL_MS = 1_000L
@@ -52,9 +53,9 @@ class EncoderSegmentWriter(
     private var lastDrainPerfLogMs = 0L
     private var lastSlowWriteLogMs = 0L
 
-    val surface: android.view.Surface? get() = inputSurface
+    override val surface: Surface? get() = inputSurface
 
-    fun startSegment(segmentIndex: Int, segmentWallClockMs: Long): File {
+    override fun startSegment(segmentIndex: Int, segmentWallClockMs: Long): File {
         val startedMs = SystemClock.elapsedRealtime()
         V2AppLog.i("EncoderSegmentWriter", "startSegment index=$segmentIndex size=${width}x${height} fps=$fps bitrate=$bitrate mime=$mimeType")
         releaseInternal(generateThumbnail = false)
@@ -103,13 +104,13 @@ class EncoderSegmentWriter(
         return currentFile!!
     }
 
-    fun markAttached(segmentIndex: Int, attachedWallClockMs: Long = System.currentTimeMillis()) {
+    override fun markAttached(segmentIndex: Int, attachedWallClockMs: Long) {
         metrics.segmentIndex = segmentIndex
         segmentStartedAtMs = SystemClock.elapsedRealtime()
         this.attachedWallClockMs = attachedWallClockMs
     }
 
-    fun requestDrain() {
+    override fun requestDrain() {
         if (finishing) return
         if (!drainPending.compareAndSet(false, true)) return
         drainExecutor.execute {
@@ -200,7 +201,7 @@ class EncoderSegmentWriter(
             .getOrNull()
     }
 
-    fun finishAndReleaseBlocking(generateThumbnail: Boolean = true, timeoutMs: Long = 10_000L): File? {
+    override fun finishAndReleaseBlocking(generateThumbnail: Boolean, timeoutMs: Long): File? {
         finishing = true
         val latch = CountDownLatch(1)
         val result = AtomicReference<File?>()
@@ -224,7 +225,7 @@ class EncoderSegmentWriter(
         return result.get()
     }
 
-    fun releaseBlocking(generateThumbnail: Boolean = false, timeoutMs: Long = 1500L): File? {
+    override fun releaseBlocking(generateThumbnail: Boolean, timeoutMs: Long): File? {
         finishing = true
         val latch = CountDownLatch(1)
         val result = AtomicReference<File?>()
@@ -272,10 +273,10 @@ class EncoderSegmentWriter(
         return finishedFile
     }
 
-    fun currentFile(): File? = currentFile
-    fun segmentWallClockMs(): Long = segmentWallClockMs
-    fun mediaStartWallClockMs(): Long = attachedWallClockMs.takeIf { it > 0L } ?: segmentWallClockMs
-    fun currentSizeBytes(): Long = tempFile?.takeIf { it.exists() }?.length() ?: currentFile?.takeIf { it.exists() }?.length() ?: 0L
+    override fun currentFile(): File? = currentFile
+    override fun segmentWallClockMs(): Long = segmentWallClockMs
+    override fun mediaStartWallClockMs(): Long = attachedWallClockMs.takeIf { it > 0L } ?: segmentWallClockMs
+    override fun currentSizeBytes(): Long = tempFile?.takeIf { it.exists() }?.length() ?: currentFile?.takeIf { it.exists() }?.length() ?: 0L
 
     private fun finalizeTempFile(muxerStopOk: Boolean): File? {
         val startedMs = SystemClock.elapsedRealtime()

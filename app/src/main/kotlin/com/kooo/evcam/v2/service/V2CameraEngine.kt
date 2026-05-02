@@ -24,8 +24,8 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     interface Listener { fun onStatusChanged(status: String) }
 
     companion object {
-        private const val PREVIEW_MAX_FPS = 30
-        private const val RECORDING_PREVIEW_MAX_FPS = 15
+        private const val PREVIEW_MAX_FPS = 25
+        private const val RECORDING_PREVIEW_MAX_FPS = 25
         private const val PREVIEW_LOCK_BUSY_RETRY_MS = 8L
         private const val PREVIEW_LOCK_BUSY_RESULT = -2L
         private const val CAMERA_REOPEN_DELAY_MS = 500L

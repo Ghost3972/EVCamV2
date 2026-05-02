@@ -57,7 +57,8 @@ class V2CompositeRecorder(
     private val metrics = RecordingMetrics()
     private var recording = false
     private var generation = 0L
-    private var writer: EncoderSegmentWriter? = null
+    private val recordingBackend = V2RecordingBackend.AndroidMedia
+    private var writer: V2SegmentWriter? = null
     private val releaseExecutor = Executors.newSingleThreadExecutor()
     private val cleanupExecutor = Executors.newSingleThreadExecutor()
     private val segmentPrepareExecutor = Executors.newSingleThreadExecutor()
@@ -74,7 +75,7 @@ class V2CompositeRecorder(
     private var recordingSessionId = ""
     private var preparedSegmentIndex = -1
     private var preparedSegmentWallClockMs = 0L
-    private var preparedSegmentFuture: Future<EncoderSegmentWriter>? = null
+    private var preparedSegmentFuture: Future<V2SegmentWriter>? = null
     private var segmentPrecreateEnabled = segmentPrecreateEnabled
     private var lastFramePerfLogMs = 0L
     private var lastFramePerfRequested = 0L
@@ -247,7 +248,7 @@ class V2CompositeRecorder(
             writer = null
         }
         val segmentWriter = newWriter
-            ?: EncoderSegmentWriter(context, outputDir, metrics, outputWidth, outputHeight, recordingFps, videoBitrate, recordingSessionId, fileSuffix, videoMimeType).also {
+            ?: createSegmentWriter().also {
                 it.startSegment(segmentIndex, segmentWallClockMs)
             }
         val surface = segmentWriter.surface ?: throw IllegalStateException("Encoder surface unavailable")
@@ -275,14 +276,30 @@ class V2CompositeRecorder(
         releasePreparedSegmentAsync()
         preparedSegmentIndex = segmentIndex
         preparedSegmentWallClockMs = segmentWallClockMs
-        preparedSegmentFuture = segmentPrepareExecutor.submit<EncoderSegmentWriter> {
+        preparedSegmentFuture = segmentPrepareExecutor.submit<V2SegmentWriter> {
             val startedMs = SystemClock.elapsedRealtime()
-            EncoderSegmentWriter(context, outputDir, metrics, outputWidth, outputHeight, recordingFps, videoBitrate, recordingSessionId, fileSuffix, videoMimeType).also {
+            createSegmentWriter().also {
                 it.startSegment(segmentIndex, segmentWallClockMs)
                 V2AppLog.perf("V2CompositeRecorder", "prepareSegment", SystemClock.elapsedRealtime() - startedMs, "index=$segmentIndex file=${it.currentFile()?.name}")
             }
         }
     }
+
+    private fun createSegmentWriter(): V2SegmentWriter = V2SegmentWriterFactory.create(
+        backend = recordingBackend,
+        config = V2SegmentWriterConfig(
+            context = context,
+            outputDir = outputDir,
+            metrics = metrics,
+            width = outputWidth,
+            height = outputHeight,
+            fps = recordingFps,
+            bitrate = videoBitrate,
+            recordingSessionId = recordingSessionId,
+            fileSuffix = fileSuffix,
+            mimeType = videoMimeType,
+        )
+    )
 
     private fun createRecordingSessionId(): String {
         val sessionTime = java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(java.util.Date(System.currentTimeMillis()))
@@ -290,7 +307,7 @@ class V2CompositeRecorder(
         return "${sessionTime}_$nonce"
     }
 
-    private fun takePreparedSegment(segmentIndex: Int, segmentWallClockMs: Long): EncoderSegmentWriter? {
+    private fun takePreparedSegment(segmentIndex: Int, segmentWallClockMs: Long): V2SegmentWriter? {
         val future = preparedSegmentFuture ?: return null
         if (preparedSegmentIndex != segmentIndex || preparedSegmentWallClockMs != segmentWallClockMs) return null
         if (!future.isDone) {
@@ -404,7 +421,7 @@ class V2CompositeRecorder(
         private var lastSecond = Long.MIN_VALUE
 
         init {
-            val sampleText = "0000年00月00日 00:00:00"
+            val sampleText = "8888年88月88日 88:88:88"
             val fontMetrics = paint.fontMetrics
             val bitmapHeight = kotlin.math.ceil((fontMetrics.descent - fontMetrics.ascent).toDouble()).toInt().coerceAtLeast(1)
             val bitmapWidth = kotlin.math.ceil(paint.measureText(sampleText).toDouble()).toInt().coerceAtLeast(1)
@@ -509,7 +526,7 @@ class V2CompositeRecorder(
     }
 
     private fun releaseWriterAsync(
-        writer: EncoderSegmentWriter,
+        writer: V2SegmentWriter,
         finish: Boolean,
         generateThumbnail: Boolean,
         segmentEndWallClockMs: Long? = null,
