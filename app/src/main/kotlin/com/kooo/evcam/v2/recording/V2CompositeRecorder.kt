@@ -57,7 +57,7 @@ class V2CompositeRecorder(
     private val metrics = RecordingMetrics()
     private var recording = false
     private var generation = 0L
-    private val recordingBackend = V2RecordingBackend.AndroidMedia
+    private val recordingBackend = V2RecordingBackend.fromPreferences(context)
     private var writer: V2SegmentWriter? = null
     private val releaseExecutor = Executors.newSingleThreadExecutor()
     private val cleanupExecutor = Executors.newSingleThreadExecutor()

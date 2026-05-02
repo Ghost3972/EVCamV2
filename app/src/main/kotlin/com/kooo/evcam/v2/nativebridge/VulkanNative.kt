@@ -57,6 +57,12 @@ object VulkanNative {
     external fun getRecordingNextTickDelayMs(handle: Long): Long
     external fun beginNextRecordingSegment(handle: Long): Long
     external fun completeRecordingSegmentSwitch(handle: Long, success: Boolean): Boolean
+    external fun createNativeSegmentWriter(width: Int, height: Int, fps: Int, bitrate: Int, mimeType: String): Long
+    external fun nativeSegmentWriterInputSurface(writerHandle: Long): Surface?
+    external fun nativeSegmentWriterStartSegment(writerHandle: Long, path: String, segmentIndex: Int, wallClockMs: Long): Boolean
+    external fun nativeSegmentWriterDrain(writerHandle: Long, timeoutUs: Long): Long
+    external fun nativeSegmentWriterStop(writerHandle: Long): Boolean
+    external fun nativeSegmentWriterRelease(writerHandle: Long): Boolean
     external fun createOesInput(handle: Long, index: Int, surfaceTexture: android.graphics.SurfaceTexture): Boolean
     external fun attachPreviewSurface(handle: Long, index: Int, surface: Surface): Boolean
     external fun attachPreviewSurfaceWithMode(handle: Long, index: Int, surface: Surface, applyFisheye: Boolean, applyNativeTransform: Boolean): Boolean

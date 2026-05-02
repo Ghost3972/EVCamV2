@@ -7,7 +7,6 @@ import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
-import kotlin.math.max
 
 object V2BlindSpotTransform {
     fun apply(
@@ -74,23 +73,6 @@ object V2BlindSpotTransform {
         val mirrorX = if (correction.mirrorH) -1f else 1f
         val mirrorY = if (correction.mirrorV) -1f else 1f
         return Matrix().apply {
-            if (previewW > 0 && previewH > 0) {
-                val effectivePreviewW = if (morePortrait) previewH.toFloat() else previewW.toFloat()
-                val effectivePreviewH = if (morePortrait) previewW.toFloat() else previewH.toFloat()
-                val previewAspect = effectivePreviewW / effectivePreviewH
-                val viewAspect = width / height
-                val scaleXFill: Float
-                val scaleYFill: Float
-                if (previewAspect > viewAspect) {
-                    scaleXFill = previewAspect / viewAspect
-                    scaleYFill = 1f
-                } else {
-                    scaleXFill = 1f
-                    scaleYFill = viewAspect / previewAspect
-                }
-                postScale(scaleXFill, scaleYFill, centerX, centerY)
-            }
-
             if (baseRotation != 0) {
                 postRotate(baseRotation.toFloat(), centerX, centerY)
                 if (baseRotation == 90 || baseRotation == 270) {
@@ -104,8 +86,7 @@ object V2BlindSpotTransform {
                 postScale(previewW.toFloat() / width, previewH.toFloat() / height, centerX, centerY)
                 if (baseRotation != 0) postRotate(baseRotation.toFloat(), centerX, centerY)
                 postRotate(correctionRotation, centerX, centerY)
-                val fillScale = max(width / previewH.toFloat(), height / previewW.toFloat())
-                postScale(fillScale, fillScale, centerX, centerY)
+                postScale(width / previewH.toFloat(), height / previewW.toFloat(), centerX, centerY)
                 postScale(scaleX, scaleY, centerX, centerY)
                 postTranslate(translateX * width, translateY * height)
             } else {

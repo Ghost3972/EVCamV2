@@ -34,9 +34,11 @@ class V2PreviewLeaseManager(
             V2AppLog.w(TAG, "attachPreviewSurface skipped: display off owner=$owner index=$index")
             return
         }
-        attachNative(index, surface, owner)
+        val overlayOwner = owner == Owner.FISHEYE || owner == Owner.BLIND_SPOT
         owners[index] = owner
-        onLeasesChanged()
+        if (overlayOwner) onLeasesChanged()
+        attachNative(index, surface, owner)
+        if (!overlayOwner) onLeasesChanged()
     }
 
     fun detach(index: Int, owner: Owner) {

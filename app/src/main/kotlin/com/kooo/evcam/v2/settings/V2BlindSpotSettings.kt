@@ -17,7 +17,8 @@ object V2BlindSpotSettings {
     private const val KEY_OVERLAY_ROTATION_RIGHT = "overlay_rotation_right"
     private const val KEY_CORRECTION_ENABLED = "blind_spot_correction_enabled"
 
-    const val DEFAULT_TURN_SIGNAL_PROP_ID = 289408008
+    const val DEFAULT_TURN_SIGNAL_PROP_ID = 557875254
+    private const val LEGACY_DEFAULT_TURN_SIGNAL_PROP_ID = 289408008
     const val LEFT_VALUE = 1
     const val RIGHT_VALUE = 2
     const val OFF_VALUE = 0
@@ -30,7 +31,16 @@ object V2BlindSpotSettings {
         V2AppLog.i("V2BlindSpotSettings", "enabled=$enabled")
     }
 
-    fun turnSignalPropId(context: Context): Int = prefs(context).getInt(KEY_TURN_SIGNAL_PROP_ID, DEFAULT_TURN_SIGNAL_PROP_ID)
+    fun turnSignalPropId(context: Context): Int {
+        val prefs = prefs(context)
+        val propId = prefs.getInt(KEY_TURN_SIGNAL_PROP_ID, DEFAULT_TURN_SIGNAL_PROP_ID)
+        if (propId == LEGACY_DEFAULT_TURN_SIGNAL_PROP_ID) {
+            prefs.edit().putInt(KEY_TURN_SIGNAL_PROP_ID, DEFAULT_TURN_SIGNAL_PROP_ID).apply()
+            V2AppLog.i("V2BlindSpotSettings", "migrate turnSignalPropId=$DEFAULT_TURN_SIGNAL_PROP_ID")
+            return DEFAULT_TURN_SIGNAL_PROP_ID
+        }
+        return propId
+    }
 
     fun setTurnSignalPropId(context: Context, propId: Int) {
         prefs(context).edit().putInt(KEY_TURN_SIGNAL_PROP_ID, propId).apply()

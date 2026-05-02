@@ -6,6 +6,9 @@ const c = @cImport({
     @cInclude("android/bitmap.h");
     @cInclude("android/native_window_jni.h");
     @cInclude("android/log.h");
+    @cInclude("media/NdkMediaCodec.h");
+    @cInclude("media/NdkMediaFormat.h");
+    @cInclude("media/NdkMediaMuxer.h");
     @cInclude("EGL/egl.h");
     @cInclude("EGL/eglext.h");
     @cInclude("GLES2/gl2.h");
@@ -24,8 +27,31 @@ const JNI_TRUE: c.jboolean = 1;
 const JNI_FALSE: c.jboolean = 0;
 const CHECK_RENDER_GL_ERROR = false;
 const PREVIEW_REQUEST_LOCK_BUSY: c.jlong = -2;
+const MAX_NATIVE_WRITERS = 4;
+const COLOR_FORMAT_SURFACE: i32 = 0x7F000789;
+const O_RDWR_ANDROID: c_int = 2;
+const O_CREAT_ANDROID: c_int = 64;
+const O_TRUNC_ANDROID: c_int = 512;
+
+extern fn open(path: [*c]const u8, flags: c_int, mode: c_int) c_int;
+extern fn close(fd: c_int) c_int;
 
 const EglPresentationTimeAndroidFn = *const fn (c.EGLDisplay, c.EGLSurface, c.EGLnsecsANDROID) callconv(.c) c.EGLBoolean;
+
+const NativeSegmentWriter = struct {
+    handle: c.jlong = 0,
+    codec: ?*c.AMediaCodec = null,
+    muxer: ?*c.AMediaMuxer = null,
+    input_window: ?*c.ANativeWindow = null,
+    fd: c_int = -1,
+    track_index: c_int = -1,
+    width: i32 = 0,
+    height: i32 = 0,
+    fps: i32 = 0,
+    bitrate: i32 = 0,
+    started: bool = false,
+    muxer_started: bool = false,
+};
 
 const Input = struct {
     surface_texture: c.jobject = null,
@@ -101,6 +127,7 @@ const RecordingState = struct {
 };
 
 const Pipe = struct {
+    lock_flag: u32 = 0,
     handle: c.jlong = 0,
     display: c.EGLDisplay = c.EGL_NO_DISPLAY,
     context: c.EGLContext = c.EGL_NO_CONTEXT,
@@ -183,6 +210,9 @@ var g_last_error: [256:0]u8 = initError("OK");
 var g_error_scratch: [128:0]u8 = [_:0]u8{0} ** 128;
 var g_update_tex_image_method: c.jmethodID = null;
 var g_presentation_time_android: ?EglPresentationTimeAndroidFn = null;
+var g_native_writers: [MAX_NATIVE_WRITERS]NativeSegmentWriter = [_]NativeSegmentWriter{NativeSegmentWriter{}} ** MAX_NATIVE_WRITERS;
+var g_native_writer_used: [MAX_NATIVE_WRITERS]bool = [_]bool{false} ** MAX_NATIVE_WRITERS;
+var g_next_native_writer_handle: c.jlong = 1;
 
 fn initError(comptime s: []const u8) [256:0]u8 {
     var out: [256:0]u8 = [_:0]u8{0} ** 256;
@@ -210,6 +240,50 @@ fn tryLockGlobalBounded(iterations: usize) bool {
 
 fn unlockGlobal() void {
     @atomicStore(u32, &g_lock_flag, 0, .release);
+}
+
+fn lockPipe(p: *Pipe) void {
+    while (@cmpxchgStrong(u32, &p.lock_flag, 0, 1, .acquire, .monotonic) != null) {}
+}
+
+fn tryLockPipe(p: *Pipe) bool {
+    return @cmpxchgStrong(u32, &p.lock_flag, 0, 1, .acquire, .monotonic) == null;
+}
+
+fn tryLockPipeBounded(p: *Pipe, iterations: usize) bool {
+    for (0..iterations) |_| {
+        if (tryLockPipe(p)) return true;
+    }
+    return false;
+}
+
+fn unlockPipe(p: *Pipe) void {
+    @atomicStore(u32, &p.lock_flag, 0, .release);
+}
+
+fn lockPipeForHandle(handle: c.jlong) ?*Pipe {
+    lockGlobal();
+    const p = getPipe(handle) orelse {
+        unlockGlobal();
+        return null;
+    };
+    lockPipe(p);
+    unlockGlobal();
+    return p;
+}
+
+fn tryLockPipeForHandleBounded(handle: c.jlong, iterations: usize) ?*Pipe {
+    if (!tryLockGlobalBounded(iterations)) return null;
+    const p = getPipe(handle) orelse {
+        unlockGlobal();
+        return null;
+    };
+    if (!tryLockPipeBounded(p, iterations)) {
+        unlockGlobal();
+        return null;
+    }
+    unlockGlobal();
+    return p;
 }
 
 fn loge(comptime fmt: []const u8, args: anytype) void {
@@ -903,6 +977,77 @@ fn getPipe(handle: c.jlong) ?*Pipe {
     return null;
 }
 
+fn getNativeWriter(handle: c.jlong) ?*NativeSegmentWriter {
+    for (0..MAX_NATIVE_WRITERS) |i| if (g_native_writer_used[i] and g_native_writers[i].handle == handle) return &g_native_writers[i];
+    setError("invalid native writer handle", .{});
+    return null;
+}
+
+fn releaseNativeWriterResources(w: *NativeSegmentWriter) void {
+    if (w.muxer) |muxer| {
+        if (w.muxer_started) _ = c.AMediaMuxer_stop(muxer);
+        _ = c.AMediaMuxer_delete(muxer);
+    }
+    if (w.codec) |codec| {
+        if (w.started) _ = c.AMediaCodec_stop(codec);
+        _ = c.AMediaCodec_delete(codec);
+    }
+    if (w.input_window) |window| c.ANativeWindow_release(window);
+    if (w.fd >= 0) _ = close(w.fd);
+    w.* = NativeSegmentWriter{};
+}
+
+fn drainNativeWriterLocked(w: *NativeSegmentWriter, timeout_us: c.jlong) c.jlong {
+    const codec = w.codec orelse return -1;
+    var info: c.AMediaCodecBufferInfo = undefined;
+    var drained: c.jlong = 0;
+    while (true) {
+        const index = c.AMediaCodec_dequeueOutputBuffer(codec, &info, timeout_us);
+        if (index >= 0) {
+            defer _ = c.AMediaCodec_releaseOutputBuffer(codec, @intCast(index), false);
+            const buffer = c.AMediaCodec_getOutputBuffer(codec, @intCast(index), null);
+            if (buffer != null and w.muxer != null and w.muxer_started and w.track_index >= 0 and info.size > 0 and (info.flags & c.AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                const status = c.AMediaMuxer_writeSampleData(w.muxer.?, @intCast(w.track_index), buffer, &info);
+                if (status != c.AMEDIA_OK) {
+                    setError("AMediaMuxer_writeSampleData failed status={d}", .{status});
+                    return -1;
+                }
+                drained += 1;
+            }
+            if ((info.flags & c.AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0) return drained;
+            continue;
+        }
+        if (index == c.AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+            if (w.muxer == null) {
+                setError("output format changed before muxer", .{});
+                return -1;
+            }
+            if (!w.muxer_started) {
+                const out_format = c.AMediaCodec_getOutputFormat(codec) orelse {
+                    setError("AMediaCodec_getOutputFormat failed", .{});
+                    return -1;
+                };
+                defer _ = c.AMediaFormat_delete(out_format);
+                const track = c.AMediaMuxer_addTrack(w.muxer.?, out_format);
+                if (track < 0) {
+                    setError("AMediaMuxer_addTrack failed track={d}", .{track});
+                    return -1;
+                }
+                const start_status = c.AMediaMuxer_start(w.muxer.?);
+                if (start_status != c.AMEDIA_OK) {
+                    setError("AMediaMuxer_start failed status={d}", .{start_status});
+                    return -1;
+                }
+                w.track_index = @intCast(track);
+                w.muxer_started = true;
+            }
+            continue;
+        }
+        if (index == c.AMEDIA_ERROR_UNKNOWN) return -1;
+        return drained;
+    }
+}
+
 fn resetInput(env: ?[*c]c.JNIEnv, p: *Pipe, index: usize, delete_texture: bool) void {
     if (index >= 4) return;
     const inp = &p.input[index];
@@ -1011,6 +1156,187 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getRecordingNextTickD
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_beginNextRecordingSegment(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; return if (p.recording.segment_switch_pending) p.recording.pending_segment_wall_clock_ms else p.recording.next_segment_wall_clock_ms; }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_completeRecordingSegmentSwitch(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, success: c.jboolean) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (!p.recording.segment_switch_pending) return JNI_TRUE; if (success == JNI_TRUE) { p.recording.segment_index = p.recording.pending_segment_index; p.recording.next_segment_wall_clock_ms = p.recording.pending_segment_wall_clock_ms + p.recording.segment_duration_ms; } p.recording.segment_switch_pending = false; p.recording.pending_segment_index = 0; p.recording.pending_segment_wall_clock_ms = 0; return JNI_TRUE; }
 
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_createNativeSegmentWriter(env: [*c]c.JNIEnv, _: c.jobject, width: c.jint, height: c.jint, fps: c.jint, bitrate: c.jint, mime_type: c.jstring) callconv(.c) c.jlong {
+    if (mime_type == null or width <= 0 or height <= 0 or fps <= 0 or bitrate <= 0) {
+        setError("invalid native segment writer config", .{});
+        return 0;
+    }
+    const mime_chars = env.*[0].GetStringUTFChars.?(env, mime_type, null) orelse {
+        setError("native writer mime unavailable", .{});
+        return 0;
+    };
+    defer env.*[0].ReleaseStringUTFChars.?(env, mime_type, mime_chars);
+
+    lockGlobal();
+    defer unlockGlobal();
+    var slot_index: ?usize = null;
+    for (0..MAX_NATIVE_WRITERS) |i| {
+        if (!g_native_writer_used[i]) {
+            slot_index = i;
+            break;
+        }
+    }
+    const index = slot_index orelse {
+        setError("no free native writer slots", .{});
+        return 0;
+    };
+
+    const codec = c.AMediaCodec_createEncoderByType(mime_chars) orelse {
+        setError("AMediaCodec_createEncoderByType failed", .{});
+        return 0;
+    };
+    errdefer _ = c.AMediaCodec_delete(codec);
+
+    const format = c.AMediaFormat_new() orelse {
+        setError("AMediaFormat_new failed", .{});
+        return 0;
+    };
+    defer _ = c.AMediaFormat_delete(format);
+    c.AMediaFormat_setString(format, c.AMEDIAFORMAT_KEY_MIME, mime_chars);
+    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_WIDTH, width);
+    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_HEIGHT, height);
+    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_FRAME_RATE, fps);
+    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_BIT_RATE, bitrate);
+    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_COLOR_FORMAT, COLOR_FORMAT_SURFACE);
+    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 1);
+
+    const configure_status = c.AMediaCodec_configure(codec, format, null, null, c.AMEDIACODEC_CONFIGURE_FLAG_ENCODE);
+    if (configure_status != c.AMEDIA_OK) {
+        setError("AMediaCodec_configure failed status={d}", .{configure_status});
+        return 0;
+    }
+
+    var input_window: ?*c.ANativeWindow = null;
+    const surface_status = c.AMediaCodec_createInputSurface(codec, &input_window);
+    if (surface_status != c.AMEDIA_OK or input_window == null) {
+        setError("AMediaCodec_createInputSurface failed status={d}", .{surface_status});
+        return 0;
+    }
+
+    const handle = g_next_native_writer_handle;
+    g_next_native_writer_handle += 1;
+    g_native_writer_used[index] = true;
+    g_native_writers[index] = NativeSegmentWriter{
+        .handle = handle,
+        .codec = codec,
+        .input_window = input_window,
+        .width = width,
+        .height = height,
+        .fps = fps,
+        .bitrate = bitrate,
+        .started = false,
+    };
+    logi("native writer created handle={d} size={d}x{d} fps={d} bitrate={d}", .{ handle, width, height, fps, bitrate });
+    return handle;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterInputSurface(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jobject {
+    lockGlobal();
+    defer unlockGlobal();
+    const w = getNativeWriter(writer_handle) orelse return null;
+    const window = w.input_window orelse {
+        setError("native writer input window unavailable", .{});
+        return null;
+    };
+    return c.ANativeWindow_toSurface(env, window);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterStartSegment(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong, path: c.jstring, segment_index: c.jint, wall_clock_ms: c.jlong) callconv(.c) c.jboolean {
+    _ = segment_index;
+    _ = wall_clock_ms;
+    if (path == null) {
+        setError("native segment writer path unavailable", .{});
+        return JNI_FALSE;
+    }
+    const path_chars = env.*[0].GetStringUTFChars.?(env, path, null) orelse {
+        setError("native segment writer path chars unavailable", .{});
+        return JNI_FALSE;
+    };
+    defer env.*[0].ReleaseStringUTFChars.?(env, path, path_chars);
+
+    lockGlobal();
+    defer unlockGlobal();
+    const w = getNativeWriter(writer_handle) orelse return JNI_FALSE;
+    const codec = w.codec orelse return JNI_FALSE;
+    if (w.muxer != null or w.fd >= 0) {
+        setError("native segment writer already has active segment", .{});
+        return JNI_FALSE;
+    }
+    const fd = open(path_chars, O_CREAT_ANDROID | O_TRUNC_ANDROID | O_RDWR_ANDROID, 0o644);
+    if (fd < 0) {
+        setError("open native segment file failed", .{});
+        return JNI_FALSE;
+    }
+    const muxer = c.AMediaMuxer_new(fd, c.AMEDIAMUXER_OUTPUT_FORMAT_MPEG_4) orelse {
+        _ = close(fd);
+        setError("AMediaMuxer_new failed", .{});
+        return JNI_FALSE;
+    };
+    w.fd = fd;
+    w.muxer = muxer;
+    w.track_index = -1;
+    w.muxer_started = false;
+    if (!w.started) {
+        const status = c.AMediaCodec_start(codec);
+        if (status != c.AMEDIA_OK) {
+            _ = c.AMediaMuxer_delete(muxer);
+            _ = close(fd);
+            w.muxer = null;
+            w.fd = -1;
+            setError("AMediaCodec_start failed status={d}", .{status});
+            return JNI_FALSE;
+        }
+        w.started = true;
+    }
+    return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterDrain(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong, timeout_us: c.jlong) callconv(.c) c.jlong {
+    lockGlobal();
+    defer unlockGlobal();
+    const w = getNativeWriter(writer_handle) orelse return -1;
+    return drainNativeWriterLocked(w, timeout_us);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterStop(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jboolean {
+    lockGlobal();
+    defer unlockGlobal();
+    const w = getNativeWriter(writer_handle) orelse return JNI_FALSE;
+    if (w.codec) |codec| {
+        if (w.started) {
+            _ = c.AMediaCodec_signalEndOfInputStream(codec);
+            _ = drainNativeWriterLocked(w, 10_000);
+            _ = c.AMediaCodec_stop(codec);
+            w.started = false;
+        }
+    }
+    if (w.muxer) |muxer| {
+        if (w.muxer_started) _ = c.AMediaMuxer_stop(muxer);
+        _ = c.AMediaMuxer_delete(muxer);
+        w.muxer = null;
+        w.muxer_started = false;
+        w.track_index = -1;
+    }
+    if (w.fd >= 0) {
+        _ = close(w.fd);
+        w.fd = -1;
+    }
+    return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_nativeSegmentWriterRelease(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jboolean {
+    lockGlobal();
+    defer unlockGlobal();
+    for (0..MAX_NATIVE_WRITERS) |i| {
+        if (!g_native_writer_used[i] or g_native_writers[i].handle != writer_handle) continue;
+        releaseNativeWriterResources(&g_native_writers[i]);
+        g_native_writer_used[i] = false;
+        return JNI_TRUE;
+    }
+    setError("native writer release missing handle", .{});
+    return JNI_FALSE;
+}
+
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getMetricsSnapshot(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlongArray { lockGlobal(); defer unlockGlobal(); var values = [_]c.jlong{0} ** 48; if (getPipe(handle)) |p| { values[0]=p.preview_render_count; values[1]=p.encoder_render_count; values[2]=p.encoder_drop_count; values[3]=p.no_surface_count; values[4]=p.last_render_ms; values[5]=p.recording.requested_frames; values[6]=p.recording.rendered_frames; values[7]=p.recording.dropped_frames; values[8]=p.recording.segment_index; values[9]=if(p.recording.segment_switch_pending)1 else 0; values[10]=p.recording.pending_segment_index; values[11]=p.recording.next_segment_wall_clock_ms; values[12]=p.encoder_signal_count; values[13]=p.encoder_scheduled_count; values[14]=p.encoder_coalesced_count; values[15]=p.preview_max_fps; values[16]=p.preview_min_interval_ms; values[17]=p.config_version; values[18]=if(p.encoder_pending)1 else 0; values[19]=p.recording.generation; for (0..4) |i| { const base = 20 + i*7; values[base]=p.input[i].frame_signal_count; values[base+1]=p.input[i].preview_scheduled_count; values[base+2]=p.input[i].preview_delayed_count; values[base+3]=p.input[i].preview_coalesced_count; values[base+4]=p.input[i].update_count; values[base+5]=p.input[i].preview_render_count; values[base+6]=p.input[i].preview_drop_count; } } const result = env.*[0].NewLongArray.?(env, 48); if (result != null) env.*[0].SetLongArrayRegion.?(env, result, 0, 48, &values); return result; }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_createCompositor(_: [*c]c.JNIEnv, _: c.jobject, width: c.jint, height: c.jint) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |i| if (!g_used[i]) { const handle = g_next_handle; g_next_handle += 1; g_pipes[i] = Pipe{}; g_used[i] = true; g_pipes[i].handle = handle; g_pipes[i].width = width; g_pipes[i].height = height; if (!initEgl(&g_pipes[i])) { g_used[i] = false; return 0; } updateEncoderLayout(&g_pipes[i]); return handle; }; setError("no free native pipe slots", .{}); return 0; }
@@ -1028,9 +1354,8 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_attachEncoderSurface(
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_detachEncoderSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (p.encoder_surface != c.EGL_NO_SURFACE) { if (p.current_surface == p.encoder_surface) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.encoder_surface); p.encoder_surface = c.EGL_NO_SURFACE; } if (p.encoder_window) |w| { c.ANativeWindow_release(w); p.encoder_window = null; } p.encoder_generation = 0; p.encoder_frame_index = 0; p.encoder_pending = false; return JNI_TRUE; }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestPreviewRender(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jlong {
-    if (!tryLockGlobalBounded(64)) return PREVIEW_REQUEST_LOCK_BUSY;
-    defer unlockGlobal();
-    const p = getPipe(handle) orelse return -1;
+    const p = tryLockPipeForHandleBounded(handle, 64) orelse return PREVIEW_REQUEST_LOCK_BUSY;
+    defer unlockPipe(p);
     if (index < 0 or index >= 4) return -1;
     const i: usize = @intCast(index);
     const inp = &p.input[i];
@@ -1052,8 +1377,8 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestPreviewRender(
     return delay;
 }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_signalPreviewFrame(env: [*c]c.JNIEnv, obj: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jlong { return Java_com_kooo_evcam_v2_nativebridge_VulkanNative_requestPreviewRender(env, obj, handle, index); }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderScheduledPreview(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (!p.input[i].preview_pending) return JNI_TRUE; const ok = renderPreviewLocked(env, p, index); p.input[i].preview_pending = false; return if(ok)JNI_TRUE else JNI_FALSE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; return if(renderEncoderLocked(env, p, false, null))JNI_TRUE else JNI_FALSE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderScheduledPreview(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (!p.input[i].preview_pending) return JNI_TRUE; const ok = renderPreviewLocked(env, p, index); p.input[i].preview_pending = false; return if(ok)JNI_TRUE else JNI_FALSE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); return if(renderEncoderLocked(env, p, false, null))JNI_TRUE else JNI_FALSE; }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_releaseCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) void { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |idx| { if (!g_used[idx] or g_pipes[idx].handle != handle) continue; const p = &g_pipes[idx]; if (p.display != c.EGL_NO_DISPLAY) { _ = makePbufferCurrent(p); for (0..4) |i| { if (p.preview_surface[i] != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.preview_surface[i]); if (p.input[i].texture != 0) c.glDeleteTextures(1, &p.input[i].texture); } if (p.encoder_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.encoder_surface); if (p.overlay_font_texture != 0) c.glDeleteTextures(1, &p.overlay_font_texture); if (p.recording.overlay_bitmap_texture != 0) c.glDeleteTextures(1, &p.recording.overlay_bitmap_texture); if (p.program != 0) c.glDeleteProgram(p.program); if (p.overlay_program != 0) c.glDeleteProgram(p.overlay_program); if (p.overlay_text_program != 0) c.glDeleteProgram(p.overlay_text_program); clearCurrent(p); if (p.pbuffer != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.pbuffer); if (p.context != c.EGL_NO_CONTEXT) _ = c.eglDestroyContext(p.display, p.context); _ = c.eglTerminate(p.display); } for (0..4) |i| { if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); if (p.preview_window[i]) |w| c.ANativeWindow_release(w); } if (p.encoder_window) |w| c.ANativeWindow_release(w); g_used[idx] = false; g_pipes[idx] = Pipe{}; return; } }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getLastError(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, &g_last_error); }

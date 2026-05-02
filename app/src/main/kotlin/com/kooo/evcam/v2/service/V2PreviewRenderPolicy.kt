@@ -1,7 +1,7 @@
 package com.kooo.evcam.v2.service
 
 object V2PreviewRenderPolicy {
-    fun shouldSkipFrameProcessing(previewRenderingEnabled: Boolean, recording: Boolean): Boolean =
+    fun shouldSkipFrameSignal(previewRenderingEnabled: Boolean, recording: Boolean): Boolean =
         !previewRenderingEnabled && !recording
 
     fun desiredCameraFps(

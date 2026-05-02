@@ -26,7 +26,7 @@ internal class V2CameraReadinessOrchestrator(
     }
 
     fun shouldExpectPreviewRendering(recording: Boolean): Boolean {
-        return recording || isUiVisible() || hasOverlayPreview()
+        return isUiVisible() || hasOverlayPreview()
     }
 
     private companion object {
