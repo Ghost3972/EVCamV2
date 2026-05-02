@@ -24,14 +24,15 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     interface Listener { fun onStatusChanged(status: String) }
 
     companion object {
-        private const val PREVIEW_MAX_FPS = 25
-        private const val RECORDING_PREVIEW_MAX_FPS = 25
+        private const val PREVIEW_MAX_FPS = 30
+        private const val RECORDING_PREVIEW_MAX_FPS = 15
         private const val PREVIEW_LOCK_BUSY_RETRY_MS = 8L
         private const val PREVIEW_LOCK_BUSY_RESULT = -2L
         private const val CAMERA_REOPEN_DELAY_MS = 500L
         private const val EVENT_SEGMENT_GUARD_MS = 5_000L
         private const val PREVIEW_SLOW_RENDER_MS = 24L
         private const val PREVIEW_PERF_LOG_INTERVAL_MS = 5_000L
+        private const val PREVIEW_SLOW_LOG_MIN_INTERVAL_MS = 1_000L
         private const val SIDE_LEFT_ROTATION = 270
         private const val SIDE_RIGHT_ROTATION = 90
         private const val DEFAULT_LAYOUT_MODE = 0
@@ -383,7 +384,9 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         if (delayMs == PREVIEW_LOCK_BUSY_RESULT) {
             if (!slot.previewRetryPending) {
                 slot.previewRetryPending = true
+                val generation = cameraGeneration
                 renderHandler.postDelayed({
+                    if (released || !cameraAccessAllowed || generation != cameraGeneration) return@postDelayed
                     slot.previewRetryPending = false
                     requestPreviewRender(slot)
                 }, PREVIEW_LOCK_BUSY_RETRY_MS)
@@ -422,6 +425,11 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     }
 
     private fun runPreviewRenderBatch() {
+        if (released || !cameraAccessAllowed) {
+            slots.forEach { it.previewRenderQueued = false }
+            previewBatchScheduled = false
+            return
+        }
         previewBatchScheduled = false
         val now = SystemClock.elapsedRealtime()
         var nextDueMs = Long.MAX_VALUE
@@ -464,7 +472,8 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     private fun logPreviewFramePerfIfNeeded(slot: Slot, queueDelayMs: Long) {
         val now = SystemClock.elapsedRealtime()
         val slow = slot.lastRenderMs >= PREVIEW_SLOW_RENDER_MS || queueDelayMs >= PREVIEW_SLOW_RENDER_MS
-        if (!slow && now - slot.lastPreviewPerfLogMs < PREVIEW_PERF_LOG_INTERVAL_MS) return
+        val minInterval = if (slow) PREVIEW_SLOW_LOG_MIN_INTERVAL_MS else PREVIEW_PERF_LOG_INTERVAL_MS
+        if (now - slot.lastPreviewPerfLogMs < minInterval) return
         val elapsedMs = (now - slot.lastPreviewPerfLogMs).takeIf { it > 0L } ?: PREVIEW_PERF_LOG_INTERVAL_MS
         val frameDelta = (slot.renderedFrames - slot.lastPreviewPerfFrames).coerceAtLeast(0L)
         val fps = frameDelta * 1000f / elapsedMs.coerceAtLeast(1L)
@@ -618,7 +627,6 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         recording = recording,
         recordingFps = recordingFps,
         previewMaxFps = PREVIEW_MAX_FPS,
-        recordingPreviewMaxFps = RECORDING_PREVIEW_MAX_FPS,
     )
     private fun status(): String = statusFormatter.status(
         recording = recording,

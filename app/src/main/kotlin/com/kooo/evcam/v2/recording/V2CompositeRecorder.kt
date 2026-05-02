@@ -49,6 +49,7 @@ class V2CompositeRecorder(
         private const val STOP_WRITER_TIMEOUT_MS = 2_500L
         private const val RECORDING_SLOW_RENDER_MS = 24L
         private const val RECORDING_FRAME_PERF_LOG_INTERVAL_MS = 5_000L
+        private const val RECORDING_FRAME_WARN_LOG_INTERVAL_MS = 1_000L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -398,37 +399,42 @@ class V2CompositeRecorder(
         }
         private val x = (PREVIEW_TIMESTAMP_SCREEN_X - PREVIEW_LEFT_PANEL_WIDTH) * widthScale
         private val y = PREVIEW_TIMESTAMP_Y * heightScale
+        private val bitmap: Bitmap
+        private val canvas: Canvas
         private var lastSecond = Long.MIN_VALUE
+
+        init {
+            val sampleText = "0000年00月00日 00:00:00"
+            val fontMetrics = paint.fontMetrics
+            val bitmapHeight = kotlin.math.ceil((fontMetrics.descent - fontMetrics.ascent).toDouble()).toInt().coerceAtLeast(1)
+            val bitmapWidth = kotlin.math.ceil(paint.measureText(sampleText).toDouble()).toInt().coerceAtLeast(1)
+            bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
+            canvas = Canvas(bitmap)
+        }
 
         fun updateIfNeeded(native: V2NativeRecordingBridge, wallClockMs: Long) {
             val second = wallClockMs / 1000L
             if (second == lastSecond) return
             lastSecond = second
             val text = format.format(Date(wallClockMs))
-            val bitmap = render(text)
-            try {
-                if (!native.updateOverlayBitmap(bitmap, x, y)) {
-                    V2AppLog.w("V2CompositeRecorder", "update overlay bitmap failed: ${native.lastError()}")
-                }
-            } finally {
-                bitmap.recycle()
+            renderIntoBitmap(text)
+            if (!native.updateOverlayBitmap(bitmap, x, y)) {
+                V2AppLog.w("V2CompositeRecorder", "update overlay bitmap failed: ${native.lastError()}")
             }
         }
 
-        private fun render(text: String): Bitmap {
+        private fun renderIntoBitmap(text: String) {
             val fontMetrics = paint.fontMetrics
-            val height = kotlin.math.ceil((fontMetrics.descent - fontMetrics.ascent).toDouble()).toInt().coerceAtLeast(1)
-            val width = kotlin.math.ceil(paint.measureText(text).toDouble()).toInt().coerceAtLeast(1)
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            Canvas(bitmap).drawText(text, 0f, -fontMetrics.ascent, paint)
-            return bitmap
+            bitmap.eraseColor(Color.TRANSPARENT)
+            canvas.drawText(text, 0f, -fontMetrics.ascent, paint)
         }
     }
 
     private fun logRecordingFramePerfIfNeeded(renderMs: Long, shouldRender: Boolean, dropped: Boolean) {
         val now = SystemClock.elapsedRealtime()
         val slow = renderMs >= RECORDING_SLOW_RENDER_MS
-        if (!dropped && !slow && now - lastFramePerfLogMs < RECORDING_FRAME_PERF_LOG_INTERVAL_MS) return
+        val minInterval = if (dropped || slow) RECORDING_FRAME_WARN_LOG_INTERVAL_MS else RECORDING_FRAME_PERF_LOG_INTERVAL_MS
+        if (now - lastFramePerfLogMs < minInterval) return
         val elapsedMs = (now - lastFramePerfLogMs).takeIf { it > 0L } ?: RECORDING_FRAME_PERF_LOG_INTERVAL_MS
         val requestedDelta = metrics.requestedFrames - lastFramePerfRequested
         val renderedDelta = metrics.renderedFrames - lastFramePerfRendered
@@ -447,7 +453,7 @@ class V2CompositeRecorder(
                 else -> "recordingFrame"
             },
             renderMs,
-            "seg=${metrics.segmentIndex} reqFps=${rate(requestedDelta, elapsedMs)} renderFps=${rate(renderedDelta, elapsedMs)} encFps=${rate(encodedDelta, elapsedMs)} dropDelta=$droppedDelta totalDrop=${metrics.droppedFrames} rendered=$shouldRender firstSampleMs=${metrics.firstSampleLatencyMs} writerBytes=${writer?.currentSizeBytes() ?: 0L}"
+            "seg=${metrics.segmentIndex} reqFps=${rate(requestedDelta, elapsedMs)} renderFps=${rate(renderedDelta, elapsedMs)} encFps=${rate(encodedDelta, elapsedMs)} dropDelta=$droppedDelta totalDrop=${metrics.droppedFrames} rendered=$shouldRender firstSampleMs=${metrics.firstSampleLatencyMs}"
         )
     }
 

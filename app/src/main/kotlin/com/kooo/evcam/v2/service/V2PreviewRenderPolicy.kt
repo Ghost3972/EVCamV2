@@ -8,9 +8,11 @@ object V2PreviewRenderPolicy {
         recording: Boolean,
         recordingFps: Int,
         previewMaxFps: Int,
-        recordingPreviewMaxFps: Int,
     ): Int {
-        val limit = if (recording) recordingPreviewMaxFps else previewMaxFps
+        // Keep camera capture at the recording cadence while recording. Native preview
+        // rendering is throttled separately so the UI does not steal render-thread time
+        // from encoder composition.
+        val limit = if (recording) recordingFps else previewMaxFps
         return recordingFps.coerceAtMost(limit).coerceAtLeast(1)
     }
 }

@@ -29,6 +29,7 @@ class EncoderSegmentWriter(
 ) {
     private companion object {
         private const val SLOW_WRITE_MS = 8L
+        private const val SLOW_WRITE_LOG_INTERVAL_MS = 1_000L
     }
 
     private val appContext = context.applicationContext
@@ -49,6 +50,7 @@ class EncoderSegmentWriter(
     private val bufferInfo = MediaCodec.BufferInfo()
     @Volatile private var finishing = false
     private var lastDrainPerfLogMs = 0L
+    private var lastSlowWriteLogMs = 0L
 
     val surface: android.view.Surface? get() = inputSurface
 
@@ -160,7 +162,11 @@ class EncoderSegmentWriter(
                             V2AppLog.perf("EncoderSegmentWriter", "firstSample", metrics.firstSampleLatencyMs, "file=${currentFile?.name} size=${bufferInfo.size}")
                         }
                         if (sampleWriteMs >= SLOW_WRITE_MS) {
-                            V2AppLog.perf("EncoderSegmentWriter", "sampleWrite_slow", sampleWriteMs, "file=${currentFile?.name} sample=$writtenSamples size=${bufferInfo.size}")
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastSlowWriteLogMs >= SLOW_WRITE_LOG_INTERVAL_MS) {
+                                lastSlowWriteLogMs = now
+                                V2AppLog.perf("EncoderSegmentWriter", "sampleWrite_slow", sampleWriteMs, "file=${currentFile?.name} sample=$writtenSamples size=${bufferInfo.size}")
+                            }
                         }
                     }
                     codec.releaseOutputBuffer(outIndex, false)
@@ -176,7 +182,8 @@ class EncoderSegmentWriter(
     private fun logDrainCost(startedMs: Long, samples: Long, writeMs: Long, endOfStream: Boolean) {
         val elapsedMs = SystemClock.elapsedRealtime() - startedMs
         val now = SystemClock.elapsedRealtime()
-        if (elapsedMs >= 8L || writeMs >= 4L || samples >= 4L || endOfStream || (samples > 0L && now - lastDrainPerfLogMs >= 3_000L)) {
+        val noisy = elapsedMs >= 8L || writeMs >= 4L || samples >= 4L
+        if (endOfStream || (samples > 0L && now - lastDrainPerfLogMs >= 3_000L) || (noisy && now - lastDrainPerfLogMs >= SLOW_WRITE_LOG_INTERVAL_MS)) {
             lastDrainPerfLogMs = now
             V2AppLog.perf(
                 "EncoderSegmentWriter",
@@ -209,7 +216,10 @@ class EncoderSegmentWriter(
                 latch.countDown()
             }
         }
-        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            metrics.lastError = "finish timed out after ${timeoutMs}ms"
+            V2AppLog.e("EncoderSegmentWriter", "finish timed out file=${currentFile?.name} timeoutMs=$timeoutMs")
+        }
         drainExecutor.shutdown()
         return result.get()
     }
@@ -225,7 +235,10 @@ class EncoderSegmentWriter(
                 latch.countDown()
             }
         }
-        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            metrics.lastError = "release timed out after ${timeoutMs}ms"
+            V2AppLog.e("EncoderSegmentWriter", "release timed out file=${currentFile?.name} timeoutMs=$timeoutMs")
+        }
         drainExecutor.shutdown()
         return result.get()
     }

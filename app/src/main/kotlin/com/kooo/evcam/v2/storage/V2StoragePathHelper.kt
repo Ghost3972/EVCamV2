@@ -167,15 +167,10 @@ object V2StoragePathHelper {
     }
 
     fun storageSummary(context: Context): String {
-        val dir = outputDir(context)
-        return "当前路径：${dir.absolutePath}\n可用/总空间：${V2StorageCleaner.formatBytes(dir.usableSpace)} / ${V2StorageCleaner.formatBytes(dir.totalSpace)}"
+        return storageSummary(outputDir(context))
     }
 
-    fun storageOptions(context: Context): List<String> = listOf(
-        "App内部",
-        if (availableUsbMount(context) != null) "App U盘" else "App U盘(未检测到)",
-        "公共DCIM"
-    )
+    fun storageOptions(context: Context): List<String> = storageOptions(usbAvailable = availableUsbMount(context) != null)
 
     fun saveLocation(context: Context, location: StorageLocation) {
         V2StorageLocationSettings.setSelectedLocation(context, location)
@@ -185,6 +180,16 @@ object V2StoragePathHelper {
         context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: File(context.filesDir, Environment.DIRECTORY_MOVIES),
         OUTPUT_DIR_NAME
     )
+
+    private fun storageSummary(dir: File): String = "当前路径：${dir.absolutePath}\n可用/总空间：${formatStorageBytes(dir.usableSpace)} / ${formatStorageBytes(dir.totalSpace)}"
+
+    private fun storageOptions(usbAvailable: Boolean): List<String> = listOf(
+        "App内部",
+        if (usbAvailable) "App U盘" else "App U盘(未检测到)",
+        "公共DCIM"
+    )
+
+    private fun formatStorageBytes(bytes: Long): String = V2StorageCleaner.formatBytes(bytes)
 
     private fun publicDcimDir(): File = File(
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
