@@ -49,7 +49,6 @@ object VulkanNative {
         centerY: FloatArray
     ): Boolean
     external fun setPreviewMaxFps(handle: Long, fps: Int): Boolean
-    external fun setRecordingOverlayBitmap(handle: Long, rgba: ByteArray, width: Int, height: Int): Boolean
     external fun startRecordingSession(handle: Long, fps: Int, segmentDurationMs: Long, wallClockMs: Long): Long
     external fun stopRecordingSession(handle: Long): Boolean
     external fun recordingTickAndRender(handle: Long, wallClockMs: Long): Long

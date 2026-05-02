@@ -16,6 +16,7 @@ class V2CameraWatchdog(
     private var lastSnapshotMs = 0L
     private var failureCount = 0
     private var lastResetMs = 0L
+    private var lastPerformanceLogMs = 0L
 
     private val tick = object : Runnable {
         override fun run() {
@@ -41,6 +42,7 @@ class V2CameraWatchdog(
         failureCount = 0
         lastSnapshot = engine.healthSnapshot()
         lastSnapshotMs = lastResetMs
+        lastPerformanceLogMs = 0L
         if (log) V2AppLog.i(TAG, "watchdog reset reason=$reason")
     }
 
@@ -113,6 +115,9 @@ class V2CameraWatchdog(
         previous: V2CameraHealthSnapshot?,
         deltaMs: Long,
     ) {
+        val now = SystemClock.elapsedRealtime()
+        if (failureCount == 0 && now - lastPerformanceLogMs < PERFORMANCE_LOG_INTERVAL_MS) return
+        lastPerformanceLogMs = now
         val slotText = snapshot.slots.joinToString(prefix = "[", postfix = "]", separator = " ") { slot ->
             val prev = previous?.slots?.firstOrNull { it.index == slot.index }
             val signalFps = ratePerSecond(slot.frameSignals - (prev?.frameSignals ?: slot.frameSignals), deltaMs)
@@ -142,6 +147,7 @@ class V2CameraWatchdog(
     private companion object {
         private const val TAG = "V2CameraService"
         private const val CHECK_INTERVAL_MS = 15_000L
+        private const val PERFORMANCE_LOG_INTERVAL_MS = 60_000L
         private const val GRACE_MS = 20_000L
         private const val FAILURE_THRESHOLD = 2
     }

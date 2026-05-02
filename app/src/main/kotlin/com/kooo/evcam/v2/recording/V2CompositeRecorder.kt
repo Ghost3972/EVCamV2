@@ -1,11 +1,6 @@
 package com.kooo.evcam.v2.recording
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -13,8 +8,6 @@ import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.nativebridge.VulkanNative
 import com.kooo.evcam.v2.storage.V2StorageCleaner
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -66,8 +59,6 @@ class V2CompositeRecorder(
     private var preparedSegmentWallClockMs = 0L
     private var preparedSegmentFuture: Future<EncoderSegmentWriter>? = null
     private var segmentPrecreateEnabled = segmentPrecreateEnabled
-    private val overlayTimeFormat = SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss", Locale.CHINA)
-    private var lastOverlaySecond = Long.MIN_VALUE
     private val emergencyClipLock = Any()
     private val pendingEmergencyClips = mutableListOf<EmergencyClipRequest>()
     private val finalizedSegments = mutableListOf<V2EmergencyClipExtractor.SourceSegment>()
@@ -82,7 +73,6 @@ class V2CompositeRecorder(
         scheduleStorageCleanup()
         recordingSessionId = createRecordingSessionId()
         val startWallClockMs = System.currentTimeMillis()
-        updateRecordingOverlay(startWallClockMs, force = true)
         val firstSegmentWallClockMs = VulkanNative.startRecordingSession(nativeHandle, recordingFps, segmentDurationMs, startWallClockMs)
         recording = true
         generation += 1
@@ -323,7 +313,6 @@ class V2CompositeRecorder(
         try {
             metrics.requestedFrames += 1
             val wallClockMs = System.currentTimeMillis()
-            updateRecordingOverlay(wallClockMs, force = false)
             val tick = VulkanNative.recordingTickAndRender(nativeHandle, wallClockMs)
             if (tick < 0L) throw java.lang.IllegalStateException(VulkanNative.getLastError())
             val shouldRender = tick and TICK_SHOULD_RENDER != 0L
@@ -358,51 +347,6 @@ class V2CompositeRecorder(
             }
         }
     }
-
-    private fun updateRecordingOverlay(wallClockMs: Long, force: Boolean) {
-        val second = wallClockMs / 1000L
-        if (!force && second == lastOverlaySecond) return
-        val overlay = renderTimestampOverlay(wallClockMs)
-        val uploaded = runCatching {
-            VulkanNative.setRecordingOverlayBitmap(nativeHandle, overlay.rgba, overlay.width, overlay.height)
-        }.getOrElse {
-            V2AppLog.w("V2CompositeRecorder", "timestamp overlay upload failed", it)
-            false
-        }
-        if (!uploaded) {
-            V2AppLog.w("V2CompositeRecorder", "timestamp overlay upload rejected: ${VulkanNative.getLastError()}")
-        }
-        lastOverlaySecond = second
-    }
-
-    private fun renderTimestampOverlay(wallClockMs: Long): TimestampOverlayBitmap {
-        val text = overlayTimeFormat.format(Date(wallClockMs))
-        val scale = (outputHeight / 1600f).coerceIn(0.45f, 1f)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
-            color = Color.WHITE
-            textSize = 38f * scale
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-        }
-        val metrics = paint.fontMetrics
-        val width = kotlin.math.ceil(paint.measureText(text).toDouble()).toInt().coerceAtLeast(1)
-        val height = kotlin.math.ceil((metrics.descent - metrics.ascent).toDouble()).toInt().coerceAtLeast(1)
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        Canvas(bitmap).drawText(text, 0f, -metrics.ascent, paint)
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-        bitmap.recycle()
-        val rgba = ByteArray(pixels.size * 4)
-        var out = 0
-        for (pixel in pixels) {
-            rgba[out++] = Color.red(pixel).toByte()
-            rgba[out++] = Color.green(pixel).toByte()
-            rgba[out++] = Color.blue(pixel).toByte()
-            rgba[out++] = Color.alpha(pixel).toByte()
-        }
-        return TimestampOverlayBitmap(rgba, width, height)
-    }
-
-    private data class TimestampOverlayBitmap(val rgba: ByteArray, val width: Int, val height: Int)
 
     private fun failStopOnRenderThread() {
         if (!recording) return

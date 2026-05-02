@@ -463,8 +463,9 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
 
     private fun handleDisplayOff(action: String?) {
         displayPowerController.markOff(action)
-        resumeRecordingAfterDisplayOn = engine.isRecording()
-        V2AppLog.i("V2CameraService", "display off/pre-STR action=$action: stop recording, detach preview, release cameras resumeRecording=$resumeRecordingAfterDisplayOn")
+        val autoRecordingEnabled = V2StartupSettings.isAutoStartRecording(this)
+        resumeRecordingAfterDisplayOn = resumeRecordingAfterDisplayOn || engine.isRecording() || autoRecordingEnabled
+        V2AppLog.i("V2CameraService", "display off/pre-STR action=$action: stop recording, detach preview, release cameras resumeRecording=$resumeRecordingAfterDisplayOn autoRecording=$autoRecordingEnabled")
         cameraWatchdog.reset("display_off")
         autoRecordingController.cancelPending()
         avoidanceController.clear("display off")
@@ -496,15 +497,18 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         previewSurfaces.forEachIndexed { index, surface ->
             previewLeaseManager.restoreMain(index, surface)
         }
-        restoreRecordingAfterDisplayOnIfNeeded()
         autoRecordingController.cancelPending()
+        restoreRecordingAfterDisplayOnIfNeeded()
         cameraWatchdog.reset("display_on")
         cameraWatchdog.start()
         uiStatusListener?.invoke(engine.statusText())
     }
 
     private fun restoreRecordingAfterDisplayOnIfNeeded() {
-        if (!resumeRecordingAfterDisplayOn) return
+        if (!resumeRecordingAfterDisplayOn) {
+            autoRecordingController.scheduleIfEnabled()
+            return
+        }
         resumeRecordingAfterDisplayOn = false
         mainHandler.postDelayed({
             if (!isDisplayPowerOn()) {

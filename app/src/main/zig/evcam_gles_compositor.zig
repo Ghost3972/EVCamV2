@@ -95,18 +95,11 @@ const Pipe = struct {
     config_version: i64 = 0,
     program: c.GLuint = 0,
     overlay_program: c.GLuint = 0,
-    overlay_texture_program: c.GLuint = 0,
-    overlay_texture: c.GLuint = 0,
     pos_loc: c.GLint = -1,
     tex_loc: c.GLint = -1,
     sampler_loc: c.GLint = -1,
     overlay_pos_loc: c.GLint = -1,
     overlay_color_loc: c.GLint = -1,
-    overlay_tex_pos_loc: c.GLint = -1,
-    overlay_tex_coord_loc: c.GLint = -1,
-    overlay_tex_sampler_loc: c.GLint = -1,
-    overlay_texture_width: i32 = 0,
-    overlay_texture_height: i32 = 0,
     fisheye_enabled_loc: c.GLint = -1,
     k1_loc: c.GLint = -1,
     k2_loc: c.GLint = -1,
@@ -258,8 +251,6 @@ const FRAG = "#extension GL_OES_EGL_image_external : require\n" ++
     "void main(){ if(uFisheyeEnabled==0){gl_FragColor=texture2D(uTexture,vTexCoord);return;} vec2 coord=(vTexCoord-uCenter)/uZoom; float r2=dot(coord,coord); float r4=r2*r2; float distortion=1.0+uK1*r2+uK2*r4; vec2 corrected=coord*distortion+uCenter; if(corrected.x<0.0||corrected.x>1.0||corrected.y<0.0||corrected.y>1.0){ gl_FragColor=vec4(0.0,0.0,0.0,1.0); }else{ gl_FragColor=texture2D(uTexture,corrected); }}";
 const OVERLAY_VERT = "attribute vec2 aPosition;void main(){gl_Position=vec4(aPosition,0.0,1.0);}";
 const OVERLAY_FRAG = "precision mediump float;uniform vec4 uColor;void main(){gl_FragColor=uColor;}";
-const OVERLAY_TEXTURE_VERT = "attribute vec2 aPosition;attribute vec2 aTexCoord;varying vec2 vTexCoord;void main(){gl_Position=vec4(aPosition,0.0,1.0);vTexCoord=aTexCoord;}";
-const OVERLAY_TEXTURE_FRAG = "precision mediump float;varying vec2 vTexCoord;uniform sampler2D uTexture;void main(){gl_FragColor=texture2D(uTexture,vTexCoord);}";
 
 fn compileShader(kind: c.GLenum, source: [*c]const u8) c.GLuint {
     const shader = c.glCreateShader(kind);
@@ -314,25 +305,6 @@ fn createOverlayProgram() c.GLuint {
     return program;
 }
 
-fn createOverlayTextureProgram() c.GLuint {
-    const vs = compileShader(c.GL_VERTEX_SHADER, OVERLAY_TEXTURE_VERT);
-    const fs = compileShader(c.GL_FRAGMENT_SHADER, OVERLAY_TEXTURE_FRAG);
-    const program = c.glCreateProgram();
-    c.glAttachShader(program, vs);
-    c.glAttachShader(program, fs);
-    c.glLinkProgram(program);
-    var ok: c.GLint = 0;
-    c.glGetProgramiv(program, c.GL_LINK_STATUS, &ok);
-    if (ok == 0) {
-        var log: [512]u8 = [_]u8{0} ** 512;
-        c.glGetProgramInfoLog(program, log.len, null, &log);
-        setError("overlay texture program link failed: {s}", .{std.mem.sliceTo(&log, 0)});
-    }
-    c.glDeleteShader(vs);
-    c.glDeleteShader(fs);
-    return program;
-}
-
 fn initEgl(p: *Pipe) bool {
     if (p.display != c.EGL_NO_DISPLAY) return true;
     p.display = c.eglGetDisplay(c.EGL_DEFAULT_DISPLAY);
@@ -354,21 +326,17 @@ fn initEgl(p: *Pipe) bool {
     if (c.eglMakeCurrent(p.display, p.pbuffer, p.pbuffer, p.context) == c.EGL_FALSE) { setErrorSlice(eglError("eglMakeCurrent pbuffer failed")); return false; }
     p.program = createProgram();
     p.overlay_program = createOverlayProgram();
-    p.overlay_texture_program = createOverlayTextureProgram();
     p.pos_loc = c.glGetAttribLocation(p.program, "aPosition");
     p.tex_loc = c.glGetAttribLocation(p.program, "aTexCoord");
     p.sampler_loc = c.glGetUniformLocation(p.program, "uTexture");
     p.overlay_pos_loc = c.glGetAttribLocation(p.overlay_program, "aPosition");
     p.overlay_color_loc = c.glGetUniformLocation(p.overlay_program, "uColor");
-    p.overlay_tex_pos_loc = c.glGetAttribLocation(p.overlay_texture_program, "aPosition");
-    p.overlay_tex_coord_loc = c.glGetAttribLocation(p.overlay_texture_program, "aTexCoord");
-    p.overlay_tex_sampler_loc = c.glGetUniformLocation(p.overlay_texture_program, "uTexture");
     p.fisheye_enabled_loc = c.glGetUniformLocation(p.program, "uFisheyeEnabled");
     p.k1_loc = c.glGetUniformLocation(p.program, "uK1");
     p.k2_loc = c.glGetUniformLocation(p.program, "uK2");
     p.zoom_loc = c.glGetUniformLocation(p.program, "uZoom");
     p.center_loc = c.glGetUniformLocation(p.program, "uCenter");
-    if (p.program == 0 or p.pos_loc < 0 or p.tex_loc < 0 or p.sampler_loc < 0 or p.overlay_program == 0 or p.overlay_pos_loc < 0 or p.overlay_color_loc < 0 or p.overlay_texture_program == 0 or p.overlay_tex_pos_loc < 0 or p.overlay_tex_coord_loc < 0 or p.overlay_tex_sampler_loc < 0) { setError("GLES program locations unavailable", .{}); return false; }
+    if (p.program == 0 or p.pos_loc < 0 or p.tex_loc < 0 or p.sampler_loc < 0 or p.overlay_program == 0 or p.overlay_pos_loc < 0 or p.overlay_color_loc < 0) { setError("GLES program locations unavailable", .{}); return false; }
     clearCurrent(p);
     logd("EGL initialized", .{});
     return true;
@@ -588,35 +556,34 @@ fn drawOverlayChar(p: *Pipe, ch: u8, x: f32, y: f32, scale: f32, color: [4]f32) 
 }
 
 fn drawOverlay(p: *Pipe, encoder: bool) void {
-    if (!encoder or !p.recording.recording or p.overlay_texture == 0 or p.overlay_texture_width <= 0 or p.overlay_texture_height <= 0) return;
+    if (!encoder or !p.recording.recording or p.recording.overlay_wall_clock_ms <= 0) return;
     const scale = @max(@min(@as(f32, @floatFromInt(p.height)) / 1600.0, 1.0), 0.45);
     const x = 50.0 * scale;
     const y = 40.0 * scale;
-    const w = @as(f32, @floatFromInt(p.overlay_texture_width));
-    const h = @as(f32, @floatFromInt(p.overlay_texture_height));
-    const cw = if (p.width <= 0) 1.0 else @as(f32, @floatFromInt(p.width));
-    const ch = if (p.height <= 0) 1.0 else @as(f32, @floatFromInt(p.height));
-    const x0 = x / cw * 2.0 - 1.0;
-    const x1 = (x + w) / cw * 2.0 - 1.0;
-    const y0 = 1.0 - y / ch * 2.0;
-    const y1 = 1.0 - (y + h) / ch * 2.0;
-    var verts = [_]c.GLfloat{ x0, y0, x1, y0, x0, y1, x1, y1 };
-    var tex = [_]c.GLfloat{ 0, 0, 1, 0, 0, 1, 1, 1 };
-    c.glUseProgram(p.overlay_texture_program);
-    c.glEnableVertexAttribArray(@intCast(p.overlay_tex_pos_loc));
-    c.glEnableVertexAttribArray(@intCast(p.overlay_tex_coord_loc));
+    var buf: [24]u8 = undefined;
+    const text = formatOverlayTime(&buf, p.recording.overlay_wall_clock_ms);
+    if (text.len == 0) return;
+
+    c.glUseProgram(p.overlay_program);
+    c.glEnableVertexAttribArray(@intCast(p.overlay_pos_loc));
     c.glEnable(c.GL_BLEND);
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-    c.glActiveTexture(c.GL_TEXTURE0);
-    c.glBindTexture(c.GL_TEXTURE_2D, p.overlay_texture);
-    c.glUniform1i(p.overlay_tex_sampler_loc, 0);
-    c.glVertexAttribPointer(@intCast(p.overlay_tex_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &verts);
-    c.glVertexAttribPointer(@intCast(p.overlay_tex_coord_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &tex);
-    c.glDrawArrays(c.GL_TRIANGLE_STRIP, 0, 4);
-    c.glBindTexture(c.GL_TEXTURE_2D, 0);
+
+    const text_width = overlayTextWidth(text, scale);
+    const text_height = 30.0 * scale;
+    const padding_x = 10.0 * scale;
+    const padding_y = 8.0 * scale;
+    drawOverlayRect(p, x - padding_x, y - padding_y, text_width + padding_x * 2.0, text_height + padding_y * 2.0, .{ 0.0, 0.0, 0.0, 0.45 });
+
+    var cursor = x;
+    const text_color = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+    for (text) |ch| {
+        drawOverlayChar(p, ch, cursor, y, scale, text_color);
+        cursor += overlayCharAdvance(ch, scale);
+    }
+
     c.glDisable(c.GL_BLEND);
-    c.glDisableVertexAttribArray(@intCast(p.overlay_tex_pos_loc));
-    c.glDisableVertexAttribArray(@intCast(p.overlay_tex_coord_loc));
+    c.glDisableVertexAttribArray(@intCast(p.overlay_pos_loc));
 }
 
 fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
@@ -817,35 +784,6 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setCompositorRuntimeC
 
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setPreviewMaxFps(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (fps <= 0) { p.preview_max_fps = 0; p.preview_min_interval_ms = 0; } else { p.preview_max_fps = @min(@max(fps, 1), 120); p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps); } logd("preview max fps={d} minIntervalMs={d}", .{ p.preview_max_fps, p.preview_min_interval_ms }); return JNI_TRUE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_setRecordingOverlayBitmap(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, rgba: c.jbyteArray, width: c.jint, height: c.jint) callconv(.c) c.jboolean {
-    lockGlobal(); defer unlockGlobal();
-    const p = getPipe(handle) orelse return JNI_FALSE;
-    if (rgba == null or width <= 0 or height <= 0) return JNI_FALSE;
-    const expected_len: c.jsize = width * height * 4;
-    if (getArrayLen(env, rgba) < expected_len) return JNI_FALSE;
-    if (!initEgl(p) or !makePbufferCurrent(p)) return JNI_FALSE;
-    const bytes = env.*[0].GetByteArrayElements.?(env, rgba, null);
-    if (bytes == null) return JNI_FALSE;
-    defer env.*[0].ReleaseByteArrayElements.?(env, rgba, bytes, c.JNI_ABORT);
-    if (p.overlay_texture == 0) {
-        c.glGenTextures(1, &p.overlay_texture);
-        if (p.overlay_texture == 0) { setError("overlay glGenTextures returned 0", .{}); clearCurrent(p); return JNI_FALSE; }
-    }
-    c.glBindTexture(c.GL_TEXTURE_2D, p.overlay_texture);
-    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
-    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
-    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
-    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
-    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
-    c.glTexImage2D(c.GL_TEXTURE_2D, 0, @intCast(c.GL_RGBA), width, height, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, bytes);
-    c.glBindTexture(c.GL_TEXTURE_2D, 0);
-    if (glError("upload overlay texture")) |e| { setErrorSlice(e); clearCurrent(p); return JNI_FALSE; }
-    p.overlay_texture_width = width;
-    p.overlay_texture_height = height;
-    clearCurrent(p);
-    return JNI_TRUE;
-}
-
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_startRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return 0; p.recording.recording = true; p.recording.generation += 1; p.recording.fps = @min(@max(fps, 1), 120); p.encoder_fps = p.recording.fps; p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms; p.recording.segment_index = 0; p.recording.pending_segment_index = 0; p.recording.segment_switch_pending = false; p.recording.pending_segment_wall_clock_ms = 0; p.recording.requested_frames = 0; p.recording.rendered_frames = 0; p.recording.dropped_frames = 0; p.recording.last_tick_steady_ms = 0; p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; p.recording.overlay_wall_clock_ms = wall_clock_ms; p.encoder_signal_count = 0; p.encoder_scheduled_count = 0; p.encoder_coalesced_count = 0; const first = floorToSegment(wall_clock_ms, p.recording.segment_duration_ms); p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms; p.encoder_pending = false; return first; }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_stopRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; p.recording.recording = false; p.recording.segment_switch_pending = false; p.recording.overlay_wall_clock_ms = 0; p.recording.generation += 1; p.encoder_pending = false; return JNI_TRUE; }
 
@@ -898,5 +836,5 @@ export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_signalPreviewFrame(en
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderScheduledPreview(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (!p.input[i].preview_pending) return JNI_TRUE; const ok = renderPreviewLocked(env, p, index); p.input[i].preview_pending = false; return if(ok)JNI_TRUE else JNI_FALSE; }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_renderCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { lockGlobal(); defer unlockGlobal(); const p = getPipe(handle) orelse return JNI_FALSE; return if(renderEncoderLocked(env, p, false, null))JNI_TRUE else JNI_FALSE; }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_releaseCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) void { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |idx| { if (!g_used[idx] or g_pipes[idx].handle != handle) continue; const p = &g_pipes[idx]; if (p.display != c.EGL_NO_DISPLAY) { _ = makePbufferCurrent(p); for (0..4) |i| { if (p.preview_surface[i] != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.preview_surface[i]); if (p.input[i].texture != 0) c.glDeleteTextures(1, &p.input[i].texture); } if (p.overlay_texture != 0) c.glDeleteTextures(1, &p.overlay_texture); if (p.encoder_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.encoder_surface); if (p.program != 0) c.glDeleteProgram(p.program); if (p.overlay_program != 0) c.glDeleteProgram(p.overlay_program); if (p.overlay_texture_program != 0) c.glDeleteProgram(p.overlay_texture_program); clearCurrent(p); if (p.pbuffer != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.pbuffer); if (p.context != c.EGL_NO_CONTEXT) _ = c.eglDestroyContext(p.display, p.context); _ = c.eglTerminate(p.display); } for (0..4) |i| { if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); if (p.preview_window[i]) |w| c.ANativeWindow_release(w); } if (p.encoder_window) |w| c.ANativeWindow_release(w); g_used[idx] = false; g_pipes[idx] = Pipe{}; return; } }
+export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_releaseCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) void { lockGlobal(); defer unlockGlobal(); for (0..MAX_PIPES) |idx| { if (!g_used[idx] or g_pipes[idx].handle != handle) continue; const p = &g_pipes[idx]; if (p.display != c.EGL_NO_DISPLAY) { _ = makePbufferCurrent(p); for (0..4) |i| { if (p.preview_surface[i] != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.preview_surface[i]); if (p.input[i].texture != 0) c.glDeleteTextures(1, &p.input[i].texture); } if (p.encoder_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.encoder_surface); if (p.program != 0) c.glDeleteProgram(p.program); if (p.overlay_program != 0) c.glDeleteProgram(p.overlay_program); clearCurrent(p); if (p.pbuffer != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.pbuffer); if (p.context != c.EGL_NO_CONTEXT) _ = c.eglDestroyContext(p.display, p.context); _ = c.eglTerminate(p.display); } for (0..4) |i| { if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture); if (p.preview_window[i]) |w| c.ANativeWindow_release(w); } if (p.encoder_window) |w| c.ANativeWindow_release(w); g_used[idx] = false; g_pipes[idx] = Pipe{}; return; } }
 export fn Java_com_kooo_evcam_v2_nativebridge_VulkanNative_getLastError(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, &g_last_error); }

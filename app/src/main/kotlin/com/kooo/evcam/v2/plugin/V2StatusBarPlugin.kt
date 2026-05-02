@@ -41,9 +41,15 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
     private var notificationRecording = false
     private var notificationEmergency: Boolean? = null
     private var notificationEmergencyEndsAtMs = 0L
+    private var lastNotificationStatus = ""
     private var optimisticEmergencyUntilMs = 0L
     private var emergencyAutoCloseArmed = false
     private var emergencyAutoCloseAtMs = 0L
+    private var emergencyProgressBackground: LayerDrawable? = null
+    private var emergencyProgressClip: ClipDrawable? = null
+    private var lastEmergencyText: String? = null
+    private var lastEmergencyActive = false
+    private var lastEmergencyProgressSecond = -1
 
     override fun onCreate(sysuiContext: Context, pluginContext: Context) {
         this.sysuiContext = sysuiContext
@@ -89,6 +95,8 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
 
     override fun onStatusIconPosted(sbn: StatusBarNotification) {
         val status = sbn.notification.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        if (status == lastNotificationStatus) return
+        lastNotificationStatus = status
         notificationSeen = true
         notificationRecording = status.contains("rec=ON")
         notificationEmergency = when {
@@ -96,11 +104,7 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
             status.contains("emg=OFF") -> false
             else -> null
         }
-        notificationEmergencyEndsAtMs = status.lineSequence()
-            .firstOrNull { it.startsWith("emgEnd=") }
-            ?.substringAfter("emgEnd=")
-            ?.toLongOrNull()
-            ?: 0L
+        notificationEmergencyEndsAtMs = parseEmergencyEnd(status)
         mainHandler.post(::refreshState)
     }
 
@@ -186,18 +190,34 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         val button = emergencyButton ?: return
         button.isSelected = emergency
         if (!emergency) {
-            button.text = "紧急录制"
-            button.setBackgroundResource(R.drawable.v2_status_bar_button_bg)
+            setEmergencyButtonText(button, "紧急录制")
+            if (lastEmergencyActive) button.setBackgroundResource(R.drawable.v2_status_bar_button_bg)
+            lastEmergencyActive = false
+            lastEmergencyProgressSecond = -1
             return
         }
         val now = System.currentTimeMillis()
         val remainingMs = (emergencyEndsAtMs - now).coerceAtLeast(0L)
         val remainingSeconds = ((remainingMs + 999L) / 1000L).toInt().coerceAtLeast(0)
-        button.text = if (remainingSeconds > 0) "紧急录制中 ${remainingSeconds}s" else "紧急录制中"
-        button.background = emergencyProgressBackground(button.context, remainingSeconds)
+        setEmergencyButtonText(button, if (remainingSeconds > 0) "紧急录制中 ${remainingSeconds}s" else "紧急录制中")
+        if (!lastEmergencyActive || emergencyProgressBackground == null) {
+            button.background = createEmergencyProgressBackground(button.context)
+        }
+        if (remainingSeconds != lastEmergencyProgressSecond) {
+            val elapsedSeconds = (EMERGENCY_DURATION_SECONDS - remainingSeconds).coerceIn(0, EMERGENCY_DURATION_SECONDS)
+            emergencyProgressClip?.level = (elapsedSeconds * 10_000) / EMERGENCY_DURATION_SECONDS
+            lastEmergencyProgressSecond = remainingSeconds
+        }
+        lastEmergencyActive = true
     }
 
-    private fun emergencyProgressBackground(context: Context, remainingSeconds: Int): LayerDrawable {
+    private fun setEmergencyButtonText(button: TextView, text: String) {
+        if (lastEmergencyText == text) return
+        button.text = text
+        lastEmergencyText = text
+    }
+
+    private fun createEmergencyProgressBackground(context: Context): LayerDrawable {
         val radius = 4f * context.resources.displayMetrics.density
         val base = GradientDrawable().apply {
             setColor(Color.parseColor("#D9FFFFFF"))
@@ -207,11 +227,17 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
             setColor(Color.parseColor("#B3D50000"))
             cornerRadius = radius
         }
-        val clip = ClipDrawable(progress, Gravity.START, ClipDrawable.HORIZONTAL).apply {
-            val elapsedSeconds = (EMERGENCY_DURATION_SECONDS - remainingSeconds).coerceIn(0, EMERGENCY_DURATION_SECONDS)
-            level = (elapsedSeconds * 10_000) / EMERGENCY_DURATION_SECONDS
-        }
-        return LayerDrawable(arrayOf(base, clip))
+        val clip = ClipDrawable(progress, Gravity.START, ClipDrawable.HORIZONTAL)
+        emergencyProgressClip = clip
+        return LayerDrawable(arrayOf(base, clip)).also { emergencyProgressBackground = it }
+    }
+
+    private fun parseEmergencyEnd(status: String): Long {
+        val start = status.indexOf("emgEnd=")
+        if (start < 0) return 0L
+        val valueStart = start + "emgEnd=".length
+        val valueEnd = status.indexOf('\n', valueStart).takeIf { it >= 0 } ?: status.length
+        return status.substring(valueStart, valueEnd).toLongOrNull() ?: 0L
     }
 
     private fun currentRecording(): Boolean = recordingSwitch?.isChecked ?: notificationRecording

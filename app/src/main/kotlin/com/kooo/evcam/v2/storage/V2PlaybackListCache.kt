@@ -72,6 +72,7 @@ object V2PlaybackListCache {
     fun save(context: Context, entries: List<Entry>) {
         runCatching {
             val normalized = entries.distinctBy { it.key }.sortedByDescending { it.key.lowercase(Locale.US) }
+            if (normalized == memoryEntries) return
             memoryEntries = normalized
             val array = JSONArray()
             normalized.forEach { entry ->
