@@ -9,6 +9,9 @@ import android.util.Size
 import com.kooo.evcam.v2.log.V2AppLog
 
 object V2CameraCapabilityResolver {
+    private const val MAX_RECORDING_WIDTH = 1280
+    private const val MAX_RECORDING_HEIGHT = 720
+
     fun commonSupportedSurfaceTextureSizes(context: Context): List<Size> {
         val app = context.applicationContext
         val manager = app.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -23,6 +26,7 @@ object V2CameraCapabilityResolver {
         return source
             .filter { it.width > 0 && it.height > 0 }
             .map { normalizeLandscape(it) }
+            .filter { it.width <= MAX_RECORDING_WIDTH && it.height <= MAX_RECORDING_HEIGHT }
             .distinctBy { valueForSize(it) }
             .sortedWith(compareByDescending<Size> { it.width.toLong() * it.height }.thenByDescending { it.width })
             .take(12)

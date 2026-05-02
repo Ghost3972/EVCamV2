@@ -16,6 +16,7 @@ object V2RecordingSettings {
     private const val KEY_H265_ENABLED = "h265_enabled"
 
     private const val FALLBACK_RESOLUTION = "1280x720"
+    private const val DEFAULT_FPS = 15
     const val BITRATE_LOW = "low"
     const val BITRATE_MEDIUM = "medium"
     const val BITRATE_HIGH = "high"
@@ -25,14 +26,14 @@ object V2RecordingSettings {
         Option(BITRATE_MEDIUM, "标准"),
         Option(BITRATE_HIGH, "高")
     )
-    val fpsOptions = listOf(15, 25)
+    val fpsOptions = listOf(15, 30)
     val segmentMinuteOptions = listOf(1, 3, 5, 10)
 
     fun resolution(context: Context): String = prefs(context).getString(KEY_RESOLUTION, null) ?: maxSupportedResolution(context)
     fun bitrateLevel(context: Context): String = prefs(context).getString(KEY_BITRATE_LEVEL, BITRATE_MEDIUM) ?: BITRATE_MEDIUM
     fun fps(context: Context): Int = fpsOptions.minByOrNull {
-        kotlin.math.abs(it - prefs(context).getInt(KEY_FPS, 25).coerceAtMost(25))
-    } ?: 25
+        kotlin.math.abs(it - prefs(context).getInt(KEY_FPS, DEFAULT_FPS).coerceIn(15, 30))
+    } ?: DEFAULT_FPS
     fun segmentMinutes(context: Context): Int = prefs(context).getInt(KEY_SEGMENT_MINUTES, 1).coerceAtLeast(1)
     fun segmentDurationMs(context: Context): Long = segmentMinutes(context) * 60_000L
     fun segmentPrecreateEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_SEGMENT_PRECREATE, true)
@@ -58,7 +59,7 @@ object V2RecordingSettings {
     }
 
     fun setFps(context: Context, value: Int) {
-        val next = fpsOptions.minByOrNull { kotlin.math.abs(it - value) } ?: 25
+        val next = fpsOptions.minByOrNull { kotlin.math.abs(it - value) } ?: DEFAULT_FPS
         prefs(context).edit().putInt(KEY_FPS, next).apply()
         V2AppLog.i("V2RecordingSettings", "fps=$next")
     }
@@ -83,7 +84,7 @@ object V2RecordingSettings {
         val supported = V2CameraCapabilityResolver.commonSupportedSurfaceTextureSizes(context)
         val options = supported.map { Option(valueForSize(it), "${it.width}×${it.height}") }
         if (options.isNotEmpty()) return options
-        val fallback = listOf(Size(1280, 720), Size(1920, 1080))
+        val fallback = listOf(Size(1280, 720))
         return fallback.map { Option(valueForSize(it), "${it.width}×${it.height}") }
     }
 
