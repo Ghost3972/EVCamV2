@@ -24,7 +24,6 @@ import java.util.Locale
 class V2SignalSettingsSection(
     private val activity: V2SettingsActivity,
     private val cards: V2SettingsCardFactory,
-    private val onRefreshHomePreservingScroll: () -> Unit
 ) {
     private var blindSpotCorrectionPreviewSide: String? = null
 
@@ -79,11 +78,15 @@ class V2SignalSettingsSection(
             orientation = LinearLayout.VERTICAL
             visibility = if (V2BlindSpotSettings.isCorrectionEnabled(activity)) View.VISIBLE else View.GONE
         }
+        fun rebuildParams() {
+            paramsContainer.removeAllViews()
+            paramsContainer.addView(correctionResetButton { rebuildParams() })
+            paramsContainer.addView(blindSpotCorrectionSideSection("left", "左侧摄像头"))
+            paramsContainer.addView(blindSpotCorrectionSideSection("right", "右侧摄像头"))
+        }
         card.addView(correctionEnableRow(paramsContainer))
-        paramsContainer.addView(correctionResetButton())
-        paramsContainer.addView(blindSpotCorrectionSideSection("left", "左侧摄像头"))
-        paramsContainer.addView(blindSpotCorrectionSideSection("right", "右侧摄像头"))
         card.addView(paramsContainer)
+        rebuildParams()
         return card
     }
 
@@ -170,7 +173,7 @@ class V2SignalSettingsSection(
         return enableRow
     }
 
-    private fun correctionResetButton(): View = Button(activity).apply {
+    private fun correctionResetButton(onReset: () -> Unit): View = Button(activity).apply {
         text = "恢复默认参数"
         textSize = 14f
         minHeight = dp(44)
@@ -178,7 +181,7 @@ class V2SignalSettingsSection(
             V2BlindSpotSettings.resetAllCorrections(activity)
             blindSpotCorrectionPreviewSide?.let { side -> V2CameraServiceCommands.showBlindSpotPreview(activity, side) }
             Toast.makeText(activity, "补盲矫正参数已恢复默认", Toast.LENGTH_SHORT).show()
-            onRefreshHomePreservingScroll()
+            onReset()
         }
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
             setMargins(0, dp(8), 0, dp(8))

@@ -36,7 +36,7 @@ class V2CameraStatusFormatter(
     fun status(recording: Boolean, recordingStartedAtMs: Long, metrics: RecordingMetrics?, slots: List<SlotStatus>): String {
         val elapsed = if (recording && recordingStartedAtMs > 0L) formatDuration(SystemClock.elapsedRealtime() - recordingStartedAtMs) else "00:00"
         val segments = if (recording) ((metrics?.segmentIndex ?: 0) + 1).coerceAtLeast(1) else 0
-        val line1 = "rec=${if (recording) "ON" else "OFF"} $elapsed 分片=$segments out=${recordingSize.width}x${recordingSize.height}@$recordingFps enc=${recordingFpsDebug(recording, metrics)}"
+        val line1 = "rec=${if (recording) "ON" else "OFF"} $elapsed 分片=$segments out=${recordingSize.width}x${recordingSize.height}@$recordingFps enc=${recordingFpsDebug(recording, metrics)} ${lockDebug(recording, metrics)}"
         return "$line1\n${slotFpsDebug(slots)}"
     }
 
@@ -68,6 +68,11 @@ class V2CameraStatusFormatter(
             lastRecordingRenderedFrames = metrics.renderedFrames
         }
         return String.format(Locale.US, "%.1f", cachedRecordingFps)
+    }
+
+    private fun lockDebug(recording: Boolean, metrics: RecordingMetrics?): String {
+        if (!recording || metrics == null) return "lock=0ms/0"
+        return "lock=${metrics.pipeLockWaitMaxMs}ms/${metrics.pipeTryLockFailCount} q=${metrics.recordingQueueDepth}/${metrics.recordingQueueMaxDepth} qdrop=${metrics.recordingQueueDropCount} defer=${metrics.recordingLockDeferCount} yield=${metrics.recordingPreviewYieldCount}"
     }
 
     private fun slotFpsDebug(slots: List<SlotStatus>): String {

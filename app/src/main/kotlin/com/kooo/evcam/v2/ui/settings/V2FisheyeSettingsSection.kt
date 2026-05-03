@@ -21,26 +21,37 @@ import java.util.Locale
 class V2FisheyeSettingsSection(
     private val activity: V2SettingsActivity,
     private val cards: V2SettingsCardFactory,
-    private val onRefreshHomePreservingScroll: () -> Unit
 ) {
     fun create(): View {
         val row = cards.cardContainer()
-        row.addView(cards.cardTexts(
+        val header = cards.cardTexts(
             "鱼眼矫正",
-            "四路独立参数；点击“预览”打开对应摄像头悬浮窗，修改 k1/k2/zoom 后实时刷新效果\n${V2SettingsFormatter.fisheyeParamsSummary(activity)}",
+            fisheyeSubtitle(),
             0,
             useWeight = false
-        ))
+        )
+        val summaryText = header.getChildAt(1) as TextView
+        row.addView(header)
 
         val paramsContainer = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             visibility = if (V2FisheyeSettings.isEnabled(activity)) View.VISIBLE else View.GONE
         }
+
+        fun updateSummary() {
+            summaryText.text = fisheyeSubtitle()
+        }
+
+        fun rebuildParams() {
+            paramsContainer.removeAllViews()
+            paramsContainer.addView(resetButton { rebuildParams() })
+            repeat(V2_CAMERA_SLOT_COUNT) { index -> paramsContainer.addView(paramRow(index) { updateSummary() }) }
+            updateSummary()
+        }
+
         row.addView(enableRow(paramsContainer))
-        row.addView(paramsContainer.apply {
-            addView(resetButton())
-            repeat(V2_CAMERA_SLOT_COUNT) { index -> addView(paramRow(index)) }
-        })
+        row.addView(paramsContainer)
+        rebuildParams()
         return row
     }
 
@@ -66,7 +77,7 @@ class V2FisheyeSettingsSection(
         return enableRow
     }
 
-    private fun resetButton(): View = Button(activity).apply {
+    private fun resetButton(onReset: () -> Unit): View = Button(activity).apply {
         text = "恢复默认参数"
         textSize = 14f
         minHeight = dp(44)
@@ -74,14 +85,14 @@ class V2FisheyeSettingsSection(
             V2FisheyeSettings.resetAllParams(activity)
             V2CameraServiceCommands.refreshFisheye(activity)
             Toast.makeText(activity, "鱼眼参数已恢复默认", Toast.LENGTH_SHORT).show()
-            onRefreshHomePreservingScroll()
+            onReset()
         }
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
             setMargins(0, dp(8), 0, dp(8))
         }
     }
 
-    private fun paramRow(index: Int): View {
+    private fun paramRow(index: Int, onChanged: () -> Unit): View {
         val params = V2FisheyeSettings.paramsForIndex(activity, index)
         val line = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -112,6 +123,7 @@ class V2FisheyeSettingsSection(
             V2FisheyeSettings.setParams(activity, index, currentK1, currentK2, currentZoom)
             V2CameraServiceCommands.refreshFisheye(activity)
             V2AppLog.i(TAG, "fisheye slider index=$index k1=$currentK1 k2=$currentK2 zoom=$currentZoom")
+            onChanged()
         }
 
         line.addView(sliderRow("k1", -1.20f, 1.50f, currentK1) { currentK1 = it; saveAndRefresh() })
@@ -152,6 +164,9 @@ class V2FisheyeSettingsSection(
     }
 
     private fun formatParam(value: Float): String = String.format(Locale.US, "%.2f", value)
+
+    private fun fisheyeSubtitle(): String =
+        "四路独立参数；点击“预览”打开对应摄像头悬浮窗，修改 k1/k2/zoom 后实时刷新效果\n${V2SettingsFormatter.fisheyeParamsSummary(activity)}"
 
     private fun dp(value: Int): Int = cards.dp(value)
 

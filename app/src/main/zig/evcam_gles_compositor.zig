@@ -1,40 +1,74 @@
-
 const std = @import("std");
 const c = @import("c");
+const types = @import("evcam_types.zig");
+const storage = @import("evcam_storage.zig");
+const finalize_queue = @import("evcam_finalize.zig");
+const writer_mod = @import("evcam_writer.zig");
+const jpeg = @import("evcam_jpeg.zig");
 
 // Use Zig 0.16's std.Io namespace for future file/stream I/O task coordination;
 // std.io was removed. NDK camera callbacks, EGL/GLES render ownership, and
 // AMediaCodec surface rendering still use native workers plus explicit locks.
-comptime { _ = std.Io; }
+comptime {
+    _ = std.Io;
+}
 
-const TAG = "EVCamGLES";
-const MAX_PIPES = 8;
-const EGL_RECORDABLE_ANDROID: c.EGLint = 0x3142;
-const GL_TEXTURE_EXTERNAL_OES: c.GLenum = 0x8D65;
-const JNI_TRUE: c.jboolean = 1;
-const JNI_FALSE: c.jboolean = 0;
-const JNI_ABORT: c.jint = 2;
-const CHECK_RENDER_GL_ERROR = false;
-const TICK_SHOULD_RENDER: c.jlong = 1;
-const TICK_DROPPED: c.jlong = 2;
-const TICK_SEGMENT_DUE: c.jlong = 4;
-const TICK_DRAINED_SHIFT = 8;
-const TICK_DRAINED_MASK: c.jlong = 0x00FF_FFFF;
-const TICK_NEXT_INDEX_SHIFT = 32;
-const WORKER_ERROR_THREAD_ATTACH: c.jlong = -10;
-const WORKER_ERROR_TICK_RENDER_DRAIN: c.jlong = -11;
-const MAX_NATIVE_WRITERS = 4;
-const MAX_NATIVE_CAMERAS = 4;
-const COLOR_FORMAT_SURFACE: i32 = 0x7F000789;
-const O_RDWR_ANDROID: c_int = 2;
-const O_RDONLY_ANDROID: c_int = 0;
-const O_CREAT_ANDROID: c_int = 64;
-const O_TRUNC_ANDROID: c_int = 512;
-const SAMPLE_BUFFER_BYTES: usize = 8 * 1024 * 1024;
-const THUMBNAIL_WIDTH: usize = 240;
-const THUMBNAIL_HEIGHT: usize = 135;
-const SEEK_SET_ANDROID: c_int = 0;
-const SEEK_END_ANDROID: c_int = 2;
+const TAG = types.TAG;
+const MAX_PIPES = types.MAX_PIPES;
+const EGL_RECORDABLE_ANDROID = types.EGL_RECORDABLE_ANDROID;
+const GL_TEXTURE_EXTERNAL_OES = types.GL_TEXTURE_EXTERNAL_OES;
+const JNI_TRUE = types.JNI_TRUE;
+const JNI_FALSE = types.JNI_FALSE;
+const JNI_ABORT = types.JNI_ABORT;
+const CHECK_RENDER_GL_ERROR = types.CHECK_RENDER_GL_ERROR;
+const TICK_SHOULD_RENDER = types.TICK_SHOULD_RENDER;
+const TICK_DROPPED = types.TICK_DROPPED;
+const TICK_SEGMENT_DUE = types.TICK_SEGMENT_DUE;
+const TICK_DRAINED_SHIFT = types.TICK_DRAINED_SHIFT;
+const TICK_DRAINED_MASK = types.TICK_DRAINED_MASK;
+const TICK_NEXT_INDEX_SHIFT = types.TICK_NEXT_INDEX_SHIFT;
+const WORKER_ERROR_THREAD_ATTACH = types.WORKER_ERROR_THREAD_ATTACH;
+const WORKER_ERROR_TICK_RENDER_DRAIN = types.WORKER_ERROR_TICK_RENDER_DRAIN;
+const MAX_NATIVE_CAMERAS = types.MAX_NATIVE_CAMERAS;
+const MAX_EMERGENCY_SOURCES = types.MAX_EMERGENCY_SOURCES;
+const MAX_EMERGENCY_REQUESTS = types.MAX_EMERGENCY_REQUESTS;
+const O_RDWR_ANDROID = types.O_RDWR_ANDROID;
+const O_RDONLY_ANDROID = types.O_RDONLY_ANDROID;
+const O_CREAT_ANDROID = types.O_CREAT_ANDROID;
+const O_TRUNC_ANDROID = types.O_TRUNC_ANDROID;
+const SAMPLE_BUFFER_BYTES = types.SAMPLE_BUFFER_BYTES;
+const THUMBNAIL_WIDTH = types.THUMBNAIL_WIDTH;
+const THUMBNAIL_HEIGHT = types.THUMBNAIL_HEIGHT;
+const MAX_CLEANUP_FILES = types.MAX_CLEANUP_FILES;
+const PLAYBACK_CACHE_BUFFER_BYTES = types.PLAYBACK_CACHE_BUFFER_BYTES;
+const SEEK_SET_ANDROID = types.SEEK_SET_ANDROID;
+const SEEK_END_ANDROID = types.SEEK_END_ANDROID;
+const NativeTm = types.NativeTm;
+const EglPresentationTimeAndroidFn = types.EglPresentationTimeAndroidFn;
+const NativeCameraPreview = types.NativeCameraPreview;
+const EmergencySourceSegment = types.EmergencySourceSegment;
+const EmergencyClipRequest = types.EmergencyClipRequest;
+const Input = types.Input;
+const Quad = types.Quad;
+const OverlayBatch = types.OverlayBatch;
+const TexturedOverlayBatch = types.TexturedOverlayBatch;
+const RECORDING_FRAME_QUEUE_CAPACITY = types.RECORDING_FRAME_QUEUE_CAPACITY;
+const RecordingFrameSlot = types.RecordingFrameSlot;
+const RecordingState = types.RecordingState;
+const ManagedSegmentConfig = types.ManagedSegmentConfig;
+const ManagedSegmentFinalize = types.ManagedSegmentFinalize;
+const Pipe = types.Pipe;
+const initZ = types.initZ;
+const EmergencyProtectionSnapshot = storage.EmergencyProtectionSnapshot;
+const PlaybackScanResult = storage.PlaybackScanResult;
+const PlaybackCacheEntry = storage.PlaybackCacheEntry;
+const PlaybackCacheBuildResult = storage.PlaybackCacheBuildResult;
+const scanPlaybackVideosNative = storage.scanPlaybackVideosNative;
+const scanPlaybackImagesNative = storage.scanPlaybackImagesNative;
+const buildPlaybackCacheNative = storage.buildPlaybackCacheNative;
+const appendJsonLiteral = storage.appendJsonLiteral;
+const appendPlaybackCacheEntryJson = storage.appendPlaybackCacheEntryJson;
+const playbackEntryFromVideoPath = storage.playbackEntryFromVideoPath;
 
 extern fn open(path: [*c]const u8, flags: c_int, mode: c_int) c_int;
 extern fn close(fd: c_int) c_int;
@@ -47,222 +81,31 @@ extern fn usleep(usec: c_uint) c_int;
 extern fn malloc(size: usize) ?*anyopaque;
 extern fn free(ptr: ?*anyopaque) void;
 
-const EglPresentationTimeAndroidFn = *const fn (c.EGLDisplay, c.EGLSurface, c.EGLnsecsANDROID) callconv(.c) c.EGLBoolean;
-
-const NativeSegmentWriter = struct {
-    lock: std.Io.Mutex = .init,
-    handle: c.jlong = 0,
-    codec: ?*c.AMediaCodec = null,
-    muxer: ?*c.AMediaMuxer = null,
-    input_window: ?*c.ANativeWindow = null,
-    fd: c_int = -1,
-    output_path: [1024:0]u8 = [_:0]u8{0} ** 1024,
-    output_path_set: bool = false,
-    track_index: c_int = -1,
-    width: i32 = 0,
-    height: i32 = 0,
-    fps: i32 = 0,
-    bitrate: i32 = 0,
-    started: bool = false,
-    muxer_started: bool = false,
-    writer_lock_wait_total_ms: i64 = 0,
-    writer_lock_wait_max_ms: i64 = 0,
-    drain_calls: i64 = 0,
-    drain_samples: i64 = 0,
-    drain_total_ms: i64 = 0,
-    drain_max_ms: i64 = 0,
-    muxer_write_total_ms: i64 = 0,
-    muxer_write_max_ms: i64 = 0,
-};
-
-const NativeCameraPreview = struct {
-    handle: c.jlong = 0,
-    manager: ?*c.ACameraManager = null,
-    device: ?*c.ACameraDevice = null,
-    session: ?*c.ACameraCaptureSession = null,
-    window: ?*c.ANativeWindow = null,
-    outputs: ?*c.ACaptureSessionOutputContainer = null,
-    output: ?*c.ACaptureSessionOutput = null,
-    target: ?*c.ACameraOutputTarget = null,
-    request: ?*c.ACaptureRequest = null,
-    sequence_id: c_int = -1,
-};
-
-const Input = struct {
-    surface_texture: c.jobject = null,
-    surface_texture_native: ?*c.ASurfaceTexture = null,
-    texture: c.GLuint = 0,
-    dirty: bool = false,
-    has_latched_frame: bool = false,
-    preview_pending: bool = false,
-    frame_generation: i64 = 0,
-    latched_generation: i64 = 0,
-    preview_generation: i64 = 0,
-    encoder_generation: i64 = 0,
-    dirty_count: i64 = 0,
-    update_count: i64 = 0,
-    frame_signal_count: i64 = 0,
-    preview_scheduled_count: i64 = 0,
-    preview_coalesced_count: i64 = 0,
-    preview_delayed_count: i64 = 0,
-    preview_render_count: i64 = 0,
-    preview_drop_count: i64 = 0,
-    preview_swap_ms: i64 = 0,
-    last_preview_render_ms: i64 = 0,
-    last_preview_error: i64 = 0,
-};
-
-const Quad = struct {
-    verts: [8]c.GLfloat = [_]c.GLfloat{0} ** 8,
-    tex: [8]c.GLfloat = [_]c.GLfloat{ 0, 0, 1, 0, 0, 1, 1, 1 },
-};
-
-const OverlayBatch = struct {
-    verts: [2048]c.GLfloat = [_]c.GLfloat{0} ** 2048,
-    len: usize = 0,
-};
-
-const TexturedOverlayBatch = struct {
-    verts: [4096]c.GLfloat = [_]c.GLfloat{0} ** 4096,
-    tex: [4096]c.GLfloat = [_]c.GLfloat{0} ** 4096,
-    len: usize = 0,
-};
-
-const RecordingState = struct {
-    recording: bool = false,
-    segment_switch_pending: bool = false,
-    generation: c.jlong = 0,
-    fps: i32 = 15,
-    segment_index: i32 = 0,
-    pending_segment_index: i32 = 0,
-    segment_duration_ms: i64 = 60000,
-    next_segment_wall_clock_ms: i64 = 0,
-    pending_segment_wall_clock_ms: i64 = 0,
-    requested_frames: i64 = 0,
-    rendered_frames: i64 = 0,
-    dropped_frames: i64 = 0,
-    last_tick_steady_ms: i64 = 0,
-    encoder_segment_start_steady_ms: i64 = 0,
-    last_presentation_time_ns: i64 = -1,
-    overlay_wall_clock_ms: i64 = 0,
-    overlay_cached_second: i64 = -1,
-    overlay_text: [24]u8 = [_]u8{0} ** 24,
-    overlay_text_len: usize = 0,
-    overlay_geometry_second: i64 = -1,
-    overlay_geometry_width: i32 = 0,
-    overlay_geometry_height: i32 = 0,
-    overlay_bg_batch: OverlayBatch = OverlayBatch{},
-    overlay_shadow_text_batch: TexturedOverlayBatch = TexturedOverlayBatch{},
-    overlay_text_batch: TexturedOverlayBatch = TexturedOverlayBatch{},
-    thumbnail_path: [1024:0]u8 = [_:0]u8{0} ** 1024,
-    thumbnail_path_set: bool = false,
-    thumbnail_written: bool = false,
-};
-
-const Pipe = struct {
-    lock: std.Io.Mutex = .init,
-    handle: c.jlong = 0,
-    display: c.EGLDisplay = c.EGL_NO_DISPLAY,
-    context: c.EGLContext = c.EGL_NO_CONTEXT,
-    config: c.EGLConfig = null,
-    pbuffer: c.EGLSurface = c.EGL_NO_SURFACE,
-    current_surface: c.EGLSurface = c.EGL_NO_SURFACE,
-    preview_surface: [4]c.EGLSurface = [_]c.EGLSurface{ c.EGL_NO_SURFACE, c.EGL_NO_SURFACE, c.EGL_NO_SURFACE, c.EGL_NO_SURFACE },
-    preview_apply_fisheye: [4]bool = [_]bool{true} ** 4,
-    preview_apply_native_transform: [4]bool = [_]bool{true} ** 4,
-    encoder_surface: c.EGLSurface = c.EGL_NO_SURFACE,
-    preview_window: [4]?*c.ANativeWindow = [_]?*c.ANativeWindow{ null, null, null, null },
-    encoder_window: ?*c.ANativeWindow = null,
-    encoder_generation: c.jlong = 0,
-    input: [4]Input = [_]Input{ Input{}, Input{}, Input{}, Input{} },
-    encoder_quad: [4]Quad = [_]Quad{ Quad{}, Quad{}, Quad{}, Quad{} },
-    preview_quad: [4]Quad = [_]Quad{ Quad{}, Quad{}, Quad{}, Quad{} },
-    preview_quad_width: [4]i32 = [_]i32{0} ** 4,
-    preview_quad_height: [4]i32 = [_]i32{0} ** 4,
-    config_version: i64 = 0,
-    program: c.GLuint = 0,
-    overlay_program: c.GLuint = 0,
-    overlay_text_program: c.GLuint = 0,
-    overlay_font_texture: c.GLuint = 0,
-    pos_loc: c.GLint = -1,
-    tex_loc: c.GLint = -1,
-    sampler_loc: c.GLint = -1,
-    overlay_pos_loc: c.GLint = -1,
-    overlay_color_loc: c.GLint = -1,
-    overlay_text_pos_loc: c.GLint = -1,
-    overlay_text_tex_loc: c.GLint = -1,
-    overlay_text_sampler_loc: c.GLint = -1,
-    overlay_text_color_loc: c.GLint = -1,
-    fisheye_enabled_loc: c.GLint = -1,
-    k1_loc: c.GLint = -1,
-    k2_loc: c.GLint = -1,
-    zoom_loc: c.GLint = -1,
-    center_loc: c.GLint = -1,
-    width: i32 = 1280,
-    height: i32 = 720,
-    layout_mode: i32 = 0,
-    side_left_rotation: i32 = 270,
-    side_right_rotation: i32 = 90,
-    overlay_enabled: bool = true,
-    encoder_fps: i32 = 15,
-    encoder_pending: bool = false,
-    recording_worker_running: bool = false,
-    recording_worker_stop: bool = false,
-    recording_worker_paused_for_segment: bool = false,
-    recording_worker_writer_handle: c.jlong = 0,
-    recording_worker_last_event: c.jlong = 0,
-    recording_worker_generation: c.jlong = 0,
-    recording_worker_thread: ?std.Thread = null,
-    recording_worker_condition: std.Io.Condition = .init,
-    preview_worker_running: bool = false,
-    preview_worker_stop: bool = false,
-    preview_worker_generation: c.jlong = 0,
-    preview_worker_thread: ?std.Thread = null,
-    recording: RecordingState = RecordingState{},
-    encoder_frame_index: i64 = 0,
-    encoder_signal_count: i64 = 0,
-    encoder_scheduled_count: i64 = 0,
-    encoder_coalesced_count: i64 = 0,
-    render_count: i64 = 0,
-    preview_render_count: i64 = 0,
-    encoder_render_count: i64 = 0,
-    encoder_drop_count: i64 = 0,
-    dropped_count: i64 = 0,
-    no_surface_count: i64 = 0,
-    last_render_ms: i64 = 0,
-    preview_max_fps: i32 = 0,
-    preview_min_interval_ms: i64 = 0,
-    last_render_error: [128:0]u8 = initZ("OK"),
-    fisheye_enabled: [4]bool = [_]bool{false} ** 4,
-    fisheye_k1: [4]f32 = [_]f32{0.35} ** 4,
-    fisheye_k2: [4]f32 = [_]f32{0.10} ** 4,
-    fisheye_zoom: [4]f32 = [_]f32{1.15} ** 4,
-    fisheye_center_x: [4]f32 = [_]f32{0.5} ** 4,
-    fisheye_center_y: [4]f32 = [_]f32{0.5} ** 4,
-};
-
-fn initZ(comptime s: []const u8) [128:0]u8 {
-    var out: [128:0]u8 = [_:0]u8{0} ** 128;
-    @memcpy(out[0..s.len], s);
-    return out;
-}
+extern fn localtime_r(timep: *const c_long, result: *NativeTm) ?*NativeTm;
 
 var g_io_instance: std.Io.Threaded = .init_single_threaded;
 var g_io_threaded_ready: bool = false;
 var g_lock: std.Io.Mutex = .init;
+var g_metrics_lock: std.Io.Mutex = .init;
 var g_pipes: [MAX_PIPES]Pipe = [_]Pipe{Pipe{}} ** MAX_PIPES;
 var g_used: [MAX_PIPES]bool = [_]bool{false} ** MAX_PIPES;
 var g_next_handle: c.jlong = 1;
+var g_metrics_cache_handles: [MAX_PIPES]c.jlong = [_]c.jlong{0} ** MAX_PIPES;
+const METRICS_SNAPSHOT_LEN: usize = 80;
+var g_metrics_cache_values: [MAX_PIPES][METRICS_SNAPSHOT_LEN]c.jlong = [_][METRICS_SNAPSHOT_LEN]c.jlong{[_]c.jlong{0} ** METRICS_SNAPSHOT_LEN} ** MAX_PIPES;
 var g_last_error: [256:0]u8 = initError("OK");
 var g_error_scratch: [128:0]u8 = [_:0]u8{0} ** 128;
 var g_presentation_time_android: ?EglPresentationTimeAndroidFn = null;
-var g_native_writers: [MAX_NATIVE_WRITERS]NativeSegmentWriter = [_]NativeSegmentWriter{NativeSegmentWriter{}} ** MAX_NATIVE_WRITERS;
-var g_native_writer_used: [MAX_NATIVE_WRITERS]bool = [_]bool{false} ** MAX_NATIVE_WRITERS;
-var g_next_native_writer_handle: c.jlong = 1;
 var g_native_cameras: [MAX_NATIVE_CAMERAS]NativeCameraPreview = [_]NativeCameraPreview{NativeCameraPreview{}} ** MAX_NATIVE_CAMERAS;
 var g_native_camera_used: [MAX_NATIVE_CAMERAS]bool = [_]bool{false} ** MAX_NATIVE_CAMERAS;
 var g_next_native_camera_handle: c.jlong = 1;
+var g_emergency_sources: [MAX_EMERGENCY_SOURCES]EmergencySourceSegment = [_]EmergencySourceSegment{EmergencySourceSegment{}} ** MAX_EMERGENCY_SOURCES;
+var g_emergency_source_count: usize = 0;
+var g_emergency_requests: [MAX_EMERGENCY_REQUESTS]EmergencyClipRequest = [_]EmergencyClipRequest{EmergencyClipRequest{}} ** MAX_EMERGENCY_REQUESTS;
+var g_emergency_request_count: usize = 0;
 var g_java_vm: [*c]c.JavaVM = null;
+var g_segment_cache_callback_class: c.jclass = null;
+var g_segment_cache_callback_method: c.jmethodID = null;
 
 export fn JNI_OnLoad(vm: [*c]c.JavaVM, _: ?*anyopaque) callconv(.c) c.jint {
     g_java_vm = vm;
@@ -273,10 +116,30 @@ export fn JNI_OnLoad(vm: [*c]c.JavaVM, _: ?*anyopaque) callconv(.c) c.jint {
         });
         g_io_threaded_ready = true;
     }
+    finalize_queue.configure(.{
+        .nativeIo = nativeIo,
+        .finalizeSegment = managedFinalizeSegment,
+        .logSpawnFailed = logFinalizeWorkerSpawnFailed,
+    });
+    writer_mod.configure(.{
+        .nativeIo = nativeIo,
+        .nowMs = nowMs,
+        .setErrorText = setErrorFromModule,
+        .logInfoText = logInfoFromModule,
+    });
     return 0x00010006;
 }
 
-export fn JNI_OnUnload(_: [*c]c.JavaVM, _: ?*anyopaque) callconv(.c) void {
+export fn JNI_OnUnload(vm: [*c]c.JavaVM, _: ?*anyopaque) callconv(.c) void {
+    finalize_queue.stopWorker();
+    if (g_segment_cache_callback_class != null) {
+        var env: [*c]c.JNIEnv = null;
+        if (vm.*[0].GetEnv.?(vm, @ptrCast(&env), 0x00010006) == 0 and env != null) {
+            env.*[0].DeleteGlobalRef.?(env, g_segment_cache_callback_class);
+        }
+        g_segment_cache_callback_class = null;
+        g_segment_cache_callback_method = null;
+    }
     if (g_io_threaded_ready) {
         g_io_instance.deinit();
         g_io_instance = .init_single_threaded;
@@ -291,9 +154,20 @@ fn initError(comptime s: []const u8) [256:0]u8 {
     return out;
 }
 
-
 fn nativeIo() std.Io {
     return g_io_instance.io();
+}
+
+fn logFinalizeWorkerSpawnFailed(error_name: []const u8) void {
+    loge("managed finalize worker spawn failed: {s}", .{error_name});
+}
+
+fn setErrorFromModule(msg: [:0]const u8) void {
+    setErrorSlice(msg);
+}
+
+fn logInfoFromModule(msg: [:0]const u8) void {
+    logi("{s}", .{msg});
 }
 
 fn lockGlobal() void {
@@ -315,12 +189,32 @@ fn unlockGlobal() void {
     g_lock.unlock(nativeIo());
 }
 
+fn lockMetrics() void {
+    g_metrics_lock.lockUncancelable(nativeIo());
+}
+
+fn unlockMetrics() void {
+    g_metrics_lock.unlock(nativeIo());
+}
+
 fn lockPipe(p: *Pipe) void {
+    const start_ms = nowMs();
     p.lock.lockUncancelable(nativeIo());
+    const wait_ms = nowMs() - start_ms;
+    p.pipe_lock_acquire_count += 1;
+    if (wait_ms > 0) {
+        p.pipe_lock_wait_total_ms += wait_ms;
+        if (wait_ms > p.pipe_lock_wait_max_ms) p.pipe_lock_wait_max_ms = wait_ms;
+    }
 }
 
 fn tryLockPipe(p: *Pipe) bool {
-    return p.lock.tryLock();
+    if (p.lock.tryLock()) {
+        p.pipe_try_lock_success_count += 1;
+        return true;
+    }
+    _ = @atomicRmw(i64, &p.pipe_try_lock_fail_count, .Add, 1, .monotonic);
+    return false;
 }
 
 fn tryLockPipeBounded(p: *Pipe, iterations: usize) bool {
@@ -332,6 +226,13 @@ fn tryLockPipeBounded(p: *Pipe, iterations: usize) bool {
 
 fn unlockPipe(p: *Pipe) void {
     p.lock.unlock(nativeIo());
+}
+
+fn lockPipeForRecordingWorker(p: *Pipe) void {
+    while (!tryLockPipe(p)) {
+        _ = @atomicRmw(i64, &p.recording_lock_defer_count, .Add, 1, .monotonic);
+        sleepMs(1);
+    }
 }
 
 fn lockPipeForHandle(handle: c.jlong) ?*Pipe {
@@ -359,31 +260,6 @@ fn tryLockPipeForHandleBounded(handle: c.jlong, iterations: usize) ?*Pipe {
     return p;
 }
 
-fn lockWriter(w: *NativeSegmentWriter) void {
-    w.lock.lockUncancelable(nativeIo());
-}
-
-fn unlockWriter(w: *NativeSegmentWriter) void {
-    w.lock.unlock(nativeIo());
-}
-
-fn lockWriterForHandle(handle: c.jlong) ?*NativeSegmentWriter {
-    const wait_start_ms = nowMs();
-    lockGlobal();
-    const w = getNativeWriter(handle) orelse {
-        unlockGlobal();
-        return null;
-    };
-    lockWriter(w);
-    const wait_ms = nowMs() - wait_start_ms;
-    if (wait_ms > 0) {
-        w.writer_lock_wait_total_ms += wait_ms;
-        if (wait_ms > w.writer_lock_wait_max_ms) w.writer_lock_wait_max_ms = wait_ms;
-    }
-    unlockGlobal();
-    return w;
-}
-
 fn attachWorkerEnv() ?[*c]c.JNIEnv {
     if (g_java_vm == null) return null;
     var env: [*c]c.JNIEnv = null;
@@ -396,6 +272,359 @@ fn detachWorkerEnv() void {
     if (g_java_vm != null) _ = g_java_vm.*[0].DetachCurrentThread.?(g_java_vm);
 }
 
+fn currentOrAttachEnv(attached: *bool) ?[*c]c.JNIEnv {
+    attached.* = false;
+    if (g_java_vm == null) return null;
+    var env: [*c]c.JNIEnv = null;
+    const get_rc = g_java_vm.*[0].GetEnv.?(g_java_vm, @ptrCast(&env), 0x00010006);
+    if (get_rc == 0 and env != null) return env;
+    if (get_rc != -2) return null;
+    const attach_rc = g_java_vm.*[0].AttachCurrentThread.?(g_java_vm, &env, null);
+    if (attach_rc != 0 or env == null) return null;
+    attached.* = true;
+    return env;
+}
+
+fn clearJniException(env: [*c]c.JNIEnv, comptime context: []const u8) bool {
+    if (env.*[0].ExceptionCheck.?(env) != JNI_TRUE) return false;
+    env.*[0].ExceptionClear.?(env);
+    loge("{s} threw Java exception", .{context});
+    return true;
+}
+
+fn ensureSegmentCacheCallback(env: [*c]c.JNIEnv) bool {
+    if (g_segment_cache_callback_class != null and g_segment_cache_callback_method != null) return true;
+    const local_class = env.*[0].FindClass.?(env, "com/kooo/evcam/v2/recording/V2RecordingSegmentCacheUpdater") orelse {
+        _ = clearJniException(env, "FindClass V2RecordingSegmentCacheUpdater");
+        loge("segment cache callback class not found", .{});
+        return false;
+    };
+    defer env.*[0].DeleteLocalRef.?(env, local_class);
+    const method = env.*[0].GetStaticMethodID.?(env, local_class, "onNativeSegmentFinalized", "(Ljava/lang/String;)V") orelse {
+        _ = clearJniException(env, "GetStaticMethodID onNativeSegmentFinalized");
+        loge("segment cache callback method not found", .{});
+        return false;
+    };
+    const global_ref = env.*[0].NewGlobalRef.?(env, local_class) orelse {
+        _ = clearJniException(env, "NewGlobalRef V2RecordingSegmentCacheUpdater");
+        loge("segment cache callback global ref failed", .{});
+        return false;
+    };
+    g_segment_cache_callback_class = @ptrCast(global_ref);
+    g_segment_cache_callback_method = method;
+    return true;
+}
+
+fn notifySegmentCacheFinalized(final_path: [*c]const u8) void {
+    if (final_path == null) return;
+    var attached = false;
+    const env = currentOrAttachEnv(&attached) orelse {
+        loge("segment cache callback skipped: JNI env unavailable", .{});
+        return;
+    };
+    defer {
+        if (attached) detachWorkerEnv();
+    }
+    if (!ensureSegmentCacheCallback(env)) return;
+    const path_string = env.*[0].NewStringUTF.?(env, final_path) orelse {
+        _ = clearJniException(env, "NewStringUTF segment path");
+        loge("segment cache callback path string failed", .{});
+        return;
+    };
+    defer env.*[0].DeleteLocalRef.?(env, path_string);
+    var args = [_]c.jvalue{.{ .l = path_string }};
+    env.*[0].CallStaticVoidMethodA.?(env, g_segment_cache_callback_class, g_segment_cache_callback_method, &args);
+    _ = clearJniException(env, "segment cache callback");
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativePrepareSegmentCacheCallback(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jboolean {
+    return if (ensureSegmentCacheCallback(env)) JNI_TRUE else JNI_FALSE;
+}
+
+const PlaybackThumbnailJni = struct {
+    retriever_class: c.jclass,
+    bitmap_class: c.jclass,
+    compress_format_class: c.jclass,
+    output_stream_class: c.jclass,
+    retriever_ctor: c.jmethodID,
+    retriever_set_data_source: c.jmethodID,
+    retriever_get_frame: c.jmethodID,
+    retriever_release: c.jmethodID,
+    bitmap_get_width: c.jmethodID,
+    bitmap_get_height: c.jmethodID,
+    bitmap_compress: c.jmethodID,
+    bitmap_recycle: c.jmethodID,
+    bitmap_create_scaled: c.jmethodID,
+    output_stream_ctor: c.jmethodID,
+    output_stream_close: c.jmethodID,
+    jpeg_format: c.jobject,
+};
+
+fn loadPlaybackThumbnailJni(env: [*c]c.JNIEnv) ?PlaybackThumbnailJni {
+    const retriever_class = env.*[0].FindClass.?(env, "android/media/MediaMetadataRetriever") orelse {
+        _ = clearJniException(env, "FindClass MediaMetadataRetriever");
+        return null;
+    };
+    const bitmap_class = env.*[0].FindClass.?(env, "android/graphics/Bitmap") orelse {
+        _ = clearJniException(env, "FindClass Bitmap");
+        env.*[0].DeleteLocalRef.?(env, retriever_class);
+        return null;
+    };
+    const compress_format_class = env.*[0].FindClass.?(env, "android/graphics/Bitmap$CompressFormat") orelse {
+        _ = clearJniException(env, "FindClass Bitmap CompressFormat");
+        env.*[0].DeleteLocalRef.?(env, retriever_class);
+        env.*[0].DeleteLocalRef.?(env, bitmap_class);
+        return null;
+    };
+    const output_stream_class = env.*[0].FindClass.?(env, "java/io/FileOutputStream") orelse {
+        _ = clearJniException(env, "FindClass FileOutputStream");
+        env.*[0].DeleteLocalRef.?(env, retriever_class);
+        env.*[0].DeleteLocalRef.?(env, bitmap_class);
+        env.*[0].DeleteLocalRef.?(env, compress_format_class);
+        return null;
+    };
+
+    const retriever_ctor = env.*[0].GetMethodID.?(env, retriever_class, "<init>", "()V") orelse return null;
+    const retriever_set_data_source = env.*[0].GetMethodID.?(env, retriever_class, "setDataSource", "(Ljava/lang/String;)V") orelse return null;
+    const retriever_get_frame = env.*[0].GetMethodID.?(env, retriever_class, "getFrameAtTime", "(JI)Landroid/graphics/Bitmap;") orelse return null;
+    const retriever_release = env.*[0].GetMethodID.?(env, retriever_class, "release", "()V") orelse return null;
+    const bitmap_get_width = env.*[0].GetMethodID.?(env, bitmap_class, "getWidth", "()I") orelse return null;
+    const bitmap_get_height = env.*[0].GetMethodID.?(env, bitmap_class, "getHeight", "()I") orelse return null;
+    const bitmap_compress = env.*[0].GetMethodID.?(env, bitmap_class, "compress", "(Landroid/graphics/Bitmap$CompressFormat;ILjava/io/OutputStream;)Z") orelse return null;
+    const bitmap_recycle = env.*[0].GetMethodID.?(env, bitmap_class, "recycle", "()V") orelse return null;
+    const bitmap_create_scaled = env.*[0].GetStaticMethodID.?(env, bitmap_class, "createScaledBitmap", "(Landroid/graphics/Bitmap;IIZ)Landroid/graphics/Bitmap;") orelse return null;
+    const output_stream_ctor = env.*[0].GetMethodID.?(env, output_stream_class, "<init>", "(Ljava/lang/String;)V") orelse return null;
+    const output_stream_close = env.*[0].GetMethodID.?(env, output_stream_class, "close", "()V") orelse return null;
+    const jpeg_field = env.*[0].GetStaticFieldID.?(env, compress_format_class, "JPEG", "Landroid/graphics/Bitmap$CompressFormat;") orelse return null;
+    const jpeg_format = env.*[0].GetStaticObjectField.?(env, compress_format_class, jpeg_field) orelse return null;
+
+    const retriever_global = env.*[0].NewGlobalRef.?(env, retriever_class) orelse {
+        _ = clearJniException(env, "NewGlobalRef MediaMetadataRetriever");
+        return null;
+    };
+    const bitmap_global = env.*[0].NewGlobalRef.?(env, bitmap_class) orelse {
+        _ = clearJniException(env, "NewGlobalRef Bitmap");
+        env.*[0].DeleteGlobalRef.?(env, retriever_global);
+        return null;
+    };
+    const compress_format_global = env.*[0].NewGlobalRef.?(env, compress_format_class) orelse {
+        _ = clearJniException(env, "NewGlobalRef Bitmap CompressFormat");
+        env.*[0].DeleteGlobalRef.?(env, retriever_global);
+        env.*[0].DeleteGlobalRef.?(env, bitmap_global);
+        return null;
+    };
+    const output_stream_global = env.*[0].NewGlobalRef.?(env, output_stream_class) orelse {
+        _ = clearJniException(env, "NewGlobalRef FileOutputStream");
+        env.*[0].DeleteGlobalRef.?(env, retriever_global);
+        env.*[0].DeleteGlobalRef.?(env, bitmap_global);
+        env.*[0].DeleteGlobalRef.?(env, compress_format_global);
+        return null;
+    };
+    const jpeg_global = env.*[0].NewGlobalRef.?(env, jpeg_format) orelse {
+        _ = clearJniException(env, "NewGlobalRef JPEG CompressFormat");
+        env.*[0].DeleteGlobalRef.?(env, retriever_global);
+        env.*[0].DeleteGlobalRef.?(env, bitmap_global);
+        env.*[0].DeleteGlobalRef.?(env, compress_format_global);
+        env.*[0].DeleteGlobalRef.?(env, output_stream_global);
+        return null;
+    };
+    env.*[0].DeleteLocalRef.?(env, jpeg_format);
+    env.*[0].DeleteLocalRef.?(env, output_stream_class);
+    env.*[0].DeleteLocalRef.?(env, compress_format_class);
+    env.*[0].DeleteLocalRef.?(env, bitmap_class);
+    env.*[0].DeleteLocalRef.?(env, retriever_class);
+
+    return .{
+        .retriever_class = @ptrCast(retriever_global),
+        .bitmap_class = @ptrCast(bitmap_global),
+        .compress_format_class = @ptrCast(compress_format_global),
+        .output_stream_class = @ptrCast(output_stream_global),
+        .retriever_ctor = retriever_ctor,
+        .retriever_set_data_source = retriever_set_data_source,
+        .retriever_get_frame = retriever_get_frame,
+        .retriever_release = retriever_release,
+        .bitmap_get_width = bitmap_get_width,
+        .bitmap_get_height = bitmap_get_height,
+        .bitmap_compress = bitmap_compress,
+        .bitmap_recycle = bitmap_recycle,
+        .bitmap_create_scaled = bitmap_create_scaled,
+        .output_stream_ctor = output_stream_ctor,
+        .output_stream_close = output_stream_close,
+        .jpeg_format = jpeg_global,
+    };
+}
+
+fn releasePlaybackThumbnailJni(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni) void {
+    env.*[0].DeleteGlobalRef.?(env, jni.jpeg_format);
+    env.*[0].DeleteGlobalRef.?(env, jni.output_stream_class);
+    env.*[0].DeleteGlobalRef.?(env, jni.compress_format_class);
+    env.*[0].DeleteGlobalRef.?(env, jni.bitmap_class);
+    env.*[0].DeleteGlobalRef.?(env, jni.retriever_class);
+}
+
+fn recycleBitmap(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, bitmap: c.jobject) void {
+    if (bitmap == null) return;
+    env.*[0].CallVoidMethodA.?(env, bitmap, jni.bitmap_recycle, null);
+    _ = clearJniException(env, "Bitmap.recycle");
+}
+
+fn scalePlaybackThumbnailBitmap(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, bitmap: c.jobject) c.jobject {
+    const width = env.*[0].CallIntMethodA.?(env, bitmap, jni.bitmap_get_width, null);
+    if (clearJniException(env, "Bitmap.getWidth") or width <= 0) return bitmap;
+    const height = env.*[0].CallIntMethodA.?(env, bitmap, jni.bitmap_get_height, null);
+    if (clearJniException(env, "Bitmap.getHeight") or height <= 0) return bitmap;
+    var target_width = width;
+    var target_height = height;
+    if (width > 320 or height > 180) {
+        if (@as(i64, width) * 180 >= @as(i64, height) * 320) {
+            target_width = 320;
+            target_height = @max(1, @divTrunc(height * 320, width));
+        } else {
+            target_height = 180;
+            target_width = @max(1, @divTrunc(width * 180, height));
+        }
+    }
+    if (target_width == width and target_height == height) return bitmap;
+    var args = [_]c.jvalue{
+        .{ .l = bitmap },
+        .{ .i = target_width },
+        .{ .i = target_height },
+        .{ .z = JNI_TRUE },
+    };
+    const scaled = env.*[0].CallStaticObjectMethodA.?(env, jni.bitmap_class, jni.bitmap_create_scaled, &args);
+    if (clearJniException(env, "Bitmap.createScaledBitmap") or scaled == null) return bitmap;
+    return scaled;
+}
+
+fn extractPlaybackFrame(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, retriever: c.jobject) c.jobject {
+    const times = [_]c.jlong{ 0, 1_000_000, 3_000_000 };
+    for (times) |time_us| {
+        var args = [_]c.jvalue{
+            .{ .j = time_us },
+            .{ .i = 2 },
+        };
+        const frame = env.*[0].CallObjectMethodA.?(env, retriever, jni.retriever_get_frame, &args);
+        if (clearJniException(env, "MediaMetadataRetriever.getFrameAtTime")) continue;
+        if (frame != null) return frame;
+    }
+    return null;
+}
+
+fn generatePlaybackThumbnailWithJni(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, video_path: [*c]const u8) bool {
+    var target_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    if (!thumbnailPathForVideo(&target_path, video_path)) return false;
+    if (fileSizeNative(&target_path) > 0) return true;
+    var temp_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    if (!appendPathSuffix(&temp_path, &target_path, ".tmp")) return false;
+    _ = unlink(&temp_path);
+
+    const retriever = env.*[0].NewObjectA.?(env, jni.retriever_class, jni.retriever_ctor, null) orelse {
+        _ = clearJniException(env, "MediaMetadataRetriever.new");
+        return false;
+    };
+    defer env.*[0].DeleteLocalRef.?(env, retriever);
+    defer {
+        env.*[0].CallVoidMethodA.?(env, retriever, jni.retriever_release, null);
+        _ = clearJniException(env, "MediaMetadataRetriever.release");
+    }
+
+    const video_string = env.*[0].NewStringUTF.?(env, video_path) orelse {
+        _ = clearJniException(env, "NewStringUTF video path");
+        return false;
+    };
+    defer env.*[0].DeleteLocalRef.?(env, video_string);
+    var source_args = [_]c.jvalue{.{ .l = video_string }};
+    env.*[0].CallVoidMethodA.?(env, retriever, jni.retriever_set_data_source, &source_args);
+    if (clearJniException(env, "MediaMetadataRetriever.setDataSource")) return false;
+
+    const frame = extractPlaybackFrame(env, jni, retriever);
+    if (frame == null) return false;
+    defer env.*[0].DeleteLocalRef.?(env, frame);
+    defer recycleBitmap(env, jni, frame);
+
+    const bitmap = scalePlaybackThumbnailBitmap(env, jni, frame);
+    const bitmap_scaled = bitmap != frame;
+    if (bitmap_scaled) {
+        defer env.*[0].DeleteLocalRef.?(env, bitmap);
+        defer recycleBitmap(env, jni, bitmap);
+    }
+
+    const temp_string = env.*[0].NewStringUTF.?(env, &temp_path) orelse {
+        _ = clearJniException(env, "NewStringUTF thumbnail path");
+        return false;
+    };
+    defer env.*[0].DeleteLocalRef.?(env, temp_string);
+    var stream_args = [_]c.jvalue{.{ .l = temp_string }};
+    const stream = env.*[0].NewObjectA.?(env, jni.output_stream_class, jni.output_stream_ctor, &stream_args) orelse {
+        _ = clearJniException(env, "FileOutputStream.new");
+        _ = unlink(&temp_path);
+        return false;
+    };
+    defer env.*[0].DeleteLocalRef.?(env, stream);
+    var stream_closed = false;
+    defer {
+        if (!stream_closed) {
+            env.*[0].CallVoidMethodA.?(env, stream, jni.output_stream_close, null);
+            _ = clearJniException(env, "FileOutputStream.close");
+        }
+    }
+
+    var compress_args = [_]c.jvalue{
+        .{ .l = jni.jpeg_format },
+        .{ .i = 82 },
+        .{ .l = stream },
+    };
+    const compressed = env.*[0].CallBooleanMethodA.?(env, bitmap, jni.bitmap_compress, &compress_args);
+    if (clearJniException(env, "Bitmap.compress") or compressed != JNI_TRUE) {
+        _ = unlink(&temp_path);
+        return false;
+    }
+    env.*[0].CallVoidMethodA.?(env, stream, jni.output_stream_close, null);
+    stream_closed = true;
+    if (clearJniException(env, "FileOutputStream.close")) {
+        _ = unlink(&temp_path);
+        return false;
+    }
+    if (fileSizeNative(&temp_path) <= 0) {
+        _ = unlink(&temp_path);
+        return false;
+    }
+    _ = unlink(&target_path);
+    if (rename(&temp_path, &target_path) != 0) {
+        _ = unlink(&temp_path);
+        return false;
+    }
+    return fileSizeNative(&target_path) > 0;
+}
+
+fn generatePlaybackThumbnailWithBridge(env: [*c]c.JNIEnv, video_path: [*c]const u8) bool {
+    var target_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    if (!thumbnailPathForVideo(&target_path, video_path)) return false;
+    if (fileSizeNative(&target_path) > 0) return true;
+
+    const bridge_class = env.*[0].FindClass.?(env, "com/kooo/evcam/v2/storage/V2PlaybackThumbnailBridge") orelse {
+        _ = clearJniException(env, "FindClass V2PlaybackThumbnailBridge");
+        loge("playback thumbnail bridge class not found", .{});
+        return false;
+    };
+    defer env.*[0].DeleteLocalRef.?(env, bridge_class);
+    const method = env.*[0].GetStaticMethodID.?(env, bridge_class, "ensureThumbnail", "(Ljava/lang/String;)Ljava/lang/String;") orelse {
+        _ = clearJniException(env, "GetStaticMethodID ensureThumbnail");
+        loge("playback thumbnail bridge method not found", .{});
+        return false;
+    };
+    const video_string = env.*[0].NewStringUTF.?(env, video_path) orelse {
+        _ = clearJniException(env, "NewStringUTF bridge video path");
+        return false;
+    };
+    defer env.*[0].DeleteLocalRef.?(env, video_string);
+    var args = [_]c.jvalue{.{ .l = video_string }};
+    const generated = env.*[0].CallStaticObjectMethodA.?(env, bridge_class, method, &args);
+    if (clearJniException(env, "V2PlaybackThumbnailBridge.ensureThumbnail") or generated == null) return false;
+    defer env.*[0].DeleteLocalRef.?(env, generated);
+    return fileSizeNative(&target_path) > 0;
+}
+
 fn sleepMs(ms: u64) void {
     const capped_ms = @min(ms, 60_000);
     const duration: std.Io.Clock.Duration = .{
@@ -405,6 +634,57 @@ fn sleepMs(ms: u64) void {
     duration.sleep(nativeIo()) catch {
         _ = usleep(@intCast(capped_ms * 1000));
     };
+}
+
+fn paceAfterTick(next_deadline_ms: *i64, interval_ms: i64) void {
+    const safe_interval_ms = @max(interval_ms, 1);
+    next_deadline_ms.* += safe_interval_ms;
+    const now_after_tick = nowMs();
+    if (next_deadline_ms.* > now_after_tick) {
+        sleepMs(@intCast(next_deadline_ms.* - now_after_tick));
+    } else {
+        next_deadline_ms.* = now_after_tick;
+    }
+}
+
+fn joinWorkerThread(thread: std.Thread, comptime name: []const u8, generation: c.jlong, timeout_ms: c.jlong) void {
+    const join_start_ms = nowMs();
+    thread.join();
+    const join_ms = nowMs() - join_start_ms;
+    if (timeout_ms > 0 and join_ms > timeout_ms) {
+        loge("{s} worker join exceeded timeout generation={d} joinMs={d} timeoutMs={d}", .{ name, generation, join_ms, timeout_ms });
+    } else {
+        logd("{s} worker joined generation={d} joinMs={d}", .{ name, generation, join_ms });
+    }
+}
+
+fn joinStalePreviewWorker(handle: c.jlong) void {
+    var thread: ?std.Thread = null;
+    var generation: c.jlong = 0;
+    {
+        const p = lockPipeForHandle(handle) orelse return;
+        defer unlockPipe(p);
+        if (p.preview_worker_running or p.preview_worker_thread == null) return;
+        generation = p.preview_worker_generation;
+        thread = p.preview_worker_thread;
+        p.preview_worker_thread = null;
+    }
+    if (thread) |t| joinWorkerThread(t, "preview stale", generation, 2000);
+}
+
+fn joinStaleRecordingWorker(handle: c.jlong) void {
+    var thread: ?std.Thread = null;
+    var generation: c.jlong = 0;
+    {
+        const p = lockPipeForHandle(handle) orelse return;
+        defer unlockPipe(p);
+        if (p.recording_worker_running or p.recording_worker_thread == null) return;
+        generation = p.recording_worker_generation;
+        thread = p.recording_worker_thread;
+        p.recording_worker_thread = null;
+        p.recording_worker_condition.broadcast(nativeIo());
+    }
+    if (thread) |t| joinWorkerThread(t, "recording stale", generation, 2000);
 }
 
 fn loge(comptime fmt: []const u8, args: anytype) void {
@@ -446,6 +726,47 @@ fn copyCStringToBuffer(dst: []u8, src: [*c]const u8) bool {
     return true;
 }
 
+fn appendFixedDecimal(dst: []u8, offset: *usize, value: u64, width: usize) bool {
+    if (offset.* + width >= dst.len) return false;
+    var remaining = value;
+    var i = width;
+    while (i > 0) {
+        i -= 1;
+        dst[offset.* + i] = '0' + @as(u8, @intCast(remaining % 10));
+        remaining /= 10;
+    }
+    if (remaining != 0) return false;
+    offset.* += width;
+    return true;
+}
+
+fn formatSegmentTimestamp(dst: *[32:0]u8, wall_clock_ms: c.jlong) bool {
+    if (wall_clock_ms <= 0) return false;
+    var seconds: c_long = @intCast(@divTrunc(wall_clock_ms, 1000));
+    var tm: NativeTm = undefined;
+    if (localtime_r(&seconds, &tm) == null) return false;
+    @memset(dst, 0);
+    var offset: usize = 0;
+    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_year + 1900), 4)) return false;
+    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_mon + 1), 2)) return false;
+    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_mday), 2)) return false;
+    if (offset >= dst.len - 1) return false;
+    dst[offset] = '_';
+    offset += 1;
+    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_hour), 2)) return false;
+    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_min), 2)) return false;
+    return offset > 0;
+}
+
+fn formatIndexSuffix(dst: *[8:0]u8, index: usize) bool {
+    @memset(dst, 0);
+    var offset: usize = 0;
+    if (offset >= dst.len - 1) return false;
+    dst[offset] = '_';
+    offset += 1;
+    return appendFixedDecimal(dst[0..], &offset, @intCast(index), 3);
+}
+
 fn writeAllFd(fd: c_int, data: []const u8) bool {
     var written: usize = 0;
     while (written < data.len) {
@@ -456,14 +777,36 @@ fn writeAllFd(fd: c_int, data: []const u8) bool {
     return true;
 }
 
-fn bmpPathForVideo(dst: *[1024:0]u8, video_path: [*c]const u8) bool {
+fn jpegWriteContext(context: ?*anyopaque, data: []const u8) bool {
+    const fd_ptr: *c_int = @ptrCast(@alignCast(context orelse return false));
+    return writeAllFd(fd_ptr.*, data);
+}
+
+const ThumbnailCapture = struct {
+    path: [1024:0]u8 = [_:0]u8{0} ** 1024,
+    rgb_raw: ?*anyopaque = null,
+    width: usize = 0,
+    height: usize = 0,
+    bytes: usize = 0,
+};
+
+fn thumbnailPathForVideo(dst: *[1024:0]u8, video_path: [*c]const u8) bool {
     const path = std.mem.span(video_path);
     var base_len = path.len;
     if (std.mem.endsWith(u8, path, ".mp4")) base_len = path.len - 4;
     if (base_len + 4 >= dst.len) return false;
     @memset(dst, 0);
     @memcpy(dst[0..base_len], path[0..base_len]);
-    @memcpy(dst[base_len..][0..4], ".bmp");
+    @memcpy(dst[base_len..][0..4], ".jpg");
+    return true;
+}
+
+fn appendPathSuffix(dst: *[1024:0]u8, path_z: [*c]const u8, suffix: []const u8) bool {
+    const path = std.mem.span(path_z);
+    if (path.len + suffix.len >= dst.len) return false;
+    @memset(dst, 0);
+    @memcpy(dst[0..path.len], path);
+    @memcpy(dst[path.len..][0..suffix.len], suffix);
     return true;
 }
 
@@ -486,19 +829,128 @@ fn copyFileNative(src_path: [*c]const u8, dst_path: [*c]const u8) bool {
     return true;
 }
 
-fn putLe16(buf: []u8, offset: usize, value: u16) void {
-    buf[offset] = @intCast(value & 0xff);
-    buf[offset + 1] = @intCast((value >> 8) & 0xff);
+fn pathJoin(dst: *[1024:0]u8, dir_path: [*c]const u8, name: []const u8) bool {
+    const dir = std.mem.span(dir_path);
+    const slash_len: usize = if (dir.len > 0 and dir[dir.len - 1] == '/') 0 else 1;
+    if (dir.len + slash_len + name.len >= dst.len) return false;
+    @memset(dst, 0);
+    @memcpy(dst[0..dir.len], dir);
+    var offset = dir.len;
+    if (slash_len == 1) {
+        dst[offset] = '/';
+        offset += 1;
+    }
+    @memcpy(dst[offset..][0..name.len], name);
+    return true;
 }
 
-fn putLe32(buf: []u8, offset: usize, value: u32) void {
-    buf[offset] = @intCast(value & 0xff);
-    buf[offset + 1] = @intCast((value >> 8) & 0xff);
-    buf[offset + 2] = @intCast((value >> 16) & 0xff);
-    buf[offset + 3] = @intCast((value >> 24) & 0xff);
+fn fileSizeNative(path: [*c]const u8) i64 {
+    const fd = open(path, O_RDONLY_ANDROID, 0);
+    if (fd < 0) return 0;
+    defer _ = close(fd);
+    const size = lseek64(fd, 0, SEEK_END_ANDROID);
+    return @max(size, 0);
 }
 
-fn writeFirstFrameThumbnailBmpLocked(p: *Pipe) void {
+fn availableBytesNative(path: [*c]const u8) i64 {
+    var stats: c.struct_statvfs = undefined;
+    if (c.statvfs(path, &stats) != 0) return -1;
+    const block_size: u128 = if (stats.f_frsize > 0) @intCast(stats.f_frsize) else @intCast(stats.f_bsize);
+    const available_blocks: u128 = @intCast(stats.f_bavail);
+    const bytes = block_size * available_blocks;
+    return if (bytes > @as(u128, @intCast(std.math.maxInt(i64)))) std.math.maxInt(i64) else @intCast(bytes);
+}
+
+fn deleteNativeFile(path: [*c]const u8) i64 {
+    const size = fileSizeNative(path);
+    if (unlink(path) != 0) return 0;
+    return size;
+}
+
+fn deleteThumbnailSidecarsNative(video_path: [*c]const u8) i64 {
+    const video = std.mem.span(video_path);
+    const base_len = if (std.mem.endsWith(u8, video, ".mp4")) video.len - 4 else video.len;
+    var deleted: i64 = 0;
+    const exts = [_][]const u8{ ".bmp", ".jpg", ".jpeg" };
+    for (exts) |ext| {
+        var sidecar: [1024:0]u8 = [_:0]u8{0} ** 1024;
+        if (base_len + ext.len >= sidecar.len) continue;
+        @memcpy(sidecar[0..base_len], video[0..base_len]);
+        @memcpy(sidecar[base_len..][0..ext.len], ext);
+        deleted += deleteNativeFile(&sidecar);
+    }
+    return deleted;
+}
+
+fn pathNeededByPendingEmergency(path: [*c]const u8) bool {
+    const candidate = std.mem.span(path);
+    if (candidate.len == 0) return false;
+    lockGlobal();
+    defer unlockGlobal();
+    if (g_emergency_request_count == 0 or g_emergency_source_count == 0) return false;
+    for (g_emergency_sources[0..g_emergency_source_count]) |source| {
+        if (!std.mem.eql(u8, std.mem.sliceTo(&source.path, 0), candidate)) continue;
+        for (g_emergency_requests[0..g_emergency_request_count]) |request| {
+            if (source.end_ms > request.start_ms and source.start_ms < request.end_ms) return true;
+        }
+    }
+    return false;
+}
+
+fn captureEmergencyProtectionSnapshot() EmergencyProtectionSnapshot {
+    var snapshot = EmergencyProtectionSnapshot{};
+    lockGlobal();
+    defer unlockGlobal();
+    snapshot.source_count = @min(g_emergency_source_count, snapshot.sources.len);
+    snapshot.request_count = @min(g_emergency_request_count, snapshot.requests.len);
+    if (snapshot.source_count > 0) @memcpy(snapshot.sources[0..snapshot.source_count], g_emergency_sources[0..snapshot.source_count]);
+    if (snapshot.request_count > 0) @memcpy(snapshot.requests[0..snapshot.request_count], g_emergency_requests[0..snapshot.request_count]);
+    return snapshot;
+}
+
+fn cleanupLimitReached(limit: usize) void {
+    setError("native cleanup candidate limit reached limit={d}", .{limit});
+}
+
+fn cleanupSkippedPendingEmergency(name: [:0]const u8) void {
+    logd("native cleanup skipped pending emergency source {s}", .{name});
+}
+
+fn cleanupSkippedNewPendingEmergency(name: [:0]const u8) void {
+    logd("native cleanup skipped newly pending emergency source {s}", .{name});
+}
+
+fn cleanupDeletedOldSegment(name: [:0]const u8, freed: i64, available: i64, reserved: i64) void {
+    logi("native cleanup deleted old segment {s} freed={d} available={d} reserve={d}", .{ name, freed, available, reserved });
+}
+
+fn cleanupStorageNative(dir_path: [*c]const u8, reserved_bytes: i64, available_bytes: i64, protected_path: ?[*c]const u8, out_deleted_count: *i64, out_deleted_bytes: *i64) i64 {
+    const emergency_snapshot = captureEmergencyProtectionSnapshot();
+    return storage.cleanupStorageNative(
+        dir_path,
+        reserved_bytes,
+        available_bytes,
+        protected_path,
+        &emergency_snapshot,
+        .{
+            .cleanupLimitReached = cleanupLimitReached,
+            .skippedPendingEmergency = cleanupSkippedPendingEmergency,
+            .skippedNewPendingEmergency = cleanupSkippedNewPendingEmergency,
+            .deletedOldSegment = cleanupDeletedOldSegment,
+            .isPendingEmergencyPath = pathNeededByPendingEmergency,
+        },
+        out_deleted_count,
+        out_deleted_bytes,
+    );
+}
+
+fn releaseThumbnailCapture(capture: *ThumbnailCapture) void {
+    if (capture.rgb_raw) |ptr| free(ptr);
+    capture.* = .{};
+}
+
+fn captureFirstFrameThumbnailLocked(p: *Pipe, capture: *ThumbnailCapture) void {
+    if (capture.rgb_raw != null) return;
     if (!p.recording.thumbnail_path_set or p.recording.thumbnail_written) return;
     if (p.width <= 0 or p.height <= 0) return;
 
@@ -519,53 +971,86 @@ fn writeFirstFrameThumbnailBmpLocked(p: *Pipe) void {
         return;
     }
 
-    const thumb_w = @min(THUMBNAIL_WIDTH, src_w);
-    const thumb_h = @min(THUMBNAIL_HEIGHT, src_h);
-    const row_stride = ((thumb_w * 3 + 3) / 4) * 4;
-    const image_size = row_stride * thumb_h;
-    const file_size = 54 + image_size;
+    const thumb_w: usize = @min(THUMBNAIL_WIDTH, src_w);
+    const thumb_h: usize = @min(THUMBNAIL_HEIGHT, src_h);
 
-    var header: [54]u8 = [_]u8{0} ** 54;
-    header[0] = 'B';
-    header[1] = 'M';
-    putLe32(header[0..], 2, @intCast(file_size));
-    putLe32(header[0..], 10, 54);
-    putLe32(header[0..], 14, 40);
-    putLe32(header[0..], 18, @intCast(thumb_w));
-    putLe32(header[0..], 22, @intCast(thumb_h));
-    putLe16(header[0..], 26, 1);
-    putLe16(header[0..], 28, 24);
-    putLe32(header[0..], 34, @intCast(image_size));
-
-    const fd = open(&p.recording.thumbnail_path, O_CREAT_ANDROID | O_TRUNC_ANDROID | O_RDWR_ANDROID, 0o644);
-    if (fd < 0) {
-        loge("thumbnail open failed path={s}", .{std.mem.sliceTo(&p.recording.thumbnail_path, 0)});
+    const rgb_bytes: usize = thumb_w * thumb_h * 3;
+    const rgb_raw = malloc(rgb_bytes) orelse {
+        loge("thumbnail rgb malloc failed bytes={d}", .{rgb_bytes});
         return;
-    }
-    defer _ = close(fd);
-    if (!writeAllFd(fd, header[0..])) return;
-
-    const row_raw = malloc(row_stride) orelse return;
-    defer free(row_raw);
-    const row: [*]u8 = @ptrCast(row_raw);
+    };
+    const rgb: [*]u8 = @ptrCast(rgb_raw);
 
     var y: usize = 0;
     while (y < thumb_h) : (y += 1) {
-        @memset(row[0..row_stride], 0);
-        const src_y = (y * src_h) / thumb_h;
+        const src_y = src_h - 1 - ((y * src_h) / thumb_h);
         var x: usize = 0;
         while (x < thumb_w) : (x += 1) {
             const src_x = (x * src_w) / thumb_w;
             const src = (src_y * src_w + src_x) * 4;
-            const dst = x * 3;
-            row[dst] = rgba[src + 2];
-            row[dst + 1] = rgba[src + 1];
-            row[dst + 2] = rgba[src];
+            const dst = (y * thumb_w + x) * 3;
+            rgb[dst] = rgba[src];
+            rgb[dst + 1] = rgba[src + 1];
+            rgb[dst + 2] = rgba[src + 2];
         }
-        if (!writeAllFd(fd, row[0..row_stride])) return;
     }
-    p.recording.thumbnail_written = true;
-    logi("thumbnail generated path={s} size={d}x{d}", .{ std.mem.sliceTo(&p.recording.thumbnail_path, 0), thumb_w, thumb_h });
+
+    capture.path = p.recording.thumbnail_path;
+    capture.rgb_raw = rgb_raw;
+    capture.width = thumb_w;
+    capture.height = thumb_h;
+    capture.bytes = rgb_bytes;
+}
+
+fn encodeThumbnailCapture(capture: *const ThumbnailCapture) bool {
+    const rgb_raw = capture.rgb_raw orelse return false;
+    if (capture.width == 0 or capture.height == 0 or capture.bytes == 0) return false;
+    const rgb: [*]u8 = @ptrCast(rgb_raw);
+
+    var temp_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    if (!appendPathSuffix(&temp_path, &capture.path, ".tmp")) {
+        loge("thumbnail temp path too long path={s}", .{std.mem.sliceTo(&capture.path, 0)});
+        return false;
+    }
+    _ = unlink(&temp_path);
+
+    const fd = open(&temp_path, O_CREAT_ANDROID | O_TRUNC_ANDROID | O_RDWR_ANDROID, 0o644);
+    if (fd < 0) {
+        _ = unlink(&temp_path);
+        loge("thumbnail open failed path={s}", .{std.mem.sliceTo(&temp_path, 0)});
+        return false;
+    }
+    var fd_context = fd;
+    var sink = jpeg.Sink{ .context = @ptrCast(&fd_context), .writeFn = jpegWriteContext };
+    const encoded = jpeg.writeRgbJpeg(&sink, capture.width, capture.height, rgb[0..capture.bytes], 82);
+    const closed = close(fd) == 0;
+    if (!encoded or !closed or fileSizeNative(&temp_path) <= 0) {
+        _ = unlink(&temp_path);
+        loge("thumbnail native jpg encode failed path={s}", .{std.mem.sliceTo(&capture.path, 0)});
+        return false;
+    }
+    _ = unlink(&capture.path);
+    if (rename(&temp_path, &capture.path) != 0) {
+        _ = unlink(&temp_path);
+        loge("thumbnail rename failed path={s}", .{std.mem.sliceTo(&capture.path, 0)});
+        return false;
+    }
+    logi("thumbnail native jpg generated path={s} size={d}x{d} bytes={d}", .{ std.mem.sliceTo(&capture.path, 0), capture.width, capture.height, fileSizeNative(&capture.path) });
+    return true;
+}
+
+fn markThumbnailCaptureWritten(handle: c.jlong, capture: *const ThumbnailCapture) void {
+    if (capture.rgb_raw == null) return;
+    const p = lockPipeForHandle(handle) orelse return;
+    defer unlockPipe(p);
+    markThumbnailCaptureWrittenLocked(p, capture);
+}
+
+fn markThumbnailCaptureWrittenLocked(p: *Pipe, capture: *const ThumbnailCapture) void {
+    if (capture.rgb_raw == null) return;
+    if (std.mem.eql(u8, std.mem.sliceTo(&p.recording.thumbnail_path, 0), std.mem.sliceTo(&capture.path, 0))) {
+        p.recording.thumbnail_written = true;
+    }
 }
 
 fn eglError(what: []const u8) [:0]const u8 {
@@ -618,6 +1103,7 @@ const OVERLAY_VERT = "attribute vec2 aPosition;void main(){gl_Position=vec4(aPos
 const OVERLAY_FRAG = "precision mediump float;uniform vec4 uColor;void main(){gl_FragColor=uColor;}";
 const OVERLAY_TEXT_VERT = "attribute vec2 aPosition;attribute vec2 aTexCoord;varying vec2 vTexCoord;void main(){gl_Position=vec4(aPosition,0.0,1.0);vTexCoord=aTexCoord;}";
 const OVERLAY_TEXT_FRAG = "precision mediump float;varying vec2 vTexCoord;uniform sampler2D uTexture;uniform vec4 uColor;void main(){float a=texture2D(uTexture,vTexCoord).a;gl_FragColor=vec4(uColor.rgb,uColor.a*a);}";
+const TEXTURE_FRAG = "precision mediump float;varying vec2 vTexCoord;uniform sampler2D uTexture;void main(){gl_FragColor=texture2D(uTexture,vTexCoord);}";
 
 fn compileShader(kind: c.GLenum, source: [*c]const u8) c.GLuint {
     const shader = c.glCreateShader(kind);
@@ -691,6 +1177,25 @@ fn createOverlayTextProgram() c.GLuint {
     return program;
 }
 
+fn createTextureProgram() c.GLuint {
+    const vs = compileShader(c.GL_VERTEX_SHADER, VERT);
+    const fs = compileShader(c.GL_FRAGMENT_SHADER, TEXTURE_FRAG);
+    const program = c.glCreateProgram();
+    c.glAttachShader(program, vs);
+    c.glAttachShader(program, fs);
+    c.glLinkProgram(program);
+    var ok: c.GLint = 0;
+    c.glGetProgramiv(program, c.GL_LINK_STATUS, &ok);
+    if (ok == 0) {
+        var log: [512]u8 = [_]u8{0} ** 512;
+        c.glGetProgramInfoLog(program, log.len, null, &log);
+        setError("texture program link failed: {s}", .{std.mem.sliceTo(&log, 0)});
+    }
+    c.glDeleteShader(vs);
+    c.glDeleteShader(fs);
+    return program;
+}
+
 const FONT_CELL_W = 8;
 const FONT_CELL_H = 9;
 const FONT_GLYPHS = "0123456789-: ";
@@ -709,7 +1214,9 @@ const FONT_PATTERNS = [_][7]u8{
     .{ 0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000 },
     .{ 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 },
 };
-comptime { std.debug.assert(FONT_PATTERNS.len == FONT_GLYPHS.len); }
+comptime {
+    std.debug.assert(FONT_PATTERNS.len == FONT_GLYPHS.len);
+}
 const FONT_COLS = FONT_GLYPHS.len;
 const FONT_ATLAS_W = FONT_COLS * FONT_CELL_W;
 const FONT_ATLAS_H = FONT_CELL_H;
@@ -737,7 +1244,10 @@ fn initOverlayFontTexture(p: *Pipe) bool {
     }
     var texture: c.GLuint = 0;
     c.glGenTextures(1, &texture);
-    if (texture == 0) { setError("overlay font texture allocation failed", .{}); return false; }
+    if (texture == 0) {
+        setError("overlay font texture allocation failed", .{});
+        return false;
+    }
     c.glBindTexture(c.GL_TEXTURE_2D, texture);
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
@@ -746,7 +1256,11 @@ fn initOverlayFontTexture(p: *Pipe) bool {
     c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
     c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_ALPHA, FONT_ATLAS_W, FONT_ATLAS_H, 0, c.GL_ALPHA, c.GL_UNSIGNED_BYTE, &pixels);
     c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 4);
-    if (glError("initOverlayFontTexture")) |e| { setErrorSlice(e); c.glDeleteTextures(1, &texture); return false; }
+    if (glError("initOverlayFontTexture")) |e| {
+        setErrorSlice(e);
+        c.glDeleteTextures(1, &texture);
+        return false;
+    }
     p.overlay_font_texture = texture;
     return true;
 }
@@ -754,25 +1268,44 @@ fn initOverlayFontTexture(p: *Pipe) bool {
 fn initEgl(p: *Pipe) bool {
     if (p.display != c.EGL_NO_DISPLAY) return true;
     p.display = c.eglGetDisplay(c.EGL_DEFAULT_DISPLAY);
-    if (p.display == c.EGL_NO_DISPLAY) { setError("eglGetDisplay failed", .{}); return false; }
-    if (c.eglInitialize(p.display, null, null) == c.EGL_FALSE) { setErrorSlice(eglError("eglInitialize failed")); return false; }
+    if (p.display == c.EGL_NO_DISPLAY) {
+        setError("eglGetDisplay failed", .{});
+        return false;
+    }
+    if (c.eglInitialize(p.display, null, null) == c.EGL_FALSE) {
+        setErrorSlice(eglError("eglInitialize failed"));
+        return false;
+    }
     if (g_presentation_time_android == null) {
         const proc = c.eglGetProcAddress("eglPresentationTimeANDROID");
         if (proc != null) g_presentation_time_android = @ptrCast(proc);
     }
     const attrs = [_]c.EGLint{ c.EGL_RENDERABLE_TYPE, c.EGL_OPENGL_ES2_BIT, c.EGL_SURFACE_TYPE, c.EGL_WINDOW_BIT | c.EGL_PBUFFER_BIT, c.EGL_RED_SIZE, 8, c.EGL_GREEN_SIZE, 8, c.EGL_BLUE_SIZE, 8, c.EGL_ALPHA_SIZE, 8, EGL_RECORDABLE_ANDROID, 1, c.EGL_NONE };
     var count: c.EGLint = 0;
-    if (c.eglChooseConfig(p.display, &attrs, &p.config, 1, &count) == c.EGL_FALSE or count <= 0) { setErrorSlice(eglError("eglChooseConfig failed")); return false; }
+    if (c.eglChooseConfig(p.display, &attrs, &p.config, 1, &count) == c.EGL_FALSE or count <= 0) {
+        setErrorSlice(eglError("eglChooseConfig failed"));
+        return false;
+    }
     const ctx_attrs = [_]c.EGLint{ c.EGL_CONTEXT_CLIENT_VERSION, 2, c.EGL_NONE };
     p.context = c.eglCreateContext(p.display, p.config, c.EGL_NO_CONTEXT, &ctx_attrs);
-    if (p.context == c.EGL_NO_CONTEXT) { setErrorSlice(eglError("eglCreateContext failed")); return false; }
+    if (p.context == c.EGL_NO_CONTEXT) {
+        setErrorSlice(eglError("eglCreateContext failed"));
+        return false;
+    }
     const pb_attrs = [_]c.EGLint{ c.EGL_WIDTH, 1, c.EGL_HEIGHT, 1, c.EGL_NONE };
     p.pbuffer = c.eglCreatePbufferSurface(p.display, p.config, &pb_attrs);
-    if (p.pbuffer == c.EGL_NO_SURFACE) { setErrorSlice(eglError("eglCreatePbufferSurface failed")); return false; }
-    if (c.eglMakeCurrent(p.display, p.pbuffer, p.pbuffer, p.context) == c.EGL_FALSE) { setErrorSlice(eglError("eglMakeCurrent pbuffer failed")); return false; }
+    if (p.pbuffer == c.EGL_NO_SURFACE) {
+        setErrorSlice(eglError("eglCreatePbufferSurface failed"));
+        return false;
+    }
+    if (c.eglMakeCurrent(p.display, p.pbuffer, p.pbuffer, p.context) == c.EGL_FALSE) {
+        setErrorSlice(eglError("eglMakeCurrent pbuffer failed"));
+        return false;
+    }
     p.program = createProgram();
     p.overlay_program = createOverlayProgram();
     p.overlay_text_program = createOverlayTextProgram();
+    p.texture_program = createTextureProgram();
     p.pos_loc = c.glGetAttribLocation(p.program, "aPosition");
     p.tex_loc = c.glGetAttribLocation(p.program, "aTexCoord");
     p.sampler_loc = c.glGetUniformLocation(p.program, "uTexture");
@@ -782,13 +1315,19 @@ fn initEgl(p: *Pipe) bool {
     p.overlay_text_tex_loc = c.glGetAttribLocation(p.overlay_text_program, "aTexCoord");
     p.overlay_text_sampler_loc = c.glGetUniformLocation(p.overlay_text_program, "uTexture");
     p.overlay_text_color_loc = c.glGetUniformLocation(p.overlay_text_program, "uColor");
+    p.texture_pos_loc = c.glGetAttribLocation(p.texture_program, "aPosition");
+    p.texture_tex_loc = c.glGetAttribLocation(p.texture_program, "aTexCoord");
+    p.texture_sampler_loc = c.glGetUniformLocation(p.texture_program, "uTexture");
     p.fisheye_enabled_loc = c.glGetUniformLocation(p.program, "uFisheyeEnabled");
     p.k1_loc = c.glGetUniformLocation(p.program, "uK1");
     p.k2_loc = c.glGetUniformLocation(p.program, "uK2");
     p.zoom_loc = c.glGetUniformLocation(p.program, "uZoom");
     p.center_loc = c.glGetUniformLocation(p.program, "uCenter");
-    if (p.program == 0 or p.pos_loc < 0 or p.tex_loc < 0 or p.sampler_loc < 0 or p.overlay_program == 0 or p.overlay_pos_loc < 0 or p.overlay_color_loc < 0 or p.overlay_text_program == 0 or p.overlay_text_pos_loc < 0 or p.overlay_text_tex_loc < 0 or p.overlay_text_sampler_loc < 0 or p.overlay_text_color_loc < 0) { setError("GLES program locations unavailable", .{}); return false; }
-    if (!initOverlayFontTexture(p)) return false;
+    if (p.program == 0 or p.pos_loc < 0 or p.tex_loc < 0 or p.sampler_loc < 0 or p.overlay_program == 0 or p.overlay_pos_loc < 0 or p.overlay_color_loc < 0 or p.overlay_text_program == 0 or p.overlay_text_pos_loc < 0 or p.overlay_text_tex_loc < 0 or p.overlay_text_sampler_loc < 0 or p.overlay_text_color_loc < 0 or p.texture_program == 0 or p.texture_pos_loc < 0 or p.texture_tex_loc < 0 or p.texture_sampler_loc < 0) {
+        setError("GLES program locations unavailable", .{});
+        return false;
+    }
+    _ = initOverlayFontTexture(p);
     clearCurrent(p);
     logd("EGL initialized", .{});
     return true;
@@ -796,18 +1335,30 @@ fn initEgl(p: *Pipe) bool {
 
 fn makePbufferCurrent(p: *Pipe) bool {
     if (!initEgl(p)) return false;
-    if (p.pbuffer == c.EGL_NO_SURFACE) { setError("missing pbuffer surface", .{}); return false; }
+    if (p.pbuffer == c.EGL_NO_SURFACE) {
+        setError("missing pbuffer surface", .{});
+        return false;
+    }
     if (p.current_surface == p.pbuffer) return true;
-    if (c.eglMakeCurrent(p.display, p.pbuffer, p.pbuffer, p.context) == c.EGL_FALSE) { setErrorSlice(eglError("eglMakeCurrent pbuffer failed")); return false; }
+    if (c.eglMakeCurrent(p.display, p.pbuffer, p.pbuffer, p.context) == c.EGL_FALSE) {
+        setErrorSlice(eglError("eglMakeCurrent pbuffer failed"));
+        return false;
+    }
     p.current_surface = p.pbuffer;
     return true;
 }
 
 fn makeCurrent(p: *Pipe, surface: c.EGLSurface) bool {
     if (!initEgl(p)) return false;
-    if (surface == c.EGL_NO_SURFACE) { setError("missing EGL surface", .{}); return false; }
+    if (surface == c.EGL_NO_SURFACE) {
+        setError("missing EGL surface", .{});
+        return false;
+    }
     if (p.current_surface == surface) return true;
-    if (c.eglMakeCurrent(p.display, surface, surface, p.context) == c.EGL_FALSE) { setErrorSlice(eglError("eglMakeCurrent failed")); return false; }
+    if (c.eglMakeCurrent(p.display, surface, surface, p.context) == c.EGL_FALSE) {
+        setErrorSlice(eglError("eglMakeCurrent failed"));
+        return false;
+    }
     p.current_surface = surface;
     return true;
 }
@@ -825,9 +1376,9 @@ fn updateSurfaceTexture(st: ?*c.ASurfaceTexture) bool {
 }
 
 fn fillTexCoords(q: *Quad, rotation: f32) void {
-    const r0 = [_]c.GLfloat{0,0, 1,0, 0,1, 1,1};
-    const r90 = [_]c.GLfloat{0,1, 0,0, 1,1, 1,0};
-    const r270 = [_]c.GLfloat{1,0, 1,1, 0,0, 0,1};
+    const r0 = [_]c.GLfloat{ 0, 0, 1, 0, 0, 1, 1, 1 };
+    const r90 = [_]c.GLfloat{ 0, 1, 0, 0, 1, 1, 1, 0 };
+    const r270 = [_]c.GLfloat{ 1, 0, 1, 1, 0, 0, 0, 1 };
     const src = if (rotation == 90.0) &r90 else if (rotation == 270.0) &r270 else &r0;
     q.tex = src.*;
 }
@@ -963,33 +1514,6 @@ fn overlayCharAdvance(ch: u8, scale: f32) f32 {
     return 14.0 * scale;
 }
 
-fn overlayTextWidth(text: []const u8, scale: f32) f32 {
-    var width: f32 = 0;
-    for (text) |ch| width += overlayCharAdvance(ch, scale);
-    return width;
-}
-
-fn appendOverlayRect(batch: *OverlayBatch, p: *Pipe, x: f32, y: f32, w: f32, h: f32) void {
-    if (w <= 0 or h <= 0) return;
-    if (batch.len + 12 > batch.verts.len) return;
-    const cw = if (p.width <= 0) 1.0 else @as(f32, @floatFromInt(p.width));
-    const ch = if (p.height <= 0) 1.0 else @as(f32, @floatFromInt(p.height));
-    const x0 = x / cw * 2.0 - 1.0;
-    const x1 = (x + w) / cw * 2.0 - 1.0;
-    const y0 = 1.0 - y / ch * 2.0;
-    const y1 = 1.0 - (y + h) / ch * 2.0;
-    const quad = [_]c.GLfloat{ x0, y0, x1, y0, x0, y1, x1, y0, x1, y1, x0, y1 };
-    @memcpy(batch.verts[batch.len..][0..quad.len], quad[0..]);
-    batch.len += quad.len;
-}
-
-fn flushOverlayBatch(p: *Pipe, batch: *OverlayBatch, color: [4]f32) void {
-    if (batch.len == 0) return;
-    c.glVertexAttribPointer(@intCast(p.overlay_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &batch.verts);
-    c.glUniform4f(p.overlay_color_loc, color[0], color[1], color[2], color[3]);
-    c.glDrawArrays(c.GL_TRIANGLES, 0, @intCast(batch.len / 2));
-}
-
 fn appendOverlayTexturedRect(batch: *TexturedOverlayBatch, p: *Pipe, x: f32, y: f32, w: f32, h: f32, tex_u0: f32, tex_v0: f32, tex_u1: f32, tex_v1: f32) void {
     if (w <= 0 or h <= 0) return;
     if (batch.len + 12 > batch.verts.len or batch.len + 12 > batch.tex.len) return;
@@ -1008,18 +1532,35 @@ fn appendOverlayTexturedRect(batch: *TexturedOverlayBatch, p: *Pipe, x: f32, y: 
 
 fn flushOverlayTextBatch(p: *Pipe, batch: *TexturedOverlayBatch, color: [4]f32) void {
     if (batch.len == 0 or p.overlay_font_texture == 0) return;
-    flushOverlayTextureBatch(p, batch, p.overlay_font_texture, color);
-}
-
-fn flushOverlayTextureBatch(p: *Pipe, batch: *TexturedOverlayBatch, texture: c.GLuint, color: [4]f32) void {
-    if (batch.len == 0 or texture == 0) return;
     c.glVertexAttribPointer(@intCast(p.overlay_text_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &batch.verts);
     c.glVertexAttribPointer(@intCast(p.overlay_text_tex_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &batch.tex);
     c.glActiveTexture(c.GL_TEXTURE0);
-    c.glBindTexture(c.GL_TEXTURE_2D, texture);
+    c.glBindTexture(c.GL_TEXTURE_2D, p.overlay_font_texture);
     c.glUniform1i(p.overlay_text_sampler_loc, 0);
     c.glUniform4f(p.overlay_text_color_loc, color[0], color[1], color[2], color[3]);
     c.glDrawArrays(c.GL_TRIANGLES, 0, @intCast(batch.len / 2));
+}
+
+fn flushWatermarkTexture(p: *Pipe, x: f32, y: f32, w: f32, h: f32) void {
+    if (p.watermark_texture == 0 or w <= 0 or h <= 0) return;
+    var q = Quad{};
+    buildQuadForCanvas(&q, x, y, w, h, 0, @floatFromInt(p.width), @floatFromInt(p.height));
+    c.glEnable(c.GL_BLEND);
+    c.glBlendFunc(c.GL_ONE, c.GL_ONE_MINUS_SRC_ALPHA);
+    c.glUseProgram(p.texture_program);
+    c.glEnableVertexAttribArray(@intCast(p.texture_pos_loc));
+    c.glEnableVertexAttribArray(@intCast(p.texture_tex_loc));
+    c.glVertexAttribPointer(@intCast(p.texture_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &q.verts);
+    c.glVertexAttribPointer(@intCast(p.texture_tex_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &q.tex);
+    c.glActiveTexture(c.GL_TEXTURE0);
+    c.glBindTexture(c.GL_TEXTURE_2D, p.watermark_texture);
+    c.glUniform1i(p.texture_sampler_loc, 0);
+    c.glDrawArrays(c.GL_TRIANGLE_STRIP, 0, 4);
+    c.glDisableVertexAttribArray(@intCast(p.texture_tex_loc));
+    c.glDisableVertexAttribArray(@intCast(p.texture_pos_loc));
+    c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
+    c.glDisable(c.GL_BLEND);
+    c.glUseProgram(p.program);
 }
 
 fn appendOverlayChar(batch: *TexturedOverlayBatch, p: *Pipe, ch: u8, x: f32, y: f32, scale: f32) void {
@@ -1037,68 +1578,146 @@ fn appendOverlayChar(batch: *TexturedOverlayBatch, p: *Pipe, ch: u8, x: f32, y: 
 fn rebuildOverlayGeometry(p: *Pipe, text: []const u8, second: i64, scale: f32, x: f32, y: f32) void {
     const r = &p.recording;
     if (r.overlay_geometry_second == second and r.overlay_geometry_width == p.width and r.overlay_geometry_height == p.height) return;
-    r.overlay_bg_batch.len = 0;
     r.overlay_shadow_text_batch.len = 0;
     r.overlay_text_batch.len = 0;
-
     var cursor = x;
     for (text) |ch| {
         appendOverlayChar(&r.overlay_shadow_text_batch, p, ch, cursor + 2.0 * scale, y + 2.0 * scale, scale);
         appendOverlayChar(&r.overlay_text_batch, p, ch, cursor, y, scale);
         cursor += overlayCharAdvance(ch, scale);
     }
-
     r.overlay_geometry_second = second;
     r.overlay_geometry_width = p.width;
     r.overlay_geometry_height = p.height;
 }
 
 fn drawOverlay(p: *Pipe) void {
-    if (!p.recording.recording) return;
-    const text = cachedOverlayTime(&p.recording);
-    const has_native_text = text.len > 0 and p.overlay_font_texture != 0;
-    if (has_native_text) {
-        const width_scale = @as(f32, @floatFromInt(p.width)) / 1280.0;
-        const height_scale = @as(f32, @floatFromInt(p.height)) / 800.0;
-        const scale = @max(@min(width_scale, height_scale), 0.25);
-        const x = 50.0 * width_scale;
-        const y = 40.0 * height_scale;
-        const second = @divTrunc(p.recording.overlay_wall_clock_ms, 1000);
-        rebuildOverlayGeometry(p, text, second, scale, x, y);
+    if (!p.recording.recording or !p.overlay_enabled) return;
+    if (p.watermark_texture == 0) return;
+    flushWatermarkTexture(p, p.watermark_x, p.watermark_y, @floatFromInt(p.watermark_width), @floatFromInt(p.watermark_height));
+}
+
+fn releaseWatermarkTextureLocked(p: *Pipe) void {
+    if (p.watermark_texture != 0) c.glDeleteTextures(1, &p.watermark_texture);
+    p.watermark_texture = 0;
+    p.watermark_width = 0;
+    p.watermark_height = 0;
+    p.watermark_x = 0;
+    p.watermark_y = 0;
+}
+
+fn copyWatermarkRows(pixels: ?*anyopaque, width: usize, height: usize, stride: usize) ?*anyopaque {
+    const row_bytes = width * 4;
+    const bytes = row_bytes * height;
+    const raw = malloc(bytes) orelse return null;
+    const src: [*]const u8 = @ptrCast(pixels orelse return null);
+    const dst: [*]u8 = @ptrCast(raw);
+    for (0..height) |row| {
+        @memcpy(dst[(row * row_bytes)..][0..row_bytes], src[(row * stride)..][0..row_bytes]);
     }
-    if (!has_native_text) return;
+    return raw;
+}
 
-    c.glEnable(c.GL_BLEND);
-    c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
+fn updateWatermarkBitmapLocked(env: [*c]c.JNIEnv, p: *Pipe, bitmap: c.jobject, x: c.jint, y: c.jint) bool {
+    if (bitmap == null) {
+        setErrorSlice("missing watermark bitmap");
+        return false;
+    }
+    var info: c.AndroidBitmapInfo = undefined;
+    if (c.AndroidBitmap_getInfo(env, bitmap, &info) != 0) {
+        setErrorSlice("AndroidBitmap_getInfo failed");
+        return false;
+    }
+    if (info.width == 0 or info.height == 0) {
+        setError("invalid watermark bitmap size {d}x{d}", .{ info.width, info.height });
+        return false;
+    }
+    if (info.format != c.ANDROID_BITMAP_FORMAT_RGBA_8888) {
+        setError("unsupported watermark bitmap format {d}", .{info.format});
+        return false;
+    }
 
-    c.glUseProgram(p.overlay_text_program);
-    c.glEnableVertexAttribArray(@intCast(p.overlay_text_pos_loc));
-    c.glEnableVertexAttribArray(@intCast(p.overlay_text_tex_loc));
-    flushOverlayTextBatch(p, &p.recording.overlay_shadow_text_batch, .{ 0.0, 0.0, 0.0, 0.65 });
-    flushOverlayTextBatch(p, &p.recording.overlay_text_batch, .{ 1.0, 1.0, 1.0, 1.0 });
+    var pixels: ?*anyopaque = null;
+    if (c.AndroidBitmap_lockPixels(env, bitmap, &pixels) != 0 or pixels == null) {
+        setErrorSlice("AndroidBitmap_lockPixels failed");
+        return false;
+    }
+    defer _ = c.AndroidBitmap_unlockPixels(env, bitmap);
 
-    c.glDisable(c.GL_BLEND);
-    c.glDisableVertexAttribArray(@intCast(p.overlay_text_tex_loc));
-    c.glDisableVertexAttribArray(@intCast(p.overlay_text_pos_loc));
-    c.glUseProgram(p.program);
+    const width: usize = @intCast(info.width);
+    const height: usize = @intCast(info.height);
+    const stride: usize = @intCast(info.stride);
+    const row_bytes = width * 4;
+    if (stride < row_bytes) {
+        setError("invalid watermark bitmap stride {d} rowBytes={d}", .{ stride, row_bytes });
+        return false;
+    }
+    const copied = if (stride == row_bytes) null else copyWatermarkRows(pixels, width, height, stride);
+    if (stride != row_bytes and copied == null) {
+        setError("watermark row copy allocation failed bytes={d}", .{row_bytes * height});
+        return false;
+    }
+    defer if (copied) |raw| free(raw);
+    const upload_pixels = copied orelse pixels;
+
+    if (!makePbufferCurrent(p)) return false;
+    if (p.watermark_texture == 0) {
+        c.glGenTextures(1, &p.watermark_texture);
+        if (p.watermark_texture == 0) {
+            setErrorSlice("watermark glGenTextures returned 0");
+            clearCurrent(p);
+            return false;
+        }
+        c.glBindTexture(c.GL_TEXTURE_2D, p.watermark_texture);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    } else {
+        c.glBindTexture(c.GL_TEXTURE_2D, p.watermark_texture);
+    }
+    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 4);
+    c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA, @intCast(info.width), @intCast(info.height), 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, upload_pixels);
+    if (glError("updateWatermarkBitmap")) |e| {
+        setErrorSlice(e);
+        clearCurrent(p);
+        return false;
+    }
+    p.watermark_width = @intCast(info.width);
+    p.watermark_height = @intCast(info.height);
+    p.watermark_x = @floatFromInt(x);
+    p.watermark_y = @floatFromInt(y);
+    clearCurrent(p);
+    return true;
+}
+
+fn latchInputTextureLocked(inp: *Input) bool {
+    inp.dirty_count += 1;
+    if (!updateSurfaceTexture(inp.surface_texture_native)) return false;
+    inp.frame_generation += 1;
+    inp.latched_generation = inp.frame_generation;
+    inp.dirty = false;
+    inp.has_latched_frame = true;
+    inp.update_count += 1;
+    return true;
 }
 
 fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
     if (index < 0 or index >= 4) return false;
     const i: usize = @intCast(index);
     if (p.input[i].surface_texture_native == null) return false;
-    if (p.preview_surface[i] == c.EGL_NO_SURFACE) { p.input[i].preview_drop_count += 1; return true; }
+    if (p.preview_surface[i] == c.EGL_NO_SURFACE) {
+        p.input[i].preview_drop_count += 1;
+        return true;
+    }
     const start = nowMs();
     if (!makeCurrent(p, p.preview_surface[i])) return false;
     _ = env;
-    if (!updateSurfaceTexture(p.input[i].surface_texture_native)) { clearCurrent(p); return false; }
-    p.input[i].dirty_count += 1;
-    p.input[i].frame_generation += 1;
-    p.input[i].latched_generation = p.input[i].frame_generation;
+    if (!latchInputTextureLocked(&p.input[i])) {
+        clearCurrent(p);
+        return false;
+    }
     p.input[i].preview_generation = p.input[i].frame_generation;
-    p.input[i].dirty = false;
-    p.input[i].has_latched_frame = true;
-    p.input[i].update_count += 1;
     if (!p.input[i].has_latched_frame) return true;
     var vw: i32 = if (p.preview_window[i]) |w| c.ANativeWindow_getWidth(w) else p.width;
     var vh: i32 = if (p.preview_window[i]) |w| c.ANativeWindow_getHeight(w) else p.height;
@@ -1110,7 +1729,11 @@ fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     beginDrawPass(p);
     drawQuadWithFisheye(p, i, &p.preview_quad[i], p.preview_apply_fisheye[i]);
-    if (CHECK_RENDER_GL_ERROR) if (glError("renderPreview")) |e| { setErrorSlice(e); clearCurrent(p); return false; };
+    if (CHECK_RENDER_GL_ERROR) if (glError("renderPreview")) |e| {
+        setErrorSlice(e);
+        clearCurrent(p);
+        return false;
+    };
     if (c.eglSwapBuffers(p.display, p.preview_surface[i]) == c.EGL_FALSE) {
         setErrorSlice(eglError("eglSwapBuffers preview failed"));
         clearCurrent(p);
@@ -1127,67 +1750,439 @@ fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
     return true;
 }
 
+fn renderPreviewFromLatchedLocked(p: *Pipe, index: i32) bool {
+    if (index < 0 or index >= 4) return false;
+    const i: usize = @intCast(index);
+    if (p.input[i].surface_texture_native == null or p.input[i].texture == 0 or !p.input[i].has_latched_frame) return false;
+    if (p.preview_surface[i] == c.EGL_NO_SURFACE) {
+        p.input[i].preview_drop_count += 1;
+        return true;
+    }
+    const start = nowMs();
+    if (!makeCurrent(p, p.preview_surface[i])) return false;
+    p.input[i].preview_generation = p.input[i].frame_generation;
+    var vw: i32 = if (p.preview_window[i]) |w| c.ANativeWindow_getWidth(w) else p.width;
+    var vh: i32 = if (p.preview_window[i]) |w| c.ANativeWindow_getHeight(w) else p.height;
+    if (vw <= 0) vw = p.width;
+    if (vh <= 0) vh = p.height;
+    if (p.preview_quad_width[i] != vw or p.preview_quad_height[i] != vh) updatePreviewLayout(p, index, vw, vh);
+    c.glViewport(0, 0, vw, vh);
+    c.glClearColor(0, 0, 0, 1);
+    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    beginDrawPass(p);
+    drawQuadWithFisheye(p, i, &p.preview_quad[i], p.preview_apply_fisheye[i]);
+    if (CHECK_RENDER_GL_ERROR) if (glError("renderPreviewFromLatched")) |e| {
+        setErrorSlice(e);
+        clearCurrent(p);
+        return false;
+    };
+    if (c.eglSwapBuffers(p.display, p.preview_surface[i]) == c.EGL_FALSE) {
+        setErrorSlice(eglError("eglSwapBuffers latched preview failed"));
+        clearCurrent(p);
+        p.input[i].preview_drop_count += 1;
+        return false;
+    }
+    const elapsed = nowMs() - start;
+    clearCurrent(p);
+    p.preview_render_count += 1;
+    p.input[i].preview_render_count += 1;
+    p.input[i].preview_swap_ms = elapsed;
+    p.input[i].last_preview_render_ms = nowMs();
+    if (elapsed >= 20 or @mod(p.input[i].preview_render_count, 120) == 0) logi("latched preview perf index={d} totalMs={d} renders={d} updates={d} drops={d}", .{ index, elapsed, p.input[i].preview_render_count, p.input[i].update_count, p.input[i].preview_drop_count });
+    return true;
+}
+
+fn latchAllInputsLocked(p: *Pipe) bool {
+    for (&p.input) |*inp| {
+        if (inp.surface_texture_native == null) continue;
+        if (!latchInputTextureLocked(inp)) return false;
+        inp.encoder_generation = inp.frame_generation;
+        inp.preview_generation = inp.frame_generation;
+    }
+    return true;
+}
+
+fn drawCompositeSceneLocked(p: *Pipe, width: i32, height: i32, include_overlay: bool) void {
+    c.glViewport(0, 0, width, height);
+    c.glClearColor(0, 0, 0, 1);
+    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    beginDrawPass(p);
+    drawQuad(p, 0, &p.encoder_quad[0]);
+    drawQuad(p, 1, &p.encoder_quad[1]);
+    drawQuad(p, 2, &p.encoder_quad[2]);
+    drawQuad(p, 3, &p.encoder_quad[3]);
+    if (include_overlay) drawOverlay(p);
+}
+
+fn drawTexture2DToCurrentSurfaceLocked(p: *Pipe, texture: c.GLuint, width: i32, height: i32) void {
+    const verts = [_]c.GLfloat{ -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0 };
+    const tex = [_]c.GLfloat{ 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0 };
+    c.glViewport(0, 0, width, height);
+    c.glClearColor(0, 0, 0, 1);
+    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    c.glUseProgram(p.texture_program);
+    c.glEnableVertexAttribArray(@intCast(p.texture_pos_loc));
+    c.glEnableVertexAttribArray(@intCast(p.texture_tex_loc));
+    c.glVertexAttribPointer(@intCast(p.texture_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &verts);
+    c.glVertexAttribPointer(@intCast(p.texture_tex_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &tex);
+    c.glActiveTexture(c.GL_TEXTURE0);
+    c.glBindTexture(c.GL_TEXTURE_2D, texture);
+    c.glUniform1i(p.texture_sampler_loc, 0);
+    c.glDrawArrays(c.GL_TRIANGLE_STRIP, 0, 4);
+    c.glDisableVertexAttribArray(@intCast(p.texture_tex_loc));
+    c.glDisableVertexAttribArray(@intCast(p.texture_pos_loc));
+}
+
+fn resetRecordingFrameQueueLocked(p: *Pipe) void {
+    for (&p.recording_frame_slots) |*slot| {
+        slot.ready = false;
+        slot.wall_clock_ms = 0;
+        slot.sequence = 0;
+    }
+    p.recording_frame_queue_head = 0;
+    p.recording_frame_queue_tail = 0;
+    p.recording_frame_queue_count = 0;
+    p.recording_frame_queue_next_capture_ms = 0;
+}
+
+fn releaseRecordingFrameQueueLocked(p: *Pipe) void {
+    for (&p.recording_frame_slots) |*slot| {
+        if (slot.framebuffer != 0) {
+            c.glDeleteFramebuffers(1, &slot.framebuffer);
+            slot.framebuffer = 0;
+        }
+        if (slot.texture != 0) {
+            c.glDeleteTextures(1, &slot.texture);
+            slot.texture = 0;
+        }
+        slot.ready = false;
+        slot.wall_clock_ms = 0;
+        slot.sequence = 0;
+    }
+    p.recording_frame_queue_width = 0;
+    p.recording_frame_queue_height = 0;
+    resetRecordingFrameQueueLocked(p);
+}
+
+fn ensureRecordingFrameQueueLocked(p: *Pipe, width: i32, height: i32) bool {
+    if (width <= 0 or height <= 0) return false;
+    if (p.recording_frame_queue_width != width or p.recording_frame_queue_height != height) {
+        releaseRecordingFrameQueueLocked(p);
+        p.recording_frame_queue_width = width;
+        p.recording_frame_queue_height = height;
+        p.recording_frame_queue_fbo_recreate_count += 1;
+    }
+    for (&p.recording_frame_slots) |*slot| {
+        if (slot.texture == 0) {
+            c.glGenTextures(1, &slot.texture);
+            if (slot.texture == 0) {
+                setErrorSlice("recording frame texture allocation failed");
+                return false;
+            }
+            c.glBindTexture(c.GL_TEXTURE_2D, slot.texture);
+            c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+            c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+            c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+            c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+            c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA, width, height, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, null);
+        }
+        if (slot.framebuffer == 0) {
+            c.glGenFramebuffers(1, &slot.framebuffer);
+            if (slot.framebuffer == 0) {
+                setErrorSlice("recording frame FBO allocation failed");
+                return false;
+            }
+        }
+        c.glBindFramebuffer(c.GL_FRAMEBUFFER, slot.framebuffer);
+        c.glFramebufferTexture2D(c.GL_FRAMEBUFFER, c.GL_COLOR_ATTACHMENT0, c.GL_TEXTURE_2D, slot.texture, 0);
+        if (c.glCheckFramebufferStatus(c.GL_FRAMEBUFFER) != c.GL_FRAMEBUFFER_COMPLETE) {
+            c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
+            setErrorSlice("recording frame FBO incomplete");
+            return false;
+        }
+    }
+    c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
+    if (glError("ensureRecordingFrameQueue")) |e| {
+        setErrorSlice(e);
+        return false;
+    }
+    return true;
+}
+
+fn recordingFrameCaptureDueLocked(p: *const Pipe, steady_ms: i64) bool {
+    if (!p.recording.recording or !p.recording.managed_native) return false;
+    if (p.encoder_surface == c.EGL_NO_SURFACE or p.encoder_window == null or p.encoder_generation == 0) return false;
+    if (p.recording_frame_queue_next_capture_ms <= 0) return true;
+    return steady_ms >= p.recording_frame_queue_next_capture_ms;
+}
+
+fn markRecordingFrameCaptureScheduledLocked(p: *Pipe, steady_ms: i64) void {
+    const fps = @max(p.recording.fps, 1);
+    const interval_ms: i64 = @max(@divTrunc(1000, fps), 1);
+    if (p.recording_frame_queue_next_capture_ms <= 0 or steady_ms - p.recording_frame_queue_next_capture_ms > interval_ms * 3) {
+        p.recording_frame_queue_next_capture_ms = steady_ms + interval_ms;
+    } else {
+        p.recording_frame_queue_next_capture_ms += interval_ms;
+    }
+}
+
+fn reserveRecordingFrameSlotLocked(p: *Pipe) usize {
+    if (p.recording_frame_queue_count >= RECORDING_FRAME_QUEUE_CAPACITY) {
+        const dropped = &p.recording_frame_slots[p.recording_frame_queue_head];
+        dropped.ready = false;
+        dropped.wall_clock_ms = 0;
+        p.recording_frame_queue_head = (p.recording_frame_queue_head + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
+        p.recording_frame_queue_count -= 1;
+        p.recording_frame_queue_drop_count += 1;
+        p.recording.dropped_frames += 1;
+    }
+    return p.recording_frame_queue_tail;
+}
+
+fn commitRecordingFrameSlotLocked(p: *Pipe, slot_index: usize, wall_clock_ms: i64) void {
+    var slot = &p.recording_frame_slots[slot_index];
+    p.recording_frame_queue_sequence += 1;
+    slot.ready = true;
+    slot.wall_clock_ms = wall_clock_ms;
+    slot.sequence = p.recording_frame_queue_sequence;
+    p.recording_frame_queue_tail = (slot_index + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
+    p.recording_frame_queue_count += 1;
+    p.recording_frame_queue_produced_count += 1;
+    p.recording_frame_queue_max_depth = @max(p.recording_frame_queue_max_depth, @as(i64, @intCast(p.recording_frame_queue_count)));
+    p.recording_worker_condition.broadcast(nativeIo());
+}
+
+fn produceRecordingFrameToQueueLocked(p: *Pipe, wall_clock_ms: i64, steady_ms: i64) ?c.GLuint {
+    p.recording.requested_frames += 1;
+    if (!ensureRecordingFrameQueueLocked(p, p.width, p.height)) {
+        p.recording.dropped_frames += 1;
+        return null;
+    }
+    const slot_index = reserveRecordingFrameSlotLocked(p);
+    const slot = &p.recording_frame_slots[slot_index];
+    slot.ready = false;
+    c.glBindFramebuffer(c.GL_FRAMEBUFFER, slot.framebuffer);
+    p.recording.overlay_wall_clock_ms = wall_clock_ms;
+    drawCompositeSceneLocked(p, p.width, p.height, false);
+    c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
+    if (CHECK_RENDER_GL_ERROR) if (glError("produceRecordingFrameToQueue")) |e| {
+        setErrorSlice(e);
+        p.recording.dropped_frames += 1;
+        return null;
+    };
+    commitRecordingFrameSlotLocked(p, slot_index, wall_clock_ms);
+    markRecordingFrameCaptureScheduledLocked(p, steady_ms);
+    return slot.texture;
+}
+
+fn recordingFrameQueueProducerActiveLocked(p: *const Pipe) bool {
+    return p.preview_worker_running and !p.preview_worker_stop and p.composite_preview_surface != c.EGL_NO_SURFACE and p.composite_preview_window != null;
+}
+
+fn renderQueuedRecordingFrameLocked(p: *Pipe) c.jlong {
+    if (p.recording_frame_queue_count == 0) return 0;
+    if (p.encoder_surface == c.EGL_NO_SURFACE or p.encoder_window == null or p.encoder_generation == 0) {
+        p.encoder_drop_count += 1;
+        p.no_surface_count += 1;
+        return TICK_DROPPED;
+    }
+    const slot_index = p.recording_frame_queue_head;
+    const slot = &p.recording_frame_slots[slot_index];
+    if (!slot.ready or slot.texture == 0) {
+        slot.ready = false;
+        p.recording_frame_queue_head = (p.recording_frame_queue_head + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
+        p.recording_frame_queue_count -= 1;
+        p.recording.dropped_frames += 1;
+        return TICK_DROPPED;
+    }
+
+    const start = nowMs();
+    const frame_wall_clock_ms = slot.wall_clock_ms;
+    if (!makeCurrent(p, p.encoder_surface)) return -1;
+    drawTexture2DToCurrentSurfaceLocked(p, slot.texture, p.width, p.height);
+    drawOverlay(p);
+    if (CHECK_RENDER_GL_ERROR) if (glError("renderQueuedRecordingFrame")) |e| {
+        setErrorSlice(e);
+        clearCurrent(p);
+        return -1;
+    };
+    if (g_presentation_time_android) |fnptr| {
+        const fps = @max(p.recording.fps, 1);
+        const min_step_ns = @max(@divTrunc(1_000_000_000, fps), 1000);
+        var pts = @divTrunc(p.encoder_frame_index * 1_000_000_000, fps);
+        if (pts <= p.recording.last_presentation_time_ns) pts = p.recording.last_presentation_time_ns + min_step_ns;
+        p.recording.last_presentation_time_ns = pts;
+        p.encoder_frame_index += 1;
+        _ = fnptr(p.display, p.encoder_surface, pts);
+    }
+    const ok = c.eglSwapBuffers(p.display, p.encoder_surface) != c.EGL_FALSE;
+    clearCurrent(p);
+    if (!ok) {
+        p.encoder_drop_count += 1;
+        setErrorSlice(eglError("eglSwapBuffers queued encoder failed"));
+        return -1;
+    }
+
+    var result: c.jlong = TICK_SHOULD_RENDER;
+    p.recording_frame_queue_head = (p.recording_frame_queue_head + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
+    p.recording_frame_queue_count -= 1;
+    slot.ready = false;
+    slot.wall_clock_ms = 0;
+    p.recording_frame_queue_consumed_count += 1;
+    p.recording.rendered_frames += 1;
+    p.encoder_render_count += 1;
+    p.render_count += 1;
+    p.last_render_ms = nowMs() - start;
+    p.recording.last_tick_steady_ms = nowMs();
+    if (!p.recording.segment_switch_pending and p.recording.next_segment_wall_clock_ms > 0 and frame_wall_clock_ms >= p.recording.next_segment_wall_clock_ms) {
+        const next_index = p.recording.segment_index + 1;
+        result |= TICK_SEGMENT_DUE;
+        result |= (@as(c.jlong, next_index) << TICK_NEXT_INDEX_SHIFT);
+    }
+    if (p.last_render_ms >= 16 or @mod(p.encoder_render_count, 120) == 0) {
+        logi("queued encoder perf copyMs={d} rendered={d} queue={d} produced={d} dropped={d}", .{ p.last_render_ms, p.encoder_render_count, p.recording_frame_queue_count, p.recording_frame_queue_produced_count, p.recording_frame_queue_drop_count });
+    }
+    return result;
+}
+
+fn renderCompositePreviewLocked(_: [*c]c.JNIEnv, p: *Pipe, update_inputs: bool) bool {
+    if (p.composite_preview_surface == c.EGL_NO_SURFACE or p.composite_preview_window == null) return true;
+    const start = nowMs();
+    var vw: i32 = if (p.composite_preview_window) |w| c.ANativeWindow_getWidth(w) else p.width;
+    var vh: i32 = if (p.composite_preview_window) |w| c.ANativeWindow_getHeight(w) else p.height;
+    if (vw <= 0) vw = p.width;
+    if (vh <= 0) vh = p.height;
+    const steady_ms = nowMs();
+    const wall_clock_ms = wallClockMs();
+    const capture_for_recording = recordingFrameCaptureDueLocked(p, steady_ms);
+    var queued_texture: c.GLuint = 0;
+    if (capture_for_recording) {
+        if (!makePbufferCurrent(p)) return false;
+        if (update_inputs and !latchAllInputsLocked(p)) {
+            c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
+            clearCurrent(p);
+            return false;
+        }
+        if (produceRecordingFrameToQueueLocked(p, wall_clock_ms, steady_ms)) |texture| {
+            queued_texture = texture;
+        } else {
+            p.recording_frame_queue_fallback_count += 1;
+        }
+    }
+
+    if (!makeCurrent(p, p.composite_preview_surface)) return false;
+    if (queued_texture != 0) {
+        drawTexture2DToCurrentSurfaceLocked(p, queued_texture, vw, vh);
+    } else {
+        if (update_inputs and !capture_for_recording and !latchAllInputsLocked(p)) {
+            clearCurrent(p);
+            return false;
+        }
+        drawCompositeSceneLocked(p, vw, vh, false);
+    }
+    if (CHECK_RENDER_GL_ERROR) if (glError("renderCompositePreview")) |e| {
+        setErrorSlice(e);
+        clearCurrent(p);
+        return false;
+    };
+    if (c.eglSwapBuffers(p.display, p.composite_preview_surface) == c.EGL_FALSE) {
+        setErrorSlice(eglError("eglSwapBuffers composite preview failed"));
+        clearCurrent(p);
+        p.encoder_drop_count += 1;
+        return false;
+    }
+    clearCurrent(p);
+    p.preview_render_count += 1;
+    p.last_render_ms = nowMs() - start;
+    if (p.last_render_ms >= 24 or @mod(p.preview_render_count, 120) == 0) {
+        logi("composite preview perf totalMs={d} renders={d} drops={d}", .{ p.last_render_ms, p.preview_render_count, p.dropped_count });
+    }
+    return true;
+}
+
 fn previewDelayMs(p: *const Pipe, input: *const Input) i64 {
     if (p.preview_min_interval_ms <= 0 or input.last_preview_render_ms <= 0) return 0;
     const remaining = p.preview_min_interval_ms - (nowMs() - input.last_preview_render_ms);
     return if (remaining > 0) remaining else 0;
 }
-fn floorToSegment(wall: i64, duration0: i64) i64 { const d = if (duration0 <= 0) 60000 else duration0; return wall - @mod(wall, d); }
-fn recordingTickIntervalMs(r: *const RecordingState) i64 { const fps = if (r.fps <= 0) 15 else r.fps; return @divTrunc(1000, fps); }
+fn floorToSegment(wall: i64, duration0: i64) i64 {
+    const d = if (duration0 <= 0) 60000 else duration0;
+    return wall - @mod(wall, d);
+}
+fn recordingTickIntervalMs(r: *const RecordingState) i64 {
+    const fps = if (r.fps <= 0) 15 else r.fps;
+    return @divTrunc(1000, fps);
+}
 
 fn requestEncoderRenderLocked(p: *Pipe) bool {
     p.encoder_signal_count += 1;
-    if (p.encoder_surface == c.EGL_NO_SURFACE or p.encoder_window == null or p.encoder_generation == 0) { p.encoder_drop_count += 1; p.no_surface_count += 1; return false; }
-    if (p.encoder_pending) { p.encoder_coalesced_count += 1; return false; }
+    if (p.encoder_surface == c.EGL_NO_SURFACE or p.encoder_window == null or p.encoder_generation == 0) {
+        p.encoder_drop_count += 1;
+        p.no_surface_count += 1;
+        return false;
+    }
+    if (p.encoder_pending) {
+        p.encoder_coalesced_count += 1;
+        return false;
+    }
     p.encoder_pending = true;
     p.encoder_scheduled_count += 1;
     return true;
 }
-fn hasDirtyInput(p: *const Pipe) bool { for (p.input) |inp| if (inp.surface_texture_native != null and inp.encoder_generation != inp.frame_generation) return true; return false; }
+fn hasDirtyInput(p: *const Pipe) bool {
+    for (p.input) |inp| if (inp.surface_texture_native != null and inp.encoder_generation != inp.frame_generation) return true;
+    return false;
+}
 fn updateDirtyInputsLocked(env: [*c]c.JNIEnv, p: *Pipe) bool {
-    for (&p.input) |*inp| {
+    for (&p.input, 0..) |*inp, idx| {
         const force_recording_latch = p.recording.recording;
+        const preview_latches_input = p.preview_worker_running and p.preview_surface[idx] != c.EGL_NO_SURFACE and inp.has_latched_frame;
+        if (inp.surface_texture_native != null and preview_latches_input) {
+            inp.encoder_generation = inp.frame_generation;
+            continue;
+        }
         if (inp.surface_texture_native != null and (force_recording_latch or inp.encoder_generation != inp.frame_generation)) {
-            if (force_recording_latch or inp.latched_generation != inp.frame_generation) {
-                inp.dirty_count += 1;
-                _ = env;
-                if (!updateSurfaceTexture(inp.surface_texture_native)) return false;
-                inp.latched_generation = inp.frame_generation;
-                inp.dirty = false;
-                inp.has_latched_frame = true;
-                inp.update_count += 1;
-            }
+            _ = env;
+            if (!latchInputTextureLocked(inp)) return false;
             inp.encoder_generation = inp.frame_generation;
         }
     }
     return true;
 }
 
-fn renderEncoderLocked(env: [*c]c.JNIEnv, p: *Pipe, require_dirty: bool, rendered: ?*bool) bool {
+fn renderEncoderLocked(env: [*c]c.JNIEnv, p: *Pipe, require_dirty: bool, rendered: ?*bool, thumbnail_capture: ?*ThumbnailCapture) bool {
     if (rendered) |r| r.* = false;
-    if (p.encoder_surface == c.EGL_NO_SURFACE or p.encoder_window == null or p.encoder_generation == 0) { p.encoder_drop_count += 1; p.no_surface_count += 1; return true; }
-    if (require_dirty and !hasDirtyInput(p)) { p.encoder_drop_count += 1; return true; }
+    if (p.encoder_surface == c.EGL_NO_SURFACE or p.encoder_window == null or p.encoder_generation == 0) {
+        p.encoder_drop_count += 1;
+        p.no_surface_count += 1;
+        return true;
+    }
+    if (require_dirty and !hasDirtyInput(p)) {
+        p.encoder_drop_count += 1;
+        return true;
+    }
     const start = nowMs();
     if (!makeCurrent(p, p.encoder_surface)) return false;
     const update_start = nowMs();
-    if (!updateDirtyInputsLocked(env, p)) { clearCurrent(p); return false; }
+    if (!updateDirtyInputsLocked(env, p)) {
+        clearCurrent(p);
+        return false;
+    }
     const update_ms = nowMs() - update_start;
     p.render_count += 1;
-    c.glViewport(0, 0, p.width, p.height);
-    c.glClearColor(0, 0, 0, 1);
-    c.glClear(c.GL_COLOR_BUFFER_BIT);
-    beginDrawPass(p);
-    drawQuad(p, 0, &p.encoder_quad[0]); drawQuad(p, 1, &p.encoder_quad[1]); drawQuad(p, 2, &p.encoder_quad[2]); drawQuad(p, 3, &p.encoder_quad[3]);
-    drawOverlay(p);
-    writeFirstFrameThumbnailBmpLocked(p);
-    if (CHECK_RENDER_GL_ERROR) if (glError("renderEncoder")) |e| { setErrorSlice(e); clearCurrent(p); return false; };
+    drawCompositeSceneLocked(p, p.width, p.height, true);
+    if (thumbnail_capture) |capture| captureFirstFrameThumbnailLocked(p, capture);
+    if (CHECK_RENDER_GL_ERROR) if (glError("renderEncoder")) |e| {
+        setErrorSlice(e);
+        clearCurrent(p);
+        return false;
+    };
     if (g_presentation_time_android) |fnptr| {
         var pts: i64 = undefined;
         if (p.recording.recording) {
-            const start_ms = if (p.recording.encoder_segment_start_steady_ms > 0) p.recording.encoder_segment_start_steady_ms else nowMs();
-            const elapsed = nowMs() - start_ms;
-            pts = if (elapsed > 0) elapsed * 1_000_000 else 0;
-            if (pts <= p.recording.last_presentation_time_ns) pts = p.recording.last_presentation_time_ns + 1000;
+            const fps = if (p.recording.fps <= 0) 15 else p.recording.fps;
+            pts = @divTrunc(p.encoder_frame_index * 1_000_000_000, fps);
+            if (pts <= p.recording.last_presentation_time_ns) pts = p.recording.last_presentation_time_ns + @max(@divTrunc(1_000_000_000, fps), 1000);
             p.recording.last_presentation_time_ns = pts;
             p.encoder_frame_index += 1;
         } else {
@@ -1223,39 +2218,169 @@ fn getPipe(handle: c.jlong) ?*Pipe {
     return null;
 }
 
-fn getNativeWriter(handle: c.jlong) ?*NativeSegmentWriter {
-    for (0..MAX_NATIVE_WRITERS) |i| if (g_native_writer_used[i] and g_native_writers[i].handle == handle) return &g_native_writers[i];
-    setError("invalid native writer handle", .{});
-    return null;
-}
-
 fn getNativeCamera(handle: c.jlong) ?*NativeCameraPreview {
     for (0..MAX_NATIVE_CAMERAS) |i| if (g_native_camera_used[i] and g_native_cameras[i].handle == handle) return &g_native_cameras[i];
     setError("invalid native camera handle", .{});
     return null;
 }
 
-fn releaseNativeCameraResources(cam: *NativeCameraPreview) void {
+fn storeMetricsCache(handle: c.jlong, values: *const [METRICS_SNAPSHOT_LEN]c.jlong) void {
+    lockMetrics();
+    defer unlockMetrics();
+    var slot: ?usize = null;
+    for (0..MAX_PIPES) |i| {
+        if (g_metrics_cache_handles[i] == handle) {
+            slot = i;
+            break;
+        }
+        if (slot == null and g_metrics_cache_handles[i] == 0) slot = i;
+    }
+    const index = slot orelse 0;
+    g_metrics_cache_handles[index] = handle;
+    g_metrics_cache_values[index] = values.*;
+}
+
+fn loadMetricsCache(handle: c.jlong, values: *[METRICS_SNAPSHOT_LEN]c.jlong) bool {
+    lockMetrics();
+    defer unlockMetrics();
+    for (0..MAX_PIPES) |i| {
+        if (g_metrics_cache_handles[i] != handle) continue;
+        values.* = g_metrics_cache_values[i];
+        return true;
+    }
+    return false;
+}
+
+fn clearMetricsCache(handle: c.jlong) void {
+    lockMetrics();
+    defer unlockMetrics();
+    for (0..MAX_PIPES) |i| {
+        if (g_metrics_cache_handles[i] != handle) continue;
+        g_metrics_cache_handles[i] = 0;
+        g_metrics_cache_values[i] = [_]c.jlong{0} ** METRICS_SNAPSHOT_LEN;
+    }
+}
+
+fn lockNativeCamera(cam: *NativeCameraPreview) void {
+    cam.lock.lockUncancelable(nativeIo());
+}
+
+fn unlockNativeCamera(cam: *NativeCameraPreview) void {
+    cam.lock.unlock(nativeIo());
+}
+
+fn lockNativeCameraForHandle(handle: c.jlong) ?*NativeCameraPreview {
+    lockGlobal();
+    var cam: ?*NativeCameraPreview = null;
+    for (0..MAX_NATIVE_CAMERAS) |i| {
+        if (!g_native_camera_used[i] or g_native_cameras[i].handle != handle) continue;
+        cam = &g_native_cameras[i];
+        break;
+    }
+    if (cam) |camera| lockNativeCamera(camera);
+    unlockGlobal();
+    if (cam == null) setError("invalid native camera handle", .{});
+    return cam;
+}
+
+fn releaseNativeCameraSessionLocked(cam: *NativeCameraPreview) void {
     if (cam.session) |session| {
         _ = c.ACameraCaptureSession_stopRepeating(session);
+        _ = c.ACameraCaptureSession_abortCaptures(session);
+        sleepMs(120);
         c.ACameraCaptureSession_close(session);
+        sleepMs(40);
     }
     cam.session = null;
     if (cam.request) |request| c.ACaptureRequest_free(request);
     cam.request = null;
+    if (cam.recording_target) |target| c.ACameraOutputTarget_free(target);
+    cam.recording_target = null;
     if (cam.target) |target| c.ACameraOutputTarget_free(target);
     cam.target = null;
+    if (cam.recording_output) |output| c.ACaptureSessionOutput_free(output);
+    cam.recording_output = null;
     if (cam.output) |output| c.ACaptureSessionOutput_free(output);
     cam.output = null;
     if (cam.outputs) |outputs| c.ACaptureSessionOutputContainer_free(outputs);
     cam.outputs = null;
+    cam.sequence_id = -1;
+}
+
+fn detachNativeCameraRecordingWindowLocked(cam: *NativeCameraPreview) void {
+    const surface = cam.recording_egl_surface;
+    cam.recording_egl_surface = c.EGL_NO_SURFACE;
+    if (surface != c.EGL_NO_SURFACE and cam.pipe_handle != 0) {
+        if (lockPipeForHandle(cam.pipe_handle)) |p| {
+            if (p.current_surface == surface) clearCurrent(p);
+            if (p.display != c.EGL_NO_DISPLAY) _ = c.eglDestroySurface(p.display, surface);
+            unlockPipe(p);
+        }
+    }
+    if (cam.recording_window) |window| c.ANativeWindow_release(window);
+    cam.recording_window = null;
+    cam.recording_frame_index = 0;
+    cam.recording_last_presentation_time_ns = -1;
+}
+
+fn configureNativeCameraSessionLocked(cam: *NativeCameraPreview, record: bool) bool {
+    if (cam.device == null or cam.window == null) return false;
+    _ = record;
+    releaseNativeCameraSessionLocked(cam);
+    var status = c.ACaptureSessionOutputContainer_create(&cam.outputs);
+    if (status != c.ACAMERA_OK or cam.outputs == null) {
+        setError("ACaptureSessionOutputContainer_create failed status={d}", .{status});
+        return false;
+    }
+    status = c.ACaptureSessionOutput_create(cam.window.?, &cam.output);
+    if (status != c.ACAMERA_OK or cam.output == null) {
+        setError("ACaptureSessionOutput_create preview failed status={d}", .{status});
+        return false;
+    }
+    status = c.ACaptureSessionOutputContainer_add(cam.outputs.?, cam.output.?);
+    if (status != c.ACAMERA_OK) {
+        setError("ACaptureSessionOutputContainer_add preview failed status={d}", .{status});
+        return false;
+    }
+    status = c.ACameraDevice_createCaptureRequest(cam.device.?, c.TEMPLATE_PREVIEW, &cam.request);
+    if (status != c.ACAMERA_OK or cam.request == null) {
+        setError("ACameraDevice_createCaptureRequest failed status={d}", .{status});
+        return false;
+    }
+    status = c.ACameraOutputTarget_create(cam.window.?, &cam.target);
+    if (status != c.ACAMERA_OK or cam.target == null) {
+        setError("ACameraOutputTarget_create preview failed status={d}", .{status});
+        return false;
+    }
+    status = c.ACaptureRequest_addTarget(cam.request.?, cam.target.?);
+    if (status != c.ACAMERA_OK) {
+        setError("ACaptureRequest_addTarget preview failed status={d}", .{status});
+        return false;
+    }
+    status = c.ACameraDevice_createCaptureSession(cam.device.?, cam.outputs.?, &g_native_camera_session_callbacks, &cam.session);
+    if (status != c.ACAMERA_OK or cam.session == null) {
+        setError("ACameraDevice_createCaptureSession failed status={d}", .{status});
+        return false;
+    }
+    var request_array = [_]?*c.ACaptureRequest{cam.request.?};
+    status = c.ACameraCaptureSession_setRepeatingRequest(cam.session.?, &g_native_camera_capture_callbacks, 1, @ptrCast(&request_array), &cam.sequence_id);
+    if (status != c.ACAMERA_OK) {
+        setError("ACameraCaptureSession_setRepeatingRequest failed status={d}", .{status});
+        return false;
+    }
+    logi("NDK camera session configured singleStream handle={d}", .{cam.handle});
+    return true;
+}
+
+fn releaseNativeCameraResources(cam: *NativeCameraPreview) void {
+    detachNativeCameraRecordingWindowLocked(cam);
+    releaseNativeCameraSessionLocked(cam);
     if (cam.device) |device| _ = c.ACameraDevice_close(device);
     cam.device = null;
     if (cam.window) |window| c.ANativeWindow_release(window);
     cam.window = null;
     if (cam.manager) |manager| c.ACameraManager_delete(manager);
     cam.manager = null;
-    cam.sequence_id = -1;
 }
 
 fn onNativeCameraDisconnected(_: ?*anyopaque, _: ?*c.ACameraDevice) callconv(.c) void {
@@ -1263,121 +2388,50 @@ fn onNativeCameraDisconnected(_: ?*anyopaque, _: ?*c.ACameraDevice) callconv(.c)
 }
 
 fn onNativeCameraError(_: ?*anyopaque, _: ?*c.ACameraDevice, err_code: c_int) callconv(.c) void {
-    setError("NDK camera error={d}", .{err_code});
+    loge("NDK camera error={d}", .{err_code});
 }
 
-fn onNativeSessionClosed(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void { logd("NDK camera session closed", .{}); }
-fn onNativeSessionReady(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void { logd("NDK camera session ready", .{}); }
-fn onNativeSessionActive(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void { logd("NDK camera session active", .{}); }
-
-fn releaseNativeWriterResources(w: *NativeSegmentWriter) void {
-    if (w.muxer) |muxer| {
-        if (w.muxer_started) _ = c.AMediaMuxer_stop(muxer);
-        _ = c.AMediaMuxer_delete(muxer);
-    }
-    if (w.codec) |codec| {
-        if (w.started) _ = c.AMediaCodec_stop(codec);
-        _ = c.AMediaCodec_delete(codec);
-    }
-    if (w.input_window) |window| c.ANativeWindow_release(window);
-    if (w.fd >= 0) _ = close(w.fd);
-    w.* = NativeSegmentWriter{};
+fn onNativeSessionClosed(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void {
+    logd("NDK camera session closed", .{});
+}
+fn onNativeSessionReady(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void {
+    logd("NDK camera session ready", .{});
+}
+fn onNativeSessionActive(_: ?*anyopaque, _: ?*c.ACameraCaptureSession) callconv(.c) void {
+    logd("NDK camera session active", .{});
 }
 
-fn stopNativeWriterLocked(w: *NativeSegmentWriter, writer_handle: c.jlong) bool {
-    const lock_wait_total = w.writer_lock_wait_total_ms;
-    const lock_wait_max = w.writer_lock_wait_max_ms;
-    const drain_calls = w.drain_calls;
-    const drain_samples = w.drain_samples;
-    const drain_total = w.drain_total_ms;
-    const drain_max = w.drain_max_ms;
-    const muxer_write_total = w.muxer_write_total_ms;
-    const muxer_write_max = w.muxer_write_max_ms;
-    if (w.codec) |codec| {
-        if (w.started) {
-            _ = c.AMediaCodec_signalEndOfInputStream(codec);
-            _ = drainNativeWriterLocked(w, 10_000);
-            _ = c.AMediaCodec_stop(codec);
-            w.started = false;
-        }
-    }
-    if (w.muxer) |muxer| {
-        if (w.muxer_started) _ = c.AMediaMuxer_stop(muxer);
-        _ = c.AMediaMuxer_delete(muxer);
-        w.muxer = null;
-        w.muxer_started = false;
-        w.track_index = -1;
-    }
-    if (w.fd >= 0) {
-        _ = close(w.fd);
-        w.fd = -1;
-    }
-    logi("native writer perf handle={d} lockWaitTotalMs={d} lockWaitMaxMs={d} drainCalls={d} samples={d} drainTotalMs={d} drainMaxMs={d} muxWriteTotalMs={d} muxWriteMaxMs={d}", .{ writer_handle, lock_wait_total, lock_wait_max, drain_calls, drain_samples, drain_total, drain_max, muxer_write_total, muxer_write_max });
-    return true;
-}
+fn onNativeCaptureStarted(_: ?*anyopaque, _: ?*c.ACameraCaptureSession, _: ?*const c.ACaptureRequest, _: i64) callconv(.c) void {}
+fn onNativeCaptureProgressed(_: ?*anyopaque, _: ?*c.ACameraCaptureSession, _: ?*c.ACaptureRequest, _: ?*const c.ACameraMetadata) callconv(.c) void {}
+fn onNativeCaptureCompleted(_: ?*anyopaque, _: ?*c.ACameraCaptureSession, _: ?*c.ACaptureRequest, _: ?*const c.ACameraMetadata) callconv(.c) void {}
+fn onNativeCaptureFailed(_: ?*anyopaque, _: ?*c.ACameraCaptureSession, _: ?*c.ACaptureRequest, _: ?*c.ACameraCaptureFailure) callconv(.c) void {}
+fn onNativeCaptureSequenceCompleted(_: ?*anyopaque, _: ?*c.ACameraCaptureSession, _: c_int, _: i64) callconv(.c) void {}
+fn onNativeCaptureSequenceAborted(_: ?*anyopaque, _: ?*c.ACameraCaptureSession, _: c_int) callconv(.c) void {}
+fn onNativeCaptureBufferLost(_: ?*anyopaque, _: ?*c.ACameraCaptureSession, _: ?*c.ACaptureRequest, _: ?*c.ANativeWindow, _: i64) callconv(.c) void {}
 
-fn drainNativeWriterLocked(w: *NativeSegmentWriter, timeout_us: c.jlong) c.jlong {
-    const codec = w.codec orelse return -1;
-    const drain_start_ms = nowMs();
-    w.drain_calls += 1;
-    defer {
-        const drain_ms = nowMs() - drain_start_ms;
-        w.drain_total_ms += drain_ms;
-        if (drain_ms > w.drain_max_ms) w.drain_max_ms = drain_ms;
-    }
-    var info: c.AMediaCodecBufferInfo = undefined;
-    var drained: c.jlong = 0;
-    while (true) {
-        const index = c.AMediaCodec_dequeueOutputBuffer(codec, &info, timeout_us);
-        if (index >= 0) {
-            defer _ = c.AMediaCodec_releaseOutputBuffer(codec, @intCast(index), false);
-            const buffer = c.AMediaCodec_getOutputBuffer(codec, @intCast(index), null);
-            if (buffer != null and w.muxer != null and w.muxer_started and w.track_index >= 0 and info.size > 0 and (info.flags & c.AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                const write_start_ms = nowMs();
-                const status = c.AMediaMuxer_writeSampleData(w.muxer.?, @intCast(w.track_index), buffer, &info);
-                const write_ms = nowMs() - write_start_ms;
-                w.muxer_write_total_ms += write_ms;
-                if (write_ms > w.muxer_write_max_ms) w.muxer_write_max_ms = write_ms;
-                if (status != c.AMEDIA_OK) {
-                    setError("AMediaMuxer_writeSampleData failed status={d}", .{status});
-                    return -1;
-                }
-                drained += 1;
-                w.drain_samples += 1;
-            }
-            if ((info.flags & c.AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0) return drained;
-            continue;
-        }
-        if (index == c.AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
-            if (w.muxer == null) {
-                setError("output format changed before muxer", .{});
-                return -1;
-            }
-            if (!w.muxer_started) {
-                const out_format = c.AMediaCodec_getOutputFormat(codec) orelse {
-                    setError("AMediaCodec_getOutputFormat failed", .{});
-                    return -1;
-                };
-                defer _ = c.AMediaFormat_delete(out_format);
-                const track = c.AMediaMuxer_addTrack(w.muxer.?, out_format);
-                if (track < 0) {
-                    setError("AMediaMuxer_addTrack failed track={d}", .{track});
-                    return -1;
-                }
-                const start_status = c.AMediaMuxer_start(w.muxer.?);
-                if (start_status != c.AMEDIA_OK) {
-                    setError("AMediaMuxer_start failed status={d}", .{start_status});
-                    return -1;
-                }
-                w.track_index = @intCast(track);
-                w.muxer_started = true;
-            }
-            continue;
-        }
-        if (index == c.AMEDIA_ERROR_UNKNOWN) return -1;
-        return drained;
-    }
-}
+var g_native_camera_device_callbacks = c.ACameraDevice_StateCallbacks{
+    .context = null,
+    .onDisconnected = onNativeCameraDisconnected,
+    .onError = onNativeCameraError,
+};
+
+var g_native_camera_session_callbacks = c.ACameraCaptureSession_stateCallbacks{
+    .context = null,
+    .onClosed = onNativeSessionClosed,
+    .onReady = onNativeSessionReady,
+    .onActive = onNativeSessionActive,
+};
+
+var g_native_camera_capture_callbacks = c.ACameraCaptureSession_captureCallbacks{
+    .context = null,
+    .onCaptureStarted = onNativeCaptureStarted,
+    .onCaptureProgressed = onNativeCaptureProgressed,
+    .onCaptureCompleted = onNativeCaptureCompleted,
+    .onCaptureFailed = onNativeCaptureFailed,
+    .onCaptureSequenceCompleted = onNativeCaptureSequenceCompleted,
+    .onCaptureSequenceAborted = onNativeCaptureSequenceAborted,
+    .onCaptureBufferLost = onNativeCaptureBufferLost,
+};
 
 fn selectVideoTrackNative(extractor: *c.AMediaExtractor) ?usize {
     const count = c.AMediaExtractor_getTrackCount(extractor);
@@ -1414,6 +2468,13 @@ fn closeMuxer(muxer: ?*c.AMediaMuxer, started: bool) bool {
         return ok;
     }
     return false;
+}
+
+fn fileExistsNative(path: [*:0]const u8) bool {
+    const fd = open(path, O_RDONLY_ANDROID, 0);
+    if (fd < 0) return false;
+    _ = close(fd);
+    return true;
 }
 
 fn extractEmergencyClipNative(output_path: [*c]const u8, clip_start_ms: i64, clip_end_ms: i64, source_paths: [*]const [*c]const u8, source_start_ms: [*]const c.jlong, source_end_ms: [*]const c.jlong, count: usize) c.jlong {
@@ -1568,13 +2629,25 @@ fn resetInput(env: ?[*c]c.JNIEnv, p: *Pipe, index: usize, delete_texture: bool) 
     inp.encoder_generation = 0;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getGlesSummary(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, "GLES/OES Zig native compositor"); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getGlesSummary(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring {
+    return newString(env, "GLES/OES Zig native compositor");
+}
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeConfig(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray) callconv(.c) c.jboolean {
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
-    p.width = width; p.height = height; p.side_left_rotation = side_left_rotation; p.side_right_rotation = side_right_rotation; p.layout_mode = layout_mode;
-    if (preview_fps <= 0) { p.preview_max_fps = 0; p.preview_min_interval_ms = 0; } else { p.preview_max_fps = @min(@max(preview_fps, 1), 120); p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps); }
+    p.width = width;
+    p.height = height;
+    p.side_left_rotation = side_left_rotation;
+    p.side_right_rotation = side_right_rotation;
+    p.layout_mode = layout_mode;
+    if (preview_fps <= 0) {
+        p.preview_max_fps = 0;
+        p.preview_min_interval_ms = 0;
+    } else {
+        p.preview_max_fps = @min(@max(preview_fps, 1), 120);
+        p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps);
+    }
     p.encoder_fps = @min(@max(encoder_fps, 1), 120);
     if (fisheye_enabled != null and k1 != null and k2 != null and zoom != null and center_x != null and center_y != null and getArrayLen(env, fisheye_enabled) >= 4 and getArrayLen(env, k1) >= 4 and getArrayLen(env, k2) >= 4 and getArrayLen(env, zoom) >= 4 and getArrayLen(env, center_x) >= 4 and getArrayLen(env, center_y) >= 4) {
         const enabled = env.*[0].GetBooleanArrayElements.?(env, fisheye_enabled, null);
@@ -1584,7 +2657,14 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeCon
         const cx = env.*[0].GetFloatArrayElements.?(env, center_x, null);
         const cy = env.*[0].GetFloatArrayElements.?(env, center_y, null);
         if (enabled != null and k1v != null and k2v != null and zoomv != null and cx != null and cy != null) {
-            for (0..4) |i| { p.fisheye_enabled[i] = enabled[i] == JNI_TRUE; p.fisheye_k1[i] = k1v[i]; p.fisheye_k2[i] = k2v[i]; p.fisheye_zoom[i] = if (zoomv[i] <= 0.01) 1.0 else zoomv[i]; p.fisheye_center_x[i] = cx[i]; p.fisheye_center_y[i] = cy[i]; }
+            for (0..4) |i| {
+                p.fisheye_enabled[i] = enabled[i] == JNI_TRUE;
+                p.fisheye_k1[i] = k1v[i];
+                p.fisheye_k2[i] = k2v[i];
+                p.fisheye_zoom[i] = if (zoomv[i] <= 0.01) 1.0 else zoomv[i];
+                p.fisheye_center_x[i] = cx[i];
+                p.fisheye_center_y[i] = cy[i];
+            }
         }
         if (enabled != null) env.*[0].ReleaseBooleanArrayElements.?(env, fisheye_enabled, enabled, c.JNI_ABORT);
         if (k1v != null) env.*[0].ReleaseFloatArrayElements.?(env, k1, k1v, c.JNI_ABORT);
@@ -1599,96 +2679,231 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeCon
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setPreviewMaxFps(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); if (fps <= 0) { p.preview_max_fps = 0; p.preview_min_interval_ms = 0; } else { p.preview_max_fps = @min(@max(fps, 1), 120); p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps); } logd("preview max fps={d} minIntervalMs={d}", .{ p.preview_max_fps, p.preview_min_interval_ms }); return JNI_TRUE; }
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong) callconv(.c) c.jlong { const p = lockPipeForHandle(handle) orelse return 0; defer unlockPipe(p); p.recording.recording = true; p.recording.generation += 1; p.recording.fps = @min(@max(fps, 1), 120); p.encoder_fps = p.recording.fps; p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms; p.recording.segment_index = 0; p.recording.pending_segment_index = 0; p.recording.segment_switch_pending = false; p.recording.pending_segment_wall_clock_ms = 0; p.recording.requested_frames = 0; p.recording.rendered_frames = 0; p.recording.dropped_frames = 0; p.recording.last_tick_steady_ms = 0; p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; resetOverlayCache(&p.recording, wall_clock_ms); p.encoder_signal_count = 0; p.encoder_scheduled_count = 0; p.encoder_coalesced_count = 0; const first = floorToSegment(wall_clock_ms, p.recording.segment_duration_ms); p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms; p.encoder_pending = false; return first; }
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopRecordingSession(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); p.recording.recording = false; p.recording.segment_switch_pending = false; resetOverlayCache(&p.recording, 0); p.recording.generation += 1; p.encoder_pending = false; return JNI_TRUE; }
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setRecordingThumbnailPath(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, path: c.jstring) callconv(.c) c.jboolean {
-    if (path == null) return JNI_FALSE;
-    const chars = env.*[0].GetStringUTFChars.?(env, path, null) orelse return JNI_FALSE;
-    defer env.*[0].ReleaseStringUTFChars.?(env, path, chars);
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setPreviewMaxFps(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean {
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
-    if (!copyCStringToBuffer(&p.recording.thumbnail_path, chars)) {
-        setError("thumbnail path too long", .{});
-        return JNI_FALSE;
+    if (fps <= 0) {
+        p.preview_max_fps = 0;
+        p.preview_min_interval_ms = 0;
+    } else {
+        p.preview_max_fps = @min(@max(fps, 1), 120);
+        p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps);
     }
-    p.recording.thumbnail_path_set = true;
-    p.recording.thumbnail_written = false;
+    logd("preview max fps={d} minIntervalMs={d}", .{ p.preview_max_fps, p.preview_min_interval_ms });
     return JNI_TRUE;
 }
 
-fn recordingTickRenderAndDrainInternal(env: [*c]c.JNIEnv, handle: c.jlong, writer_handle: c.jlong, wall_clock_ms: c.jlong, timeout_us: c.jlong) c.jlong {
+fn startRecordingSessionNative(handle: c.jlong, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong, align_to_wall_clock_segment: bool) c.jlong {
+    const p = lockPipeForHandle(handle) orelse return 0;
+    defer unlockPipe(p);
+    if (p.releasing) return 0;
+    p.recording.recording = true;
+    p.recording.generation += 1;
+    p.recording.fps = @min(@max(fps, 1), 120);
+    p.encoder_fps = p.recording.fps;
+    p.recording.segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms;
+    p.recording.segment_index = 0;
+    p.recording.pending_segment_index = 0;
+    p.recording.segment_switch_pending = false;
+    p.recording.pending_segment_wall_clock_ms = 0;
+    p.recording.requested_frames = 0;
+    p.recording.rendered_frames = 0;
+    p.recording.dropped_frames = 0;
+    p.recording.encoded_samples = 0;
+    p.recording.last_tick_steady_ms = 0;
+    p.recording.encoder_segment_start_steady_ms = nowMs();
+    p.recording.last_presentation_time_ns = -1;
+    resetOverlayCache(&p.recording, wall_clock_ms);
+    resetRecordingFrameQueueLocked(p);
+    p.recording_frame_queue_produced_count = 0;
+    p.recording_frame_queue_consumed_count = 0;
+    p.recording_frame_queue_drop_count = 0;
+    p.recording_frame_queue_max_depth = 0;
+    p.recording_frame_queue_fallback_count = 0;
+    p.recording_frame_queue_fbo_recreate_count = 0;
+    p.encoder_signal_count = 0;
+    p.encoder_scheduled_count = 0;
+    p.encoder_coalesced_count = 0;
+    const first = if (align_to_wall_clock_segment) floorToSegment(wall_clock_ms, p.recording.segment_duration_ms) else wall_clock_ms;
+    p.recording.next_segment_wall_clock_ms = first + p.recording.segment_duration_ms;
+    p.encoder_pending = false;
+    return first;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startManagedRecording(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, output_dir: c.jstring, suffix: c.jstring, width: c.jint, height: c.jint, bitrate: c.jint, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong, reserved_bytes: c.jlong, available_bytes: c.jlong) callconv(.c) c.jboolean {
+    if (output_dir == null or suffix == null) return JNI_FALSE;
+    if (lockPipeForHandle(handle)) |p| {
+        defer unlockPipe(p);
+        if (p.releasing) return JNI_FALSE;
+    } else return JNI_FALSE;
+    const dir_chars = env.*[0].GetStringUTFChars.?(env, output_dir, null) orelse return JNI_FALSE;
+    defer env.*[0].ReleaseStringUTFChars.?(env, output_dir, dir_chars);
+    const suffix_chars = env.*[0].GetStringUTFChars.?(env, suffix, null) orelse return JNI_FALSE;
+    defer env.*[0].ReleaseStringUTFChars.?(env, suffix, suffix_chars);
+    _ = ensureSegmentCacheCallback(env);
+    var config: ManagedSegmentConfig = .{
+        .width = width,
+        .height = height,
+        .bitrate = bitrate,
+        .fps = @min(@max(fps, 1), 120),
+        .segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms,
+        .reserved_bytes = reserved_bytes,
+        .available_bytes = available_bytes,
+    };
+    if (!copyCStringToBuffer(&config.output_dir, dir_chars)) return JNI_FALSE;
+    if (!copyCStringToBuffer(&config.suffix, suffix_chars)) return JNI_FALSE;
+    const align_to_wall_clock_segment = std.mem.len(suffix_chars) == 0;
+    const first = startRecordingSessionNative(handle, fps, segment_duration_ms, wall_clock_ms, align_to_wall_clock_segment);
+    if (first <= 0) return JNI_FALSE;
+    logi("managed recording session first={d} next={d} alignWallClock={d} suffix={s}", .{ first, first + config.segment_duration_ms, if (align_to_wall_clock_segment) @as(i32, 1) else @as(i32, 0), std.mem.span(suffix_chars) });
+    var final_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    const writer_handle = managedCreateStartSegment(config, first, &final_path);
+    if (writer_handle == 0) {
+        _ = Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopManagedRecording(env, null, handle, 0, wall_clock_ms);
+        return JNI_FALSE;
+    }
+    const input_window = acquireWriterInputWindow(writer_handle) orelse {
+        _ = releaseNativeSegmentWriterHandle(writer_handle);
+        _ = Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopManagedRecording(env, null, handle, 0, wall_clock_ms);
+        return JNI_FALSE;
+    };
+    var attached = false;
+    var input_window_consumed = false;
+    if (lockPipeForHandle(handle)) |p| {
+        defer unlockPipe(p);
+        if (!p.releasing) {
+            p.recording.managed_native = true;
+            p.recording.managed_writer_handle = 0;
+            p.recording.managed_width = config.width;
+            p.recording.managed_height = config.height;
+            p.recording.managed_bitrate = config.bitrate;
+            p.recording.managed_reserved_bytes = config.reserved_bytes;
+            p.recording.managed_available_bytes = config.available_bytes;
+            p.recording.managed_output_dir = config.output_dir;
+            p.recording.managed_suffix = config.suffix;
+            input_window_consumed = true;
+            attached = managedAttachPreparedSegmentLocked(p, input_window, &final_path);
+            if (attached) {
+                p.recording.managed_writer_handle = writer_handle;
+                p.recording.managed_last_final_path = final_path;
+                p.recording.managed_last_final_start_ms = first;
+                p.recording.managed_last_final_end_ms = 0;
+            }
+        }
+    }
+    if (!attached) {
+        if (!input_window_consumed) c.ANativeWindow_release(input_window);
+        _ = releaseNativeSegmentWriterHandle(writer_handle);
+        _ = Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopManagedRecording(env, null, handle, 0, wall_clock_ms);
+        return JNI_FALSE;
+    }
+    const worker_started = startRecordingWorkerNative(handle, writer_handle, fps);
+    if (worker_started != JNI_TRUE) {
+        _ = Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopManagedRecording(env, null, handle, 0, wall_clock_ms);
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopManagedRecording(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, timeout_ms: c.jlong, stop_wall_clock_ms: c.jlong) callconv(.c) c.jboolean {
+    _ = stopRecordingWorkerNative(handle, timeout_ms);
+    var finalize: ManagedSegmentFinalize = .{};
+    if (lockPipeForHandle(handle)) |p| {
+        finalize = .{
+            .writer_handle = p.recording.managed_writer_handle,
+            .final_path = p.recording.managed_last_final_path,
+            .start_ms = p.recording.managed_last_final_start_ms,
+            .end_ms = stop_wall_clock_ms,
+            .config = managedConfigFromRecording(p),
+        };
+        p.recording.managed_writer_handle = 0;
+        p.recording.managed_native = false;
+        p.recording.recording = false;
+        p.recording.segment_switch_pending = false;
+        resetOverlayCache(&p.recording, 0);
+        p.recording.generation += 1;
+        detachEncoderSurfaceLocked(p);
+        unlockPipe(p);
+    }
+    if (finalize.writer_handle != 0) {
+        if (!finalize_queue.submit(finalize)) {
+            finalize_queue.recordFallback();
+            _ = managedFinalizeSegment(finalize);
+        }
+        _ = finalize_queue.drain();
+    } else {
+        _ = finalize_queue.drain();
+    }
+    return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_updateWatermarkBitmap(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, bitmap: c.jobject, x: c.jint, y: c.jint) callconv(.c) c.jboolean {
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    return if (updateWatermarkBitmapLocked(env, p, bitmap, x, y)) JNI_TRUE else JNI_FALSE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_clearWatermarkBitmap(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean {
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    if (p.display != c.EGL_NO_DISPLAY and p.watermark_texture != 0) {
+        if (!makePbufferCurrent(p)) return JNI_FALSE;
+        releaseWatermarkTextureLocked(p);
+        clearCurrent(p);
+    } else {
+        releaseWatermarkTextureLocked(p);
+    }
+    return JNI_TRUE;
+}
+
+fn recordingTickRenderLocked(env: [*c]c.JNIEnv, p: *Pipe, wall_clock_ms: c.jlong) c.jlong {
     var result: c.jlong = 0;
     var rendered = false;
-    {
-        const p = lockPipeForHandle(handle) orelse return -1;
-        defer unlockPipe(p);
-        if (!p.recording.recording) return 0;
+    if (!p.recording.recording) return 0;
 
-        p.recording.requested_frames += 1;
-        p.recording.overlay_wall_clock_ms = wall_clock_ms;
-        if (!renderEncoderLocked(env, p, false, &rendered)) return -1;
-        if (rendered) {
-            p.recording.rendered_frames += 1;
-            result |= 1;
-        } else {
-            p.recording.dropped_frames += 1;
-            result |= 2;
+    p.recording.requested_frames += 1;
+    p.recording.overlay_wall_clock_ms = wall_clock_ms;
+    if (!renderEncoderLocked(env, p, false, &rendered, null)) return -1;
+    if (rendered) {
+        p.recording.rendered_frames += 1;
+        result |= TICK_SHOULD_RENDER;
+        if (!p.preview_worker_running and !renderCompositePreviewLocked(env, p, false)) {
+            p.dropped_count += 1;
+            if (@mod(p.dropped_count, 60) == 0) loge("composite preview mirror failed drops={d}", .{p.dropped_count});
         }
-        if (!p.recording.segment_switch_pending and p.recording.next_segment_wall_clock_ms > 0 and wall_clock_ms >= p.recording.next_segment_wall_clock_ms) {
-            const next_index = p.recording.segment_index + 1;
-            result |= 4;
-            result |= (@as(c.jlong, next_index) << 32);
-        }
-        p.recording.last_tick_steady_ms = nowMs();
+    } else {
+        p.recording.dropped_frames += 1;
+        result |= TICK_DROPPED;
     }
-
-    if (rendered and writer_handle != 0) {
-        const w = lockWriterForHandle(writer_handle) orelse return -1;
-        defer unlockWriter(w);
-        const drained = drainNativeWriterLocked(w, timeout_us);
-        if (drained < 0) return -1;
-        const drained_capped: c.jlong = @min(drained, 0x00FF_FFFF);
-        result |= (drained_capped << 8);
+    if (!p.recording.segment_switch_pending and p.recording.next_segment_wall_clock_ms > 0 and wall_clock_ms >= p.recording.next_segment_wall_clock_ms) {
+        const next_index = p.recording.segment_index + 1;
+        result |= TICK_SEGMENT_DUE;
+        result |= (@as(c.jlong, next_index) << TICK_NEXT_INDEX_SHIFT);
     }
+    p.recording.last_tick_steady_ms = nowMs();
     return result;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_finalRenderAndDrain(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, writer_handle: c.jlong, timeout_us: c.jlong) callconv(.c) c.jlong {
-    var result: c.jlong = 0;
-    var rendered = false;
-    {
-        const p = lockPipeForHandle(handle) orelse return -1;
-        defer unlockPipe(p);
-        if (!renderEncoderLocked(env, p, false, &rendered)) return -1;
-        if (rendered) result |= TICK_SHOULD_RENDER;
+fn applyRecordingWorkerEventLocked(p: *Pipe, generation: c.jlong, event: c.jlong) bool {
+    if (p.recording_worker_generation != generation or !p.recording_worker_running) return false;
+    if (event < 0) {
+        p.recording_worker_last_event = WORKER_ERROR_TICK_RENDER_DRAIN;
+        p.recording_worker_stop = true;
+        p.recording_worker_condition.broadcast(nativeIo());
+        return false;
     }
-    if (writer_handle != 0) {
-        const w = lockWriterForHandle(writer_handle) orelse return -1;
-        defer unlockWriter(w);
-        const drained = drainNativeWriterLocked(w, timeout_us);
-        if (drained < 0) return -1;
-        const drained_capped: c.jlong = @min(drained, TICK_DRAINED_MASK);
-        result |= (drained_capped << TICK_DRAINED_SHIFT);
-    }
-    return result;
+    if (event == 0) return false;
+
+    const drained_samples: i64 = @intCast((event >> TICK_DRAINED_SHIFT) & TICK_DRAINED_MASK);
+    if (drained_samples > 0) p.recording.encoded_samples += drained_samples;
+    return p.recording.managed_native and (event & TICK_SEGMENT_DUE) != 0;
 }
 
-fn combineWorkerEvent(existing: c.jlong, event: c.jlong) c.jlong {
-    if (existing < 0) return existing;
-    if (event < 0) return event;
-    const flags = (existing | event) & 0xFF;
-    const existing_drained = (existing >> TICK_DRAINED_SHIFT) & TICK_DRAINED_MASK;
-    const event_drained = (event >> TICK_DRAINED_SHIFT) & TICK_DRAINED_MASK;
-    const drained = @min(existing_drained + event_drained, TICK_DRAINED_MASK);
-    const existing_next = existing >> TICK_NEXT_INDEX_SHIFT;
-    const event_next = event >> TICK_NEXT_INDEX_SHIFT;
-    const next_index = @max(existing_next, event_next);
-    var combined = flags | (drained << TICK_DRAINED_SHIFT);
-    if (next_index > 0) combined |= (next_index << TICK_NEXT_INDEX_SHIFT);
-    return combined;
+fn setRecordingWorkerTickErrorLocked(p: *Pipe, generation: c.jlong) void {
+    if (p.recording_worker_generation != generation or !p.recording_worker_running) return;
+    p.recording_worker_last_event = WORKER_ERROR_TICK_RENDER_DRAIN;
+    p.recording_worker_stop = true;
+    p.recording_worker_condition.broadcast(nativeIo());
 }
 
 fn recordingWorkerLoop(handle: c.jlong, generation: c.jlong) void {
@@ -1696,62 +2911,130 @@ fn recordingWorkerLoop(handle: c.jlong, generation: c.jlong) void {
         setErrorSlice("recording worker failed to attach JNI env");
         if (lockPipeForHandle(handle)) |p| {
             defer unlockPipe(p);
-            if (p.recording_worker_generation == generation and p.recording_worker_running) {
+            if (p.recording_worker_generation == generation) {
+                p.recording_worker_running = false;
                 p.recording_worker_last_event = WORKER_ERROR_THREAD_ATTACH;
                 p.recording_worker_stop = true;
+                p.recording_worker_writer_handle = 0;
+                p.recording_worker_next_deadline_ms = 0;
+                p.recording_worker_condition.broadcast(nativeIo());
             }
         }
         return;
     };
     defer detachWorkerEnv();
 
+    const worker_pipe = lockPipeForHandle(handle) orelse return;
+    unlockPipe(worker_pipe);
+
+    var next_deadline_ms = nowMs();
     while (true) {
         var writer_handle: c.jlong = 0;
         var fps: i32 = 15;
-        const p_state = lockPipeForHandle(handle) orelse break;
-        if (!p_state.recording_worker_running or p_state.recording_worker_generation != generation or p_state.recording_worker_stop or !p_state.recording.recording) {
-            unlockPipe(p_state);
+        var event: c.jlong = 0;
+        var used_queue_frame = false;
+        lockPipeForRecordingWorker(worker_pipe);
+        if (!worker_pipe.recording_worker_running or worker_pipe.recording_worker_generation != generation or worker_pipe.recording_worker_stop or !worker_pipe.recording.recording) {
+            unlockPipe(worker_pipe);
             break;
         }
-        writer_handle = p_state.recording_worker_writer_handle;
-        fps = p_state.recording.fps;
-        if (p_state.recording_worker_paused_for_segment or writer_handle == 0) {
-            p_state.recording_worker_condition.waitUncancelable(nativeIo(), &p_state.lock);
-            unlockPipe(p_state);
+        writer_handle = worker_pipe.recording_worker_writer_handle;
+        fps = worker_pipe.recording.fps;
+        if (worker_pipe.recording_worker_paused_for_segment or writer_handle == 0) {
+            worker_pipe.recording_worker_condition.waitUncancelable(nativeIo(), &worker_pipe.lock);
+            unlockPipe(worker_pipe);
             continue;
         }
-        unlockPipe(p_state);
+        if (worker_pipe.recording_frame_queue_count > 0) {
+            if (recordingWouldCrowdCompositePreviewLocked(worker_pipe)) {
+                worker_pipe.recording_preview_yield_count += 1;
+                unlockPipe(worker_pipe);
+                sleepMs(1);
+                continue;
+            }
+            event = renderQueuedRecordingFrameLocked(worker_pipe);
+            used_queue_frame = event != 0;
+        } else if (recordingFrameQueueProducerActiveLocked(worker_pipe)) {
+            worker_pipe.recording_worker_condition.waitUncancelable(nativeIo(), &worker_pipe.lock);
+            unlockPipe(worker_pipe);
+            continue;
+        } else if (recordingWouldCrowdCompositePreviewLocked(worker_pipe)) {
+            worker_pipe.recording_preview_yield_count += 1;
+            unlockPipe(worker_pipe);
+            sleepMs(1);
+            continue;
+        } else {
+            worker_pipe.recording_frame_queue_fallback_count += 1;
+            event = recordingTickRenderLocked(env, worker_pipe, wallClockMs());
+        }
+        unlockPipe(worker_pipe);
 
-        const event = recordingTickRenderAndDrainInternal(env, handle, writer_handle, wallClockMs(), 0);
-        {
-            const p = lockPipeForHandle(handle) orelse break;
-            defer unlockPipe(p);
-            if (p.recording_worker_generation == generation and p.recording_worker_running) {
-                if (event < 0) {
-                    p.recording_worker_last_event = WORKER_ERROR_TICK_RENDER_DRAIN;
-                    p.recording_worker_stop = true;
-                    p.recording_worker_condition.broadcast(nativeIo());
-                } else if (event != 0) {
-                    p.recording_worker_last_event = combineWorkerEvent(p.recording_worker_last_event, event);
-                    if ((event & TICK_SEGMENT_DUE) != 0) p.recording_worker_paused_for_segment = true;
-                }
+        if (event >= 0 and (event & TICK_SHOULD_RENDER) != 0 and writer_handle != 0) {
+            const drained = writer_mod.drainFast(writer_handle, 0);
+            if (drained < 0) {
+                event = -1;
+            } else {
+                const drained_capped: c.jlong = @min(drained, TICK_DRAINED_MASK);
+                event |= (drained_capped << TICK_DRAINED_SHIFT);
             }
         }
 
-        const interval_ms: u64 = @intCast(@max(@divTrunc(1000, @max(fps, 1)), 1));
-        sleepMs(interval_ms);
-    }
+        lockPipeForRecordingWorker(worker_pipe);
+        const should_switch = applyRecordingWorkerEventLocked(worker_pipe, generation, event);
+        const interval_ms_i64: i64 = @max(@divTrunc(1000, @max(fps, 1)), 1);
+        worker_pipe.recording_worker_next_deadline_ms = next_deadline_ms + interval_ms_i64;
+        unlockPipe(worker_pipe);
 
-    if (lockPipeForHandle(handle)) |p| {
-        defer unlockPipe(p);
-        if (p.recording_worker_generation == generation) {
-            p.recording_worker_running = false;
-            p.recording_worker_stop = true;
-            p.recording_worker_writer_handle = 0;
-            p.recording_worker_thread = null;
-            p.recording_worker_condition.broadcast(nativeIo());
+        if (should_switch) {
+            const switched = managedSwitchSegment(handle);
+            if (!switched) {
+                lockPipeForRecordingWorker(worker_pipe);
+                setRecordingWorkerTickErrorLocked(worker_pipe, generation);
+                unlockPipe(worker_pipe);
+            }
+        }
+
+        if (used_queue_frame) {
+            next_deadline_ms = nowMs();
+        } else {
+            paceAfterTick(&next_deadline_ms, interval_ms_i64);
         }
     }
+
+    lockPipeForRecordingWorker(worker_pipe);
+    defer unlockPipe(worker_pipe);
+    if (worker_pipe.recording_worker_generation == generation) {
+        worker_pipe.recording_worker_running = false;
+        worker_pipe.recording_worker_stop = true;
+        worker_pipe.recording_worker_writer_handle = 0;
+        worker_pipe.recording_worker_next_deadline_ms = 0;
+        worker_pipe.recording_worker_condition.broadcast(nativeIo());
+    }
+}
+
+fn activePreviewCount(p: *const Pipe) usize {
+    var count: usize = 0;
+    for (0..4) |idx| {
+        if (p.preview_surface[idx] != c.EGL_NO_SURFACE and p.input[idx].surface_texture_native != null) count += 1;
+    }
+    return count;
+}
+
+fn nextPreviewIndex(p: *const Pipe, start_index: usize) ?usize {
+    var step: usize = 0;
+    while (step < 4) : (step += 1) {
+        const idx = (start_index + step) % 4;
+        if (p.preview_surface[idx] != c.EGL_NO_SURFACE and p.input[idx].surface_texture_native != null) return idx;
+    }
+    return null;
+}
+
+fn recordingWouldCrowdCompositePreviewLocked(p: *const Pipe) bool {
+    if (!p.preview_worker_running or p.composite_preview_surface == c.EGL_NO_SURFACE or p.composite_preview_window == null) return false;
+    if (p.preview_worker_next_deadline_ms <= 0) return false;
+    const remaining_ms = p.preview_worker_next_deadline_ms - nowMs();
+    if (remaining_ms <= 0) return true;
+    return remaining_ms <= 8;
 }
 
 fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
@@ -1759,7 +3042,8 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
         setErrorSlice("preview worker failed to attach JNI env");
         if (lockPipeForHandle(handle)) |p| {
             defer unlockPipe(p);
-            if (p.preview_worker_generation == generation and p.preview_worker_running) {
+            if (p.preview_worker_generation == generation) {
+                p.preview_worker_running = false;
                 p.preview_worker_stop = true;
             }
         }
@@ -1767,22 +3051,67 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
     };
     defer detachWorkerEnv();
 
+    const worker_pipe = lockPipeForHandle(handle) orelse return;
+    unlockPipe(worker_pipe);
+
+    var next_deadline_ms = nowMs();
+    var next_index: usize = 0;
     while (true) {
-        var interval_ms: u64 = 33;
+        var interval_ms: i64 = 33;
         var rendered_any = false;
-        const p = lockPipeForHandle(handle) orelse break;
-        if (!p.preview_worker_running or p.preview_worker_generation != generation or p.preview_worker_stop) {
-            unlockPipe(p);
+        if (!tryLockPipe(worker_pipe)) {
+            sleepMs(2);
+            next_deadline_ms = nowMs();
+            continue;
+        }
+        if (!worker_pipe.preview_worker_running or worker_pipe.preview_worker_generation != generation or worker_pipe.preview_worker_stop) {
+            unlockPipe(worker_pipe);
             break;
         }
-        interval_ms = @intCast(@max(p.preview_min_interval_ms, 1));
-        for (0..4) |idx| {
-            if (p.preview_surface[idx] == c.EGL_NO_SURFACE or p.input[idx].surface_texture_native == null) continue;
-            if (renderPreviewLocked(env, p, @intCast(idx))) rendered_any = true;
-            p.input[idx].preview_pending = false;
+        const has_composite_preview = worker_pipe.composite_preview_surface != c.EGL_NO_SURFACE and worker_pipe.composite_preview_window != null;
+        if (has_composite_preview) {
+            interval_ms = @max(worker_pipe.preview_min_interval_ms, 1);
+            const active_count = activePreviewCount(worker_pipe);
+            const latched_once = active_count > 0;
+            if (latched_once and (!makePbufferCurrent(worker_pipe) or !latchAllInputsLocked(worker_pipe))) {
+                worker_pipe.dropped_count += 1;
+            } else if (latched_once) {
+                if (nextPreviewIndex(worker_pipe, next_index)) |idx| {
+                    if (renderPreviewFromLatchedLocked(worker_pipe, @intCast(idx))) rendered_any = true;
+                    worker_pipe.input[idx].preview_pending = false;
+                    next_index = (idx + 1) % 4;
+                }
+                if (renderCompositePreviewLocked(env, worker_pipe, false)) {
+                    rendered_any = true;
+                } else {
+                    worker_pipe.dropped_count += 1;
+                }
+            } else if (renderCompositePreviewLocked(env, worker_pipe, true)) {
+                rendered_any = true;
+            } else {
+                worker_pipe.dropped_count += 1;
+            }
+        } else {
+            const active_count = activePreviewCount(worker_pipe);
+            if (active_count > 0) {
+                const base_interval_ms = @max(worker_pipe.preview_min_interval_ms, 1);
+                interval_ms = @max(@divTrunc(base_interval_ms, @as(i64, @intCast(active_count))), 1);
+                if (nextPreviewIndex(worker_pipe, next_index)) |idx| {
+                    if (renderPreviewLocked(env, worker_pipe, @intCast(idx))) rendered_any = true;
+                    worker_pipe.input[idx].preview_pending = false;
+                    next_index = (idx + 1) % 4;
+                }
+            }
         }
-        unlockPipe(p);
-        sleepMs(if (rendered_any) interval_ms else @min(interval_ms, 10));
+        worker_pipe.preview_worker_next_deadline_ms = next_deadline_ms + interval_ms;
+        unlockPipe(worker_pipe);
+
+        if (rendered_any) {
+            paceAfterTick(&next_deadline_ms, interval_ms);
+        } else {
+            sleepMs(@intCast(@min(interval_ms, 10)));
+            next_deadline_ms = nowMs();
+        }
     }
 
     if (lockPipeForHandle(handle)) |p| {
@@ -1790,17 +3119,29 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
         if (p.preview_worker_generation == generation) {
             p.preview_worker_running = false;
             p.preview_worker_stop = true;
-            p.preview_worker_thread = null;
+            p.preview_worker_next_deadline_ms = 0;
+            p.recording_worker_condition.broadcast(nativeIo());
         }
     }
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startPreviewWorker(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean {
+    joinStalePreviewWorker(handle);
     var generation: c.jlong = 0;
+    var should_join_preview_thread = false;
     {
         const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
         defer unlockPipe(p);
-        if (p.preview_worker_running) return JNI_TRUE;
+        if (p.releasing) return JNI_FALSE;
+        if (p.preview_worker_running) {
+            if (!p.preview_worker_stop) return JNI_TRUE;
+            setErrorSlice("preview worker is stopping");
+            return JNI_FALSE;
+        }
+        if (p.preview_worker_thread != null) {
+            setErrorSlice("preview worker join pending");
+            return JNI_FALSE;
+        }
         p.preview_worker_running = true;
         p.preview_worker_stop = false;
         p.preview_worker_generation += 1;
@@ -1823,7 +3164,19 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startPreviewWorker(_: [
     };
     if (lockPipeForHandle(handle)) |p| {
         defer unlockPipe(p);
-        if (p.preview_worker_generation == generation) p.preview_worker_thread = thread;
+        if (p.preview_worker_generation == generation and p.preview_worker_running and !p.preview_worker_stop and !p.releasing) {
+            p.preview_worker_thread = thread;
+        } else {
+            p.preview_worker_running = false;
+            p.preview_worker_stop = true;
+            should_join_preview_thread = true;
+        }
+    } else {
+        should_join_preview_thread = true;
+    }
+    if (should_join_preview_thread) {
+        thread.join();
+        return JNI_FALSE;
     }
     logd("preview worker started fps={d} generation={d}", .{ fps, generation });
     return JNI_TRUE;
@@ -1840,30 +3193,29 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopPreviewWorker(_: [*
         p.preview_worker_stop = true;
         thread = p.preview_worker_thread;
         p.preview_worker_thread = null;
+        p.recording_worker_condition.broadcast(nativeIo());
     }
-    if (thread) |t| {
-        const join_start_ms = nowMs();
-        t.join();
-        const join_ms = nowMs() - join_start_ms;
-        if (timeout_ms > 0 and join_ms > timeout_ms) loge("preview worker stop exceeded timeout generation={d} joinMs={d} timeoutMs={d}", .{ generation, join_ms, timeout_ms })
-        else logd("preview worker stopped generation={d} joinMs={d}", .{ generation, join_ms });
-    }
+    if (thread) |t| joinWorkerThread(t, "preview", generation, timeout_ms);
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startRecordingWorker(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, writer_handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean {
+fn startRecordingWorkerNative(handle: c.jlong, writer_handle: c.jlong, fps: c.jint) c.jboolean {
+    joinStaleRecordingWorker(handle);
     var generation: c.jlong = 0;
+    var should_join_recording_thread = false;
     {
         const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
         defer unlockPipe(p);
-        if (!p.recording.recording or writer_handle == 0 or p.recording_worker_running) {
-            setErrorSlice("recording worker start requires active recording, writer, and idle worker");
+        if (p.releasing) return JNI_FALSE;
+        if (!p.recording.recording or !p.recording.managed_native or writer_handle == 0 or p.recording_worker_running or p.recording_worker_thread != null) {
+            setErrorSlice("recording worker start requires managed recording, writer, and idle worker");
             return JNI_FALSE;
         }
         p.recording_worker_running = true;
         p.recording_worker_stop = false;
         p.recording_worker_paused_for_segment = false;
         p.recording_worker_writer_handle = writer_handle;
+        p.recording_worker_next_deadline_ms = 0;
         p.recording_worker_last_event = 0;
         p.recording_worker_generation += 1;
         p.recording.fps = @min(@max(fps, 1), 120);
@@ -1878,6 +3230,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startRecordingWorker(_:
                 p.recording_worker_running = false;
                 p.recording_worker_stop = true;
                 p.recording_worker_writer_handle = 0;
+                p.recording_worker_next_deadline_ms = 0;
             }
         }
         setError("recording worker spawn failed: {}", .{err});
@@ -1885,32 +3238,28 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startRecordingWorker(_:
     };
     if (lockPipeForHandle(handle)) |p| {
         defer unlockPipe(p);
-        if (p.recording_worker_generation == generation) p.recording_worker_thread = thread;
+        if (p.recording_worker_generation == generation and p.recording_worker_running and !p.recording_worker_stop and !p.releasing) {
+            p.recording_worker_thread = thread;
+        } else {
+            p.recording_worker_running = false;
+            p.recording_worker_stop = true;
+            p.recording_worker_writer_handle = 0;
+            p.recording_worker_next_deadline_ms = 0;
+            should_join_recording_thread = true;
+            p.recording_worker_condition.broadcast(nativeIo());
+        }
+    } else {
+        should_join_recording_thread = true;
+    }
+    if (should_join_recording_thread) {
+        thread.join();
+        return JNI_FALSE;
     }
     logd("recording worker started writer={d} fps={d} generation={d}", .{ writer_handle, fps, generation });
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_pollRecordingWorker(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong {
-    const p = lockPipeForHandle(handle) orelse return -1;
-    defer unlockPipe(p);
-    const event = p.recording_worker_last_event;
-    p.recording_worker_last_event = 0;
-    return event;
-}
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_resumeRecordingWorker(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, writer_handle: c.jlong) callconv(.c) c.jboolean {
-    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
-    defer unlockPipe(p);
-    if (!p.recording_worker_running or writer_handle == 0) return JNI_FALSE;
-    p.recording_worker_writer_handle = writer_handle;
-    p.recording_worker_paused_for_segment = false;
-    p.recording_worker_last_event = 0;
-    p.recording_worker_condition.broadcast(nativeIo());
-    return JNI_TRUE;
-}
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopRecordingWorker(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, timeout_ms: c.jlong) callconv(.c) c.jlong {
+fn stopRecordingWorkerNative(handle: c.jlong, timeout_ms: c.jlong) c.jlong {
     var thread: ?std.Thread = null;
     var event: c.jlong = 0;
     var generation: c.jlong = 0;
@@ -1923,19 +3272,19 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopRecordingWorker(_: 
         p.recording_worker_stop = true;
         p.recording_worker_paused_for_segment = false;
         p.recording_worker_writer_handle = 0;
-        p.recording_worker_last_event = 0;
+        p.recording_worker_next_deadline_ms = 0;
         thread = p.recording_worker_thread;
         p.recording_worker_thread = null;
         p.recording_worker_condition.broadcast(nativeIo());
     }
     if (thread) |t| {
-        const join_start_ms = nowMs();
-        t.join();
-        const join_ms = nowMs() - join_start_ms;
-        if (timeout_ms > 0 and join_ms > timeout_ms) {
-            loge("recording worker stop exceeded timeout generation={d} joinMs={d} timeoutMs={d}", .{ generation, join_ms, timeout_ms });
-        } else {
-            logd("recording worker stopped generation={d} joinMs={d} event={d}", .{ generation, join_ms, event });
+        joinWorkerThread(t, "recording", generation, timeout_ms);
+        if (lockPipeForHandle(handle)) |p| {
+            defer unlockPipe(p);
+            if (p.recording_worker_generation == generation and p.recording_worker_last_event != 0) {
+                event = p.recording_worker_last_event;
+                p.recording_worker_last_event = 0;
+            }
         }
     }
     return event;
@@ -1959,337 +3308,914 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_snapshotRecordingWorker
     return arr;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_beginNextRecordingSegment(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlong {
-    const p = lockPipeForHandle(handle) orelse return 0;
-    defer unlockPipe(p);
-    if (!p.recording.recording) return 0;
-    p.recording.segment_switch_pending = true;
-    p.recording.pending_segment_index = p.recording.segment_index + 1;
-    p.recording.pending_segment_wall_clock_ms = p.recording.next_segment_wall_clock_ms;
-    return p.recording.pending_segment_wall_clock_ms;
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeEmergencyRequest(_: [*c]c.JNIEnv, _: c.jobject, start_ms: c.jlong, end_ms: c.jlong) callconv(.c) c.jboolean {
+    if (start_ms <= 0 or end_ms <= start_ms) return JNI_FALSE;
+    lockGlobal();
+    defer unlockGlobal();
+    if (g_emergency_request_count >= g_emergency_requests.len) {
+        std.mem.copyForwards(EmergencyClipRequest, g_emergency_requests[0 .. g_emergency_requests.len - 1], g_emergency_requests[1..g_emergency_requests.len]);
+        g_emergency_request_count = g_emergency_requests.len - 1;
+        setError("native emergency request queue full limit={d}", .{g_emergency_requests.len});
+    }
+    g_emergency_requests[g_emergency_request_count] = EmergencyClipRequest{ .start_ms = start_ms, .end_ms = end_ms };
+    g_emergency_request_count += 1;
+    return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_completeRecordingSegmentSwitch(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, success: c.jboolean) callconv(.c) c.jboolean {
-    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
-    defer unlockPipe(p);
-    if (success == JNI_TRUE) {
-        p.recording.segment_index = p.recording.pending_segment_index;
-        p.recording.next_segment_wall_clock_ms = p.recording.pending_segment_wall_clock_ms + p.recording.segment_duration_ms;
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeEmergencyClearPending(_: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jint {
+    lockGlobal();
+    defer unlockGlobal();
+    const count: c.jint = @intCast(g_emergency_request_count);
+    g_emergency_request_count = 0;
+    return count;
+}
+
+fn nativeEmergencyExtractClipForDir(env: [*c]c.JNIEnv, output_dir: c.jstring, clip_start_ms: c.jlong, clip_end_ms: c.jlong) c.jstring {
+    if (output_dir == null or clip_end_ms <= clip_start_ms) return null;
+    const dir_chars = env.*[0].GetStringUTFChars.?(env, output_dir, null) orelse return null;
+    defer env.*[0].ReleaseStringUTFChars.?(env, output_dir, dir_chars);
+    var timestamp: [32:0]u8 = [_:0]u8{0} ** 32;
+    if (!formatSegmentTimestamp(&timestamp, clip_start_ms)) return null;
+    const dir = std.mem.span(dir_chars);
+    const timestamp_text = std.mem.sliceTo(&timestamp, 0);
+
+    var sources: [32]EmergencySourceSegment = undefined;
+    var source_count: usize = 0;
+    lockGlobal();
+    {
+        defer unlockGlobal();
+        var covers_start = false;
+        var covers_end = false;
+        for (g_emergency_sources[0..g_emergency_source_count]) |source| {
+            if (source.start_ms <= clip_start_ms and source.end_ms > clip_start_ms) covers_start = true;
+            if (source.start_ms < clip_end_ms and source.end_ms >= clip_end_ms) covers_end = true;
+            if (source.end_ms > clip_start_ms and source.start_ms < clip_end_ms and source_count < sources.len) {
+                sources[source_count] = source;
+                source_count += 1;
+            }
+        }
+        if (!covers_start or !covers_end or source_count == 0) return null;
+    }
+
+    std.mem.sort(EmergencySourceSegment, sources[0..source_count], {}, struct {
+        fn lessThan(_: void, a: EmergencySourceSegment, b: EmergencySourceSegment) bool {
+            return a.start_ms < b.start_ms;
+        }
+    }.lessThan);
+
+    var final_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var temp_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    var index: usize = 0;
+    while (index < 999) : (index += 1) {
+        var index_suffix: [8:0]u8 = [_:0]u8{0} ** 8;
+        const final_name = if (index == 0) blk: {
+            break :blk std.fmt.bufPrintZ(&final_path, "{s}/{s}_event.mp4", .{ dir, timestamp_text }) catch continue;
+        } else blk: {
+            if (!formatIndexSuffix(&index_suffix, index)) continue;
+            const index_text = std.mem.sliceTo(&index_suffix, 0);
+            break :blk std.fmt.bufPrintZ(&final_path, "{s}/{s}_event{s}.mp4", .{ dir, timestamp_text, index_text }) catch continue;
+        };
+        const temp_name = std.fmt.bufPrintZ(&temp_path, "{s}.recording", .{final_name}) catch continue;
+        if (fileExistsNative(final_name) or fileExistsNative(temp_name)) continue;
+
+        var source_paths: [32][*c]const u8 = [_][*c]const u8{null} ** 32;
+        var source_starts: [32]c.jlong = [_]c.jlong{0} ** 32;
+        var source_ends: [32]c.jlong = [_]c.jlong{0} ** 32;
+        for (sources[0..source_count], 0..) |source, i| {
+            source_paths[i] = &source.path;
+            source_starts[i] = source.start_ms;
+            source_ends[i] = source.end_ms;
+        }
+        const written = extractEmergencyClipNative(temp_name, clip_start_ms, clip_end_ms, &source_paths, &source_starts, &source_ends, source_count);
+        if (written <= 0) {
+            _ = unlink(temp_name);
+            return null;
+        }
+        _ = unlink(final_name);
+        if (rename(temp_name, final_name) != 0) {
+            _ = unlink(temp_name);
+            setErrorSlice("native emergency rename failed");
+            return null;
+        }
+        var event_thumb: [1024:0]u8 = [_:0]u8{0} ** 1024;
+        if (thumbnailPathForVideo(&event_thumb, final_name)) {
+            var copied_thumb = false;
+            for (sources[0..source_count]) |source| {
+                var source_thumb: [1024:0]u8 = [_:0]u8{0} ** 1024;
+                if (!thumbnailPathForVideo(&source_thumb, &source.path)) continue;
+                _ = unlink(&event_thumb);
+                copied_thumb = copyFileNative(&source_thumb, &event_thumb);
+                if (copied_thumb) break;
+            }
+            if (copied_thumb) {
+                logi("native emergency thumbnail copied dst={s}", .{std.mem.sliceTo(&event_thumb, 0)});
+            } else {
+                logd("native emergency thumbnail source missing dst={s}", .{std.mem.sliceTo(&event_thumb, 0)});
+            }
+        }
+        return env.*[0].NewStringUTF.?(env, final_name);
+    }
+    setErrorSlice("native emergency output path unavailable");
+    return null;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeEmergencyExtractPending(env: [*c]c.JNIEnv, _: c.jobject, output_dir: c.jstring, stopped_at_ms: c.jlong) callconv(.c) c.jobjectArray {
+    const string_class = env.*[0].FindClass.?(env, "java/lang/String") orelse return null;
+    if (output_dir == null) return env.*[0].NewObjectArray.?(env, 0, string_class, null);
+
+    var requests: [MAX_EMERGENCY_REQUESTS]EmergencyClipRequest = undefined;
+    var request_count: usize = 0;
+    lockGlobal();
+    {
+        defer unlockGlobal();
+        request_count = g_emergency_request_count;
+        if (request_count > requests.len) request_count = requests.len;
+        @memcpy(requests[0..request_count], g_emergency_requests[0..request_count]);
+    }
+
+    var outputs: [MAX_EMERGENCY_REQUESTS]c.jstring = [_]c.jstring{null} ** MAX_EMERGENCY_REQUESTS;
+    var output_count: usize = 0;
+    var keep: [MAX_EMERGENCY_REQUESTS]EmergencyClipRequest = undefined;
+    var keep_count: usize = 0;
+
+    for (requests[0..request_count]) |request| {
+        const export_end = if (stopped_at_ms > 0 and request.end_ms > stopped_at_ms) stopped_at_ms else request.end_ms;
+        if (export_end <= request.start_ms) continue;
+        const out = nativeEmergencyExtractClipForDir(env, output_dir, request.start_ms, export_end);
+        if (out != null) {
+            outputs[output_count] = out;
+            output_count += 1;
+        } else if (stopped_at_ms <= 0) {
+            keep[keep_count] = request;
+            keep_count += 1;
+        }
+    }
+
+    lockGlobal();
+    {
+        defer unlockGlobal();
+        g_emergency_request_count = keep_count;
+        @memcpy(g_emergency_requests[0..keep_count], keep[0..keep_count]);
+    }
+
+    const arr = env.*[0].NewObjectArray.?(env, @intCast(output_count), string_class, null) orelse return null;
+    for (outputs[0..output_count], 0..) |out, i| {
+        env.*[0].SetObjectArrayElement.?(env, arr, @intCast(i), out);
+        env.*[0].DeleteLocalRef.?(env, out);
+    }
+    return arr;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeCleanupStorage(env: [*c]c.JNIEnv, _: c.jobject, output_dir: c.jstring, reserved_bytes: c.jlong, available_bytes: c.jlong) callconv(.c) c.jlongArray {
+    var values: [3]c.jlong = [_]c.jlong{0} ** 3;
+    if (output_dir != null) {
+        const chars = env.*[0].GetStringUTFChars.?(env, output_dir, null);
+        if (chars != null) {
+            defer env.*[0].ReleaseStringUTFChars.?(env, output_dir, chars);
+            var deleted_count: i64 = 0;
+            var deleted_bytes: i64 = 0;
+            const available = cleanupStorageNative(chars, reserved_bytes, available_bytes, null, &deleted_count, &deleted_bytes);
+            values[0] = deleted_count;
+            values[1] = deleted_bytes;
+            values[2] = available;
+        }
+    }
+    const arr = env.*[0].NewLongArray.?(env, values.len) orelse return null;
+    env.*[0].SetLongArrayRegion.?(env, arr, 0, values.len, &values);
+    return arr;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeListPlaybackVideos(env: [*c]c.JNIEnv, _: c.jobject, scan_dirs: c.jobjectArray) callconv(.c) c.jobjectArray {
+    const string_class = env.*[0].FindClass.?(env, "java/lang/String") orelse return null;
+    if (scan_dirs == null) return env.*[0].NewObjectArray.?(env, 0, string_class, null);
+    const dir_count_jsize = getArrayLen(env, scan_dirs);
+    const result_raw = malloc(@sizeOf(PlaybackScanResult)) orelse return env.*[0].NewObjectArray.?(env, 0, string_class, null);
+    defer free(result_raw);
+    const result: *PlaybackScanResult = @ptrCast(@alignCast(result_raw));
+    result.* = PlaybackScanResult{};
+    var i: c.jsize = 0;
+    while (i < dir_count_jsize and result.count < result.paths.len) : (i += 1) {
+        const obj = env.*[0].GetObjectArrayElement.?(env, scan_dirs, i);
+        if (obj == null) continue;
+        defer env.*[0].DeleteLocalRef.?(env, obj);
+        const chars = env.*[0].GetStringUTFChars.?(env, obj, null) orelse continue;
+        defer env.*[0].ReleaseStringUTFChars.?(env, obj, chars);
+        scanPlaybackVideosNative(result, chars);
+    }
+    const arr = env.*[0].NewObjectArray.?(env, @intCast(result.count), string_class, null) orelse return null;
+    var out_i: usize = 0;
+    while (out_i < result.count) : (out_i += 1) {
+        const s = env.*[0].NewStringUTF.?(env, &result.paths[out_i]);
+        if (s != null) {
+            env.*[0].SetObjectArrayElement.?(env, arr, @intCast(out_i), s);
+            env.*[0].DeleteLocalRef.?(env, s);
+        }
+    }
+    return arr;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeListPlaybackImages(env: [*c]c.JNIEnv, _: c.jobject, scan_dirs: c.jobjectArray) callconv(.c) c.jobjectArray {
+    const string_class = env.*[0].FindClass.?(env, "java/lang/String") orelse return null;
+    if (scan_dirs == null) return env.*[0].NewObjectArray.?(env, 0, string_class, null);
+    const dir_count_jsize = getArrayLen(env, scan_dirs);
+    const result_raw = malloc(@sizeOf(PlaybackScanResult)) orelse return env.*[0].NewObjectArray.?(env, 0, string_class, null);
+    defer free(result_raw);
+    const result: *PlaybackScanResult = @ptrCast(@alignCast(result_raw));
+    result.* = PlaybackScanResult{};
+    var i: c.jsize = 0;
+    while (i < dir_count_jsize and result.count < result.paths.len) : (i += 1) {
+        const obj = env.*[0].GetObjectArrayElement.?(env, scan_dirs, i);
+        if (obj == null) continue;
+        defer env.*[0].DeleteLocalRef.?(env, obj);
+        const chars = env.*[0].GetStringUTFChars.?(env, obj, null) orelse continue;
+        defer env.*[0].ReleaseStringUTFChars.?(env, obj, chars);
+        scanPlaybackImagesNative(result, chars);
+    }
+    const arr = env.*[0].NewObjectArray.?(env, @intCast(result.count), string_class, null) orelse return null;
+    var out_i: usize = 0;
+    while (out_i < result.count) : (out_i += 1) {
+        const s = env.*[0].NewStringUTF.?(env, &result.paths[out_i]);
+        if (s != null) {
+            env.*[0].SetObjectArrayElement.?(env, arr, @intCast(out_i), s);
+            env.*[0].DeleteLocalRef.?(env, s);
+        }
+    }
+    return arr;
+}
+
+fn playbackCacheEntryNewerFirst(a: *const PlaybackCacheEntry, b: *const PlaybackCacheEntry) bool {
+    return std.mem.order(u8, std.mem.sliceTo(&a.name, 0), std.mem.sliceTo(&b.name, 0)) == .gt;
+}
+
+fn sortPlaybackCacheEntries(entries: []PlaybackCacheEntry) void {
+    if (entries.len < 2) return;
+    var i: usize = 0;
+    while (i + 1 < entries.len) : (i += 1) {
+        var best = i;
+        var j = i + 1;
+        while (j < entries.len) : (j += 1) {
+            if (playbackCacheEntryNewerFirst(&entries[j], &entries[best])) best = j;
+        }
+        if (best != i) std.mem.swap(PlaybackCacheEntry, &entries[i], &entries[best]);
+    }
+}
+
+fn ensurePlaybackCacheThumbnails(env: [*c]c.JNIEnv, result: *PlaybackCacheBuildResult) void {
+    var generated: i64 = 0;
+    for (result.entries[0..result.count]) |*entry| {
+        if (entry.thumbnail_size > 0) continue;
+        if (!generatePlaybackThumbnailWithBridge(env, &entry.path)) {
+            logd("native playback thumbnail skipped path={s}", .{std.mem.sliceTo(&entry.path, 0)});
+            continue;
+        }
+        var refreshed = PlaybackCacheEntry{};
+        if (!playbackEntryFromVideoPath(&refreshed, &entry.path) or refreshed.thumbnail_size <= 0) continue;
+        entry.* = refreshed;
+        generated += 1;
+    }
+    if (generated > 0) logi("native playback thumbnails generated={d}", .{generated});
+}
+
+fn nativeBuildPlaybackCacheJson(env: [*c]c.JNIEnv, scan_dirs: c.jobjectArray, ensure_thumbnails: bool) c.jstring {
+    if (scan_dirs == null) return env.*[0].NewStringUTF.?(env, "[]");
+    const dir_count_jsize = getArrayLen(env, scan_dirs);
+    const result_raw = malloc(@sizeOf(PlaybackCacheBuildResult)) orelse return null;
+    defer free(result_raw);
+    const result: *PlaybackCacheBuildResult = @ptrCast(@alignCast(result_raw));
+    result.* = PlaybackCacheBuildResult{};
+    var i: c.jsize = 0;
+    while (i < dir_count_jsize and result.count < result.entries.len) : (i += 1) {
+        const obj = env.*[0].GetObjectArrayElement.?(env, scan_dirs, i);
+        if (obj == null) continue;
+        defer env.*[0].DeleteLocalRef.?(env, obj);
+        const chars = env.*[0].GetStringUTFChars.?(env, obj, null) orelse continue;
+        defer env.*[0].ReleaseStringUTFChars.?(env, obj, chars);
+        buildPlaybackCacheNative(result, chars);
+    }
+    if (ensure_thumbnails) ensurePlaybackCacheThumbnails(env, result);
+    sortPlaybackCacheEntries(result.entries[0..result.count]);
+
+    const raw = malloc(PLAYBACK_CACHE_BUFFER_BYTES) orelse return null;
+    defer free(raw);
+    const buffer: [*]u8 = @ptrCast(raw);
+    var offset: usize = 0;
+    if (!appendJsonLiteral(buffer[0..PLAYBACK_CACHE_BUFFER_BYTES], &offset, "[")) return null;
+    for (result.entries[0..result.count], 0..) |entry, idx| {
+        if (idx > 0 and !appendJsonLiteral(buffer[0..PLAYBACK_CACHE_BUFFER_BYTES], &offset, ",")) return null;
+        if (!appendPlaybackCacheEntryJson(buffer[0..PLAYBACK_CACHE_BUFFER_BYTES], &offset, &entry)) return null;
+    }
+    if (!appendJsonLiteral(buffer[0..PLAYBACK_CACHE_BUFFER_BYTES], &offset, "]")) return null;
+    if (offset >= PLAYBACK_CACHE_BUFFER_BYTES) return null;
+    buffer[offset] = 0;
+    return env.*[0].NewStringUTF.?(env, @ptrCast(buffer));
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeBuildPlaybackCache(env: [*c]c.JNIEnv, _: c.jobject, scan_dirs: c.jobjectArray) callconv(.c) c.jstring {
+    return nativeBuildPlaybackCacheJson(env, scan_dirs, false);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeBuildPlaybackCacheWithThumbnails(env: [*c]c.JNIEnv, _: c.jobject, scan_dirs: c.jobjectArray) callconv(.c) c.jstring {
+    return nativeBuildPlaybackCacheJson(env, scan_dirs, true);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeBuildPlaybackEntry(env: [*c]c.JNIEnv, _: c.jobject, video_path: c.jstring) callconv(.c) c.jstring {
+    if (video_path == null) return null;
+    const chars = env.*[0].GetStringUTFChars.?(env, video_path, null) orelse return null;
+    defer env.*[0].ReleaseStringUTFChars.?(env, video_path, chars);
+    var entry = PlaybackCacheEntry{};
+    if (!playbackEntryFromVideoPath(&entry, chars)) return null;
+    var buffer: [2048:0]u8 = [_:0]u8{0} ** 2048;
+    var offset: usize = 0;
+    if (!appendPlaybackCacheEntryJson(buffer[0..], &offset, &entry)) return null;
+    if (offset >= buffer.len) return null;
+    buffer[offset] = 0;
+    return env.*[0].NewStringUTF.?(env, &buffer);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeEnsurePlaybackThumbnail(env: [*c]c.JNIEnv, _: c.jobject, video_path: c.jstring) callconv(.c) c.jstring {
+    if (video_path == null) return null;
+    const chars = env.*[0].GetStringUTFChars.?(env, video_path, null) orelse return null;
+    defer env.*[0].ReleaseStringUTFChars.?(env, video_path, chars);
+
+    var target_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    if (!thumbnailPathForVideo(&target_path, chars)) return null;
+    if (fileSizeNative(&target_path) <= 0 and !generatePlaybackThumbnailWithBridge(env, chars)) {
+        logd("native playback thumbnail ensure failed path={s}", .{std.mem.span(chars)});
+        return null;
+    }
+    if (fileSizeNative(&target_path) <= 0) return null;
+    return env.*[0].NewStringUTF.?(env, &target_path);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeDeleteVideoAndSidecars(env: [*c]c.JNIEnv, _: c.jobject, video_path: c.jstring) callconv(.c) c.jboolean {
+    if (video_path == null) return JNI_FALSE;
+    const chars = env.*[0].GetStringUTFChars.?(env, video_path, null) orelse return JNI_FALSE;
+    defer env.*[0].ReleaseStringUTFChars.?(env, video_path, chars);
+    const deleted_video = deleteNativeFile(chars);
+    _ = deleteThumbnailSidecarsNative(chars);
+    return if (deleted_video > 0) JNI_TRUE else JNI_FALSE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeDeleteVideosAndBuildPlaybackCache(env: [*c]c.JNIEnv, _: c.jobject, video_paths: c.jobjectArray, scan_dirs: c.jobjectArray) callconv(.c) c.jstring {
+    if (video_paths != null) {
+        const path_count = getArrayLen(env, video_paths);
+        var i: c.jsize = 0;
+        while (i < path_count) : (i += 1) {
+            const obj = env.*[0].GetObjectArrayElement.?(env, video_paths, i);
+            if (obj == null) continue;
+            defer env.*[0].DeleteLocalRef.?(env, obj);
+            const chars = env.*[0].GetStringUTFChars.?(env, obj, null) orelse continue;
+            defer env.*[0].ReleaseStringUTFChars.?(env, obj, chars);
+            _ = deleteNativeFile(chars);
+            _ = deleteThumbnailSidecarsNative(chars);
+        }
+    }
+    return Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeBuildPlaybackCache(env, null, scan_dirs);
+}
+fn createNativeSegmentWriterForMime(width: c.jint, height: c.jint, fps: c.jint, bitrate: c.jint, mime_chars: [*c]const u8) c.jlong {
+    return writer_mod.createForMime(width, height, fps, bitrate, mime_chars);
+}
+
+fn startNativeSegmentWriter(writer_handle: c.jlong, dir_chars: [*c]const u8, suffix_chars: [*c]const u8, wall_clock_ms: c.jlong, out_final_path: *[1024:0]u8) bool {
+    return writer_mod.startSegment(writer_handle, dir_chars, suffix_chars, wall_clock_ms, out_final_path);
+}
+
+fn setRecordingThumbnailPathForVideo(p: *Pipe, final_path: [*c]const u8) bool {
+    if (!thumbnailPathForVideo(&p.recording.thumbnail_path, final_path)) {
+        setError("thumbnail path too long", .{});
+        return false;
+    }
+    p.recording.thumbnail_path_set = true;
+    p.recording.thumbnail_written = false;
+    return true;
+}
+
+fn acquireWriterInputWindowLockedNoGlobal(writer_handle: c.jlong) ?*c.ANativeWindow {
+    return writer_mod.acquireInputWindowNoGlobal(writer_handle);
+}
+
+fn acquireWriterInputWindow(writer_handle: c.jlong) ?*c.ANativeWindow {
+    return writer_mod.acquireInputWindow(writer_handle);
+}
+
+fn attachEncoderWindowLocked(p: *Pipe, new_window: *c.ANativeWindow) c.jboolean {
+    if (!initEgl(p)) {
+        c.ANativeWindow_release(new_window);
+        return JNI_FALSE;
+    }
+    const new_surface = c.eglCreateWindowSurface(p.display, p.config, new_window, null);
+    if (new_surface == c.EGL_NO_SURFACE) {
+        setErrorSlice(eglError("eglCreateWindowSurface encoder failed"));
+        c.ANativeWindow_release(new_window);
+        return JNI_FALSE;
+    }
+
+    const old_surface = p.encoder_surface;
+    const old_window = p.encoder_window;
+    p.encoder_surface = new_surface;
+    p.encoder_window = new_window;
+    if (old_surface != c.EGL_NO_SURFACE) {
+        if (p.current_surface == old_surface) clearCurrent(p);
+        _ = c.eglDestroySurface(p.display, old_surface);
+    }
+    if (old_window) |w| c.ANativeWindow_release(w);
+    p.encoder_frame_index = 0;
+    if (p.recording.recording) {
         p.recording.encoder_segment_start_steady_ms = nowMs();
         p.recording.last_presentation_time_ns = -1;
     }
-    p.recording.segment_switch_pending = false;
-    p.recording.pending_segment_index = 0;
-    p.recording.pending_segment_wall_clock_ms = 0;
+    resetRecordingFrameQueueLocked(p);
+    p.encoder_pending = false;
+    p.encoder_generation += 1;
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeExtractEmergencyClip(env: [*c]c.JNIEnv, _: c.jobject, output_path: c.jstring, final_output_path: c.jstring, clip_start_ms: c.jlong, clip_end_ms: c.jlong, source_paths_array: c.jobjectArray, source_start_array: c.jlongArray, source_end_array: c.jlongArray) callconv(.c) c.jlong {
-    if (output_path == null or final_output_path == null or source_paths_array == null or source_start_array == null or source_end_array == null) {
-        setErrorSlice("nativeExtractEmergencyClip null args");
-        return -1;
-    }
-    const count_jsize = getArrayLen(env, source_paths_array);
-    if (count_jsize <= 0 or getArrayLen(env, source_start_array) < count_jsize or getArrayLen(env, source_end_array) < count_jsize) {
-        setErrorSlice("nativeExtractEmergencyClip invalid arrays");
-        return -1;
-    }
-    const count: usize = @intCast(count_jsize);
-    if (count > 32) {
-        setErrorSlice("nativeExtractEmergencyClip too many sources");
-        return -1;
-    }
-
-    const output_chars = env.*[0].GetStringUTFChars.?(env, output_path, null) orelse {
-        setErrorSlice("nativeExtractEmergencyClip output path chars failed");
-        return -1;
-    };
-    defer env.*[0].ReleaseStringUTFChars.?(env, output_path, output_chars);
-    const final_chars = env.*[0].GetStringUTFChars.?(env, final_output_path, null) orelse {
-        setErrorSlice("nativeExtractEmergencyClip final path chars failed");
-        return -1;
-    };
-    defer env.*[0].ReleaseStringUTFChars.?(env, final_output_path, final_chars);
-
-    const start_values = env.*[0].GetLongArrayElements.?(env, source_start_array, null) orelse {
-        setErrorSlice("nativeExtractEmergencyClip start array failed");
-        return -1;
-    };
-    defer env.*[0].ReleaseLongArrayElements.?(env, source_start_array, start_values, JNI_ABORT);
-    const end_values = env.*[0].GetLongArrayElements.?(env, source_end_array, null) orelse {
-        setErrorSlice("nativeExtractEmergencyClip end array failed");
-        return -1;
-    };
-    defer env.*[0].ReleaseLongArrayElements.?(env, source_end_array, end_values, JNI_ABORT);
-
-    var path_objects: [32]c.jstring = [_]c.jstring{null} ** 32;
-    var path_chars: [32][*c]const u8 = [_][*c]const u8{null} ** 32;
-    var loaded: usize = 0;
-    while (loaded < count) : (loaded += 1) {
-        const obj = env.*[0].GetObjectArrayElement.?(env, source_paths_array, @intCast(loaded));
-        if (obj == null) {
-            setError("nativeExtractEmergencyClip source path null index={d}", .{loaded});
-            break;
-        }
-        path_objects[loaded] = obj;
-        path_chars[loaded] = env.*[0].GetStringUTFChars.?(env, obj, null) orelse {
-            setError("nativeExtractEmergencyClip source chars failed index={d}", .{loaded});
-            break;
-        };
-    }
-    defer {
-        var i: usize = 0;
-        while (i < loaded) : (i += 1) {
-            if (path_chars[i] != null) env.*[0].ReleaseStringUTFChars.?(env, path_objects[i], path_chars[i]);
-            if (path_objects[i] != null) env.*[0].DeleteLocalRef.?(env, path_objects[i]);
-        }
-    }
-    if (loaded != count) return -1;
-
-    const result = extractEmergencyClipNative(output_chars, clip_start_ms, clip_end_ms, &path_chars, start_values, end_values, count);
-    if (result > 0) {
-        _ = unlink(final_chars);
-        if (rename(output_chars, final_chars) != 0) {
-            _ = unlink(output_chars);
-            setErrorSlice("native emergency rename failed");
-            return -1;
-        }
-        var event_thumb: [1024:0]u8 = [_:0]u8{0} ** 1024;
-        if (bmpPathForVideo(&event_thumb, final_chars)) {
-            var copied_thumb = false;
-            var i: usize = 0;
-            while (i < loaded and !copied_thumb) : (i += 1) {
-                var source_thumb: [1024:0]u8 = [_:0]u8{0} ** 1024;
-                if (!bmpPathForVideo(&source_thumb, path_chars[i])) continue;
-                _ = unlink(&event_thumb);
-                copied_thumb = copyFileNative(&source_thumb, &event_thumb);
-                if (copied_thumb) {
-                    logi("native emergency thumbnail copied src={s} dst={s}", .{ std.mem.sliceTo(&source_thumb, 0), std.mem.sliceTo(&event_thumb, 0) });
-                }
-            }
-            if (!copied_thumb) logd("native emergency thumbnail source missing dst={s}", .{std.mem.sliceTo(&event_thumb, 0)});
-        }
+fn detachEncoderSurfaceLocked(p: *Pipe) void {
+    if (p.display != c.EGL_NO_DISPLAY and p.context != c.EGL_NO_CONTEXT and p.pbuffer != c.EGL_NO_SURFACE) {
+        _ = makePbufferCurrent(p);
+        releaseRecordingFrameQueueLocked(p);
     } else {
-        _ = unlink(output_chars);
+        resetRecordingFrameQueueLocked(p);
     }
-    return result;
+    if (p.encoder_surface != c.EGL_NO_SURFACE) {
+        if (p.current_surface == p.encoder_surface) clearCurrent(p);
+        _ = c.eglDestroySurface(p.display, p.encoder_surface);
+        p.encoder_surface = c.EGL_NO_SURFACE;
+    }
+    if (p.encoder_window) |w| {
+        c.ANativeWindow_release(w);
+        p.encoder_window = null;
+    }
+    p.encoder_generation = 0;
+    p.encoder_frame_index = 0;
+    p.encoder_pending = false;
 }
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeSegmentWriter(env: [*c]c.JNIEnv, _: c.jobject, width: c.jint, height: c.jint, fps: c.jint, bitrate: c.jint, mime_type: c.jstring) callconv(.c) c.jlong {
-    if (mime_type == null or width <= 0 or height <= 0 or fps <= 0 or bitrate <= 0) {
-        setError("invalid native segment writer config", .{});
-        return 0;
-    }
-    const mime_chars = env.*[0].GetStringUTFChars.?(env, mime_type, null) orelse {
-        setError("native writer mime unavailable", .{});
-        return 0;
-    };
-    defer env.*[0].ReleaseStringUTFChars.?(env, mime_type, mime_chars);
 
-    const codec = c.AMediaCodec_createEncoderByType(mime_chars) orelse {
-        setError("AMediaCodec_createEncoderByType failed", .{});
-        return 0;
-    };
-    errdefer _ = c.AMediaCodec_delete(codec);
-
-    const format = c.AMediaFormat_new() orelse {
-        setError("AMediaFormat_new failed", .{});
-        return 0;
-    };
-    defer _ = c.AMediaFormat_delete(format);
-    c.AMediaFormat_setString(format, c.AMEDIAFORMAT_KEY_MIME, mime_chars);
-    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_WIDTH, width);
-    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_HEIGHT, height);
-    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_FRAME_RATE, fps);
-    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_BIT_RATE, bitrate);
-    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_COLOR_FORMAT, COLOR_FORMAT_SURFACE);
-    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 1);
-
-    const configure_status = c.AMediaCodec_configure(codec, format, null, null, c.AMEDIACODEC_CONFIGURE_FLAG_ENCODE);
-    if (configure_status != c.AMEDIA_OK) {
-        setError("AMediaCodec_configure failed status={d}", .{configure_status});
-        return 0;
-    }
-
-    var input_window: ?*c.ANativeWindow = null;
-    const surface_status = c.AMediaCodec_createInputSurface(codec, &input_window);
-    if (surface_status != c.AMEDIA_OK or input_window == null) {
-        setError("AMediaCodec_createInputSurface failed status={d}", .{surface_status});
-        return 0;
-    }
-
+fn addEmergencySourceNative(video_path: [*c]const u8, start_ms: i64, end_ms: i64, prune_before_ms: i64) void {
+    if (video_path == null or start_ms <= 0 or end_ms <= start_ms) return;
     lockGlobal();
     defer unlockGlobal();
-    var slot_index: ?usize = null;
-    for (0..MAX_NATIVE_WRITERS) |i| {
-        if (!g_native_writer_used[i]) {
-            slot_index = i;
-            break;
+    var write_index: usize = 0;
+    var i: usize = 0;
+    while (i < g_emergency_source_count) : (i += 1) {
+        if (g_emergency_sources[i].end_ms >= prune_before_ms) {
+            if (write_index != i) g_emergency_sources[write_index] = g_emergency_sources[i];
+            write_index += 1;
         }
     }
-    const index = slot_index orelse {
-        setError("no free native writer slots", .{});
-        c.ANativeWindow_release(input_window.?);
-        _ = c.AMediaCodec_delete(codec);
+    g_emergency_source_count = write_index;
+    if (g_emergency_source_count >= g_emergency_sources.len) {
+        std.mem.copyForwards(EmergencySourceSegment, g_emergency_sources[0 .. g_emergency_sources.len - 1], g_emergency_sources[1..g_emergency_sources.len]);
+        g_emergency_source_count = g_emergency_sources.len - 1;
+    }
+    var next = EmergencySourceSegment{ .start_ms = start_ms, .end_ms = end_ms };
+    if (!copyCStringToBuffer(&next.path, video_path)) return;
+    g_emergency_sources[g_emergency_source_count] = next;
+    g_emergency_source_count += 1;
+}
+
+fn managedConfigFromRecording(p: *Pipe) ManagedSegmentConfig {
+    return .{
+        .output_dir = p.recording.managed_output_dir,
+        .suffix = p.recording.managed_suffix,
+        .width = p.recording.managed_width,
+        .height = p.recording.managed_height,
+        .bitrate = p.recording.managed_bitrate,
+        .fps = p.recording.fps,
+        .segment_duration_ms = p.recording.segment_duration_ms,
+        .reserved_bytes = p.recording.managed_reserved_bytes,
+        .available_bytes = p.recording.managed_available_bytes,
+    };
+}
+
+fn managedFinalizeSegment(finalize: ManagedSegmentFinalize) i64 {
+    if (finalize.finalize_mode == 1) return managedFinalizeCameraStopSegment(finalize);
+    if (finalize.writer_handle == 0) return finalize.config.available_bytes;
+    const final_path_ptr: [*c]const u8 = &finalize.final_path;
+    const ok = finishNativeSegmentWriterToPath(finalize.writer_handle, final_path_ptr);
+    if (ok) {
+        addEmergencySourceNative(final_path_ptr, finalize.start_ms, finalize.end_ms, finalize.end_ms - finalize.config.segment_duration_ms * 3);
+        var deleted_count: i64 = 0;
+        var deleted_bytes: i64 = 0;
+        const available = cleanupStorageNative(&finalize.config.output_dir, finalize.config.reserved_bytes, finalize.config.available_bytes, final_path_ptr, &deleted_count, &deleted_bytes);
+        if (deleted_count > 0) logi("managed cleanup deleted={d} freed={d} available={d}", .{ deleted_count, deleted_bytes, available });
+        notifySegmentCacheFinalized(final_path_ptr);
+        return available;
+    } else {
+        loge("managed segment finalize failed writer={d} path={s}", .{ finalize.writer_handle, final_path_ptr });
+        return finalize.config.available_bytes;
+    }
+}
+
+fn managedFinalizeSegmentKeepWriter(finalize: ManagedSegmentFinalize) i64 {
+    if (finalize.writer_handle == 0) return finalize.config.available_bytes;
+    const final_path_ptr: [*c]const u8 = &finalize.final_path;
+    switch (finishNativeSegmentWriterSegmentOnly(finalize.writer_handle, final_path_ptr)) {
+        .finalized => {
+            addEmergencySourceNative(final_path_ptr, finalize.start_ms, finalize.end_ms, finalize.end_ms - finalize.config.segment_duration_ms * 3);
+            var deleted_count: i64 = 0;
+            var deleted_bytes: i64 = 0;
+            const available = cleanupStorageNative(&finalize.config.output_dir, finalize.config.reserved_bytes, finalize.config.available_bytes, final_path_ptr, &deleted_count, &deleted_bytes);
+            if (deleted_count > 0) logi("camera cleanup deleted={d} freed={d} available={d}", .{ deleted_count, deleted_bytes, available });
+            notifySegmentCacheFinalized(final_path_ptr);
+            return available;
+        },
+        .skipped_empty => {
+            logd("camera segment skipped empty writer={d} path={s}", .{ finalize.writer_handle, final_path_ptr });
+            return finalize.config.available_bytes;
+        },
+        .failed => {
+            loge("camera segment finalize failed writer={d} path={s}", .{ finalize.writer_handle, final_path_ptr });
+            return finalize.config.available_bytes;
+        },
+    }
+}
+
+fn managedCreateStartSegment(config: ManagedSegmentConfig, wall_clock_ms: i64, out_final_path: *[1024:0]u8) c.jlong {
+    const writer_handle = createNativeSegmentWriterForMime(config.width, config.height, config.fps, config.bitrate, "video/avc");
+    if (writer_handle == 0) return 0;
+    if (!startNativeSegmentWriter(writer_handle, &config.output_dir, &config.suffix, wall_clock_ms, out_final_path)) {
+        _ = releaseNativeSegmentWriterHandle(writer_handle);
         return 0;
-    };
-
-    const handle = g_next_native_writer_handle;
-    g_next_native_writer_handle += 1;
-    g_native_writer_used[index] = true;
-    g_native_writers[index] = NativeSegmentWriter{
-        .handle = handle,
-        .codec = codec,
-        .input_window = input_window,
-        .width = width,
-        .height = height,
-        .fps = fps,
-        .bitrate = bitrate,
-        .started = false,
-    };
-    logi("native writer created handle={d} size={d}x{d} fps={d} bitrate={d}", .{ handle, width, height, fps, bitrate });
-    return handle;
+    }
+    return writer_handle;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterInputSurface(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jobject {
-    const w = lockWriterForHandle(writer_handle) orelse return null;
-    defer unlockWriter(w);
-    const window = w.input_window orelse {
-        setError("native writer input window unavailable", .{});
-        return null;
-    };
-    return c.ANativeWindow_toSurface(env, window);
+fn managedAttachPreparedSegmentLocked(p: *Pipe, input_window: *c.ANativeWindow, final_path: [*c]const u8) bool {
+    if (!setRecordingThumbnailPathForVideo(p, final_path)) {
+        c.ANativeWindow_release(input_window);
+        return false;
+    }
+    return attachEncoderWindowLocked(p, input_window) == JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterStartSegment(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong, path: c.jstring, segment_index: c.jint, wall_clock_ms: c.jlong) callconv(.c) c.jboolean {
-    _ = segment_index;
-    _ = wall_clock_ms;
-    if (path == null) {
-        setError("native segment writer path unavailable", .{});
-        return JNI_FALSE;
+fn submitManagedFinalize(finalize: ManagedSegmentFinalize, drain_after_submit: bool) void {
+    if (finalize.writer_handle == 0) return;
+    if (!finalize_queue.submit(finalize)) {
+        finalize_queue.recordFallback();
+        _ = managedFinalizeSegment(finalize);
     }
-    const path_chars = env.*[0].GetStringUTFChars.?(env, path, null) orelse {
-        setError("native segment writer path chars unavailable", .{});
-        return JNI_FALSE;
-    };
-    defer env.*[0].ReleaseStringUTFChars.?(env, path, path_chars);
+    if (drain_after_submit) _ = finalize_queue.drain();
+}
 
-    const w = lockWriterForHandle(writer_handle) orelse return JNI_FALSE;
-    defer unlockWriter(w);
-    const codec = w.codec orelse return JNI_FALSE;
-    if (w.muxer != null or w.fd >= 0) {
-        setError("native segment writer already has active segment", .{});
-        return JNI_FALSE;
+fn managedFinalizeCameraStopSegment(finalize: ManagedSegmentFinalize) i64 {
+    if (finalize.writer_handle == 0) return finalize.config.available_bytes;
+    const final_path_ptr: [*c]const u8 = &finalize.final_path;
+    _ = writer_mod.drainFast(finalize.writer_handle, 10_000);
+    const result = finishNativeSegmentWriterSegmentOnly(finalize.writer_handle, final_path_ptr);
+    _ = releaseNativeSegmentWriterHandle(finalize.writer_handle);
+    switch (result) {
+        .finalized => {
+            addEmergencySourceNative(final_path_ptr, finalize.start_ms, finalize.end_ms, finalize.end_ms - finalize.config.segment_duration_ms * 3);
+            var deleted_count: i64 = 0;
+            var deleted_bytes: i64 = 0;
+            const available = cleanupStorageNative(&finalize.config.output_dir, finalize.config.reserved_bytes, finalize.config.available_bytes, final_path_ptr, &deleted_count, &deleted_bytes);
+            if (deleted_count > 0) logi("camera cleanup deleted={d} freed={d} available={d}", .{ deleted_count, deleted_bytes, available });
+            notifySegmentCacheFinalized(final_path_ptr);
+            return available;
+        },
+        .skipped_empty => {
+            logd("camera stop skipped empty segment writer={d} path={s}", .{ finalize.writer_handle, final_path_ptr });
+            return finalize.config.available_bytes;
+        },
+        .failed => {
+            loge("camera stop segment finalize failed writer={d} path={s}", .{ finalize.writer_handle, final_path_ptr });
+            return finalize.config.available_bytes;
+        },
     }
-    const fd = open(path_chars, O_CREAT_ANDROID | O_TRUNC_ANDROID | O_RDWR_ANDROID, 0o644);
-    if (fd < 0) {
-        setError("open native segment file failed", .{});
-        return JNI_FALSE;
+}
+
+fn cameraBuildRecordingSuffix(out: *[64:0]u8, label_chars: [*c]const u8, suffix_chars: [*c]const u8) bool {
+    const label = std.mem.span(label_chars);
+    const suffix = std.mem.span(suffix_chars);
+    @memset(out[0..], 0);
+    if (label.len == 0) {
+        if (suffix.len >= out.len) return false;
+        @memcpy(out[0..suffix.len], suffix);
+        return true;
     }
-    const muxer = c.AMediaMuxer_new(fd, c.AMEDIAMUXER_OUTPUT_FORMAT_MPEG_4) orelse {
-        _ = close(fd);
-        setError("AMediaMuxer_new failed", .{});
-        return JNI_FALSE;
+    const text = if (suffix.len == 0)
+        std.fmt.bufPrintZ(out[0..], "_{s}", .{label}) catch return false
+    else
+        std.fmt.bufPrintZ(out[0..], "_{s}{s}", .{ label, suffix }) catch return false;
+    return text.len > 0;
+}
+
+fn cameraRecordingFinalizeLocked(cam: *NativeCameraPreview, end_ms: i64) ManagedSegmentFinalize {
+    if (cam.recording_writer_handle == 0) return .{};
+    const finalize = ManagedSegmentFinalize{
+        .writer_handle = cam.recording_writer_handle,
+        .final_path = cam.recording_final_path,
+        .start_ms = cam.recording_segment_start_ms,
+        .end_ms = end_ms,
+        .config = cam.recording_config,
     };
-    w.fd = fd;
-    if (!copyCStringToBuffer(w.output_path[0..], path_chars)) {
-        _ = c.AMediaMuxer_delete(muxer);
-        _ = close(fd);
-        w.muxer = null;
-        w.fd = -1;
-        setError("native segment writer path too long", .{});
-        return JNI_FALSE;
+    cam.recording_writer_handle = 0;
+    cam.recording_final_path = [_:0]u8{0} ** 1024;
+    cam.recording_segment_start_ms = 0;
+    cam.recording_next_segment_ms = 0;
+    return finalize;
+}
+
+fn cameraRenderRecordingFrame(pipe_handle: c.jlong, input_index: c_int, surface: c.EGLSurface, width: i32, height: i32, fps: i32, frame_index: *i64, last_presentation_time_ns: *i64) bool {
+    if (pipe_handle == 0 or input_index < 0 or input_index >= 4 or surface == c.EGL_NO_SURFACE or width <= 0 or height <= 0) return false;
+    const p = lockPipeForHandle(pipe_handle) orelse return false;
+    defer unlockPipe(p);
+    const i: usize = @intCast(input_index);
+    if (p.releasing or p.input[i].surface_texture_native == null or p.input[i].texture == 0) {
+        setError("camera recording input unavailable pipe={d} input={d}", .{ pipe_handle, input_index });
+        return false;
     }
-    w.output_path_set = true;
-    w.muxer = muxer;
-    w.track_index = -1;
-    w.muxer_started = false;
-    if (!w.started) {
-        const status = c.AMediaCodec_start(codec);
-        if (status != c.AMEDIA_OK) {
-            _ = c.AMediaMuxer_delete(muxer);
-            _ = close(fd);
-            w.muxer = null;
-            w.fd = -1;
-            setError("AMediaCodec_start failed status={d}", .{status});
-            return JNI_FALSE;
+    const start_ms = nowMs();
+    if (!makeCurrent(p, surface)) return false;
+    if (!latchInputTextureLocked(&p.input[i])) {
+        clearCurrent(p);
+        return false;
+    }
+    p.input[i].encoder_generation = p.input[i].frame_generation;
+
+    var q = Quad{};
+    buildQuadForCanvas(&q, 0, 0, @floatFromInt(width), @floatFromInt(height), 0, @floatFromInt(width), @floatFromInt(height));
+    c.glViewport(0, 0, width, height);
+    c.glClearColor(0, 0, 0, 1);
+    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    beginDrawPass(p);
+    drawQuadWithFisheye(p, i, &q, true);
+    if (CHECK_RENDER_GL_ERROR) if (glError("cameraRenderRecordingFrame")) |e| {
+        setErrorSlice(e);
+        clearCurrent(p);
+        return false;
+    };
+
+    if (g_presentation_time_android) |fnptr| {
+        const safe_fps: i64 = @max(fps, 1);
+        const min_step_ns = @max(@divTrunc(1_000_000_000, safe_fps), 1000);
+        var pts = @divTrunc(frame_index.* * 1_000_000_000, safe_fps);
+        if (pts <= last_presentation_time_ns.*) pts = last_presentation_time_ns.* + min_step_ns;
+        last_presentation_time_ns.* = pts;
+        _ = fnptr(p.display, surface, pts);
+    }
+
+    const ok = c.eglSwapBuffers(p.display, surface) != c.EGL_FALSE;
+    clearCurrent(p);
+    if (!ok) {
+        setErrorSlice(eglError("eglSwapBuffers camera recording failed"));
+        return false;
+    }
+    frame_index.* += 1;
+    p.encoder_render_count += 1;
+    p.render_count += 1;
+    p.last_render_ms = nowMs() - start_ms;
+    if (p.last_render_ms >= 80 or @mod(frame_index.*, 120) == 0) logi("camera record perf input={d} totalMs={d} frame={d}", .{ input_index, p.last_render_ms, frame_index.* });
+    return true;
+}
+
+fn cameraAttachRecordingWindowLocked(cam: *NativeCameraPreview, input_window: *c.ANativeWindow) bool {
+    detachNativeCameraRecordingWindowLocked(cam);
+    if (cam.pipe_handle == 0 or cam.input_index < 0 or cam.input_index >= 4) {
+        setError("native camera recording missing pipe/input handle={d} input={d}", .{ cam.pipe_handle, cam.input_index });
+        return false;
+    }
+    const p = lockPipeForHandle(cam.pipe_handle) orelse return false;
+    defer unlockPipe(p);
+    const i: usize = @intCast(cam.input_index);
+    if (p.releasing or p.input[i].surface_texture_native == null or p.input[i].texture == 0) {
+        setError("native camera recording input unavailable pipe={d} input={d}", .{ cam.pipe_handle, cam.input_index });
+        return false;
+    }
+    if (!initEgl(p)) return false;
+    const surface = c.eglCreateWindowSurface(p.display, p.config, input_window, null);
+    if (surface == c.EGL_NO_SURFACE) {
+        setErrorSlice(eglError("eglCreateWindowSurface camera recording failed"));
+        return false;
+    }
+    cam.recording_window = input_window;
+    cam.recording_egl_surface = surface;
+    cam.recording_frame_index = 0;
+    cam.recording_last_presentation_time_ns = -1;
+    logi("native camera recording attached singleStream camera={d} pipe={d} input={d}", .{ cam.handle, cam.pipe_handle, cam.input_index });
+    return true;
+}
+
+fn cameraSwitchRecordingSegment(cam: *NativeCameraPreview) bool {
+    var config: ManagedSegmentConfig = .{};
+    var old_finalize: ManagedSegmentFinalize = .{};
+    var segment_wall: i64 = 0;
+    var writer_handle: c.jlong = 0;
+    lockNativeCamera(cam);
+    if (cam.recording_writer_handle == 0 or cam.recording_worker_stop) {
+        unlockNativeCamera(cam);
+        return false;
+    }
+    config = cam.recording_config;
+    writer_handle = cam.recording_writer_handle;
+    segment_wall = cam.recording_next_segment_ms;
+    old_finalize = .{
+        .writer_handle = writer_handle,
+        .final_path = cam.recording_final_path,
+        .start_ms = cam.recording_segment_start_ms,
+        .end_ms = segment_wall,
+        .config = config,
+    };
+    unlockNativeCamera(cam);
+
+    _ = writer_mod.drainFast(writer_handle, 0);
+    const available = managedFinalizeSegmentKeepWriter(old_finalize);
+    lockNativeCamera(cam);
+    if (cam.recording_worker_stop or cam.recording_writer_handle != writer_handle) {
+        cam.recording_config.available_bytes = available;
+        unlockNativeCamera(cam);
+        return true;
+    }
+    unlockNativeCamera(cam);
+
+    var new_final_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    if (!startNativeSegmentWriter(writer_handle, &config.output_dir, &config.suffix, segment_wall, &new_final_path)) return false;
+
+    lockNativeCamera(cam);
+    if (cam.recording_writer_handle == writer_handle) {
+        cam.recording_final_path = new_final_path;
+        cam.recording_segment_start_ms = segment_wall;
+        cam.recording_next_segment_ms = if (cam.recording_worker_stop) 0 else segment_wall + config.segment_duration_ms;
+        if (!cam.recording_worker_stop) cam.recording_segment_index += 1;
+        cam.recording_config.available_bytes = available;
+    }
+    unlockNativeCamera(cam);
+    return true;
+}
+
+fn cameraRecordingWorkerLoop(cam: *NativeCameraPreview) void {
+    var next_deadline_ms = nowMs();
+    while (true) {
+        var writer_handle: c.jlong = 0;
+        var pipe_handle: c.jlong = 0;
+        var input_index: c_int = -1;
+        var surface: c.EGLSurface = c.EGL_NO_SURFACE;
+        var width: i32 = 0;
+        var height: i32 = 0;
+        var fps: i32 = 15;
+        var frame_index: i64 = 0;
+        var last_presentation_time_ns: i64 = -1;
+        var should_stop = false;
+        var should_switch = false;
+        lockNativeCamera(cam);
+        should_stop = cam.recording_worker_stop or cam.recording_writer_handle == 0;
+        writer_handle = cam.recording_writer_handle;
+        pipe_handle = cam.pipe_handle;
+        input_index = cam.input_index;
+        surface = cam.recording_egl_surface;
+        width = cam.recording_config.width;
+        height = cam.recording_config.height;
+        fps = cam.recording_config.fps;
+        frame_index = cam.recording_frame_index;
+        last_presentation_time_ns = cam.recording_last_presentation_time_ns;
+        should_switch = !should_stop and cam.recording_next_segment_ms > 0 and wallClockMs() >= cam.recording_next_segment_ms;
+        unlockNativeCamera(cam);
+        if (should_stop) break;
+        if (should_switch) {
+            if (!cameraSwitchRecordingSegment(cam)) {
+                lockNativeCamera(cam);
+                cam.recording_next_segment_ms = wallClockMs() + @max(cam.recording_config.segment_duration_ms, 1000);
+                unlockNativeCamera(cam);
+            }
+        } else if (writer_handle != 0) {
+            const rendered = cameraRenderRecordingFrame(pipe_handle, input_index, surface, width, height, fps, &frame_index, &last_presentation_time_ns);
+            const drained = if (rendered) writer_mod.drainFast(writer_handle, 0) else @as(c.jlong, 0);
+            if (rendered or drained > 0) {
+                lockNativeCamera(cam);
+                if (cam.recording_writer_handle == writer_handle) {
+                    cam.recording_frame_index = frame_index;
+                    cam.recording_last_presentation_time_ns = last_presentation_time_ns;
+                    if (drained > 0) cam.recording_drained_samples += @intCast(drained);
+                }
+                unlockNativeCamera(cam);
+            }
         }
-        w.started = true;
+        paceAfterTick(&next_deadline_ms, @max(@divTrunc(1000, @max(fps, 1)), 1));
     }
-    return JNI_TRUE;
+    lockNativeCamera(cam);
+    cam.recording_worker_running = false;
+    unlockNativeCamera(cam);
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterFinish(env: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong, final_path: c.jstring) callconv(.c) c.jboolean {
-    if (final_path == null) {
-        setError("native segment finish final path unavailable", .{});
-        return JNI_FALSE;
+fn stopNativeCameraRecordingByPointer(cam: *NativeCameraPreview, stop_wall_clock_ms: i64, drain_after_submit: bool) bool {
+    var thread: ?std.Thread = null;
+    lockNativeCamera(cam);
+    if (cam.recording_writer_handle == 0 and !cam.recording_worker_running) {
+        unlockNativeCamera(cam);
+        return true;
     }
-    const final_chars = env.*[0].GetStringUTFChars.?(env, final_path, null) orelse {
-        setError("native segment finish final path chars unavailable", .{});
-        return JNI_FALSE;
-    };
-    defer env.*[0].ReleaseStringUTFChars.?(env, final_path, final_chars);
+    cam.recording_worker_stop = true;
+    thread = cam.recording_worker_thread;
+    cam.recording_worker_thread = null;
+    unlockNativeCamera(cam);
 
-    lockGlobal();
-    var writer: ?*NativeSegmentWriter = null;
-    for (0..MAX_NATIVE_WRITERS) |i| {
-        if (!g_native_writer_used[i] or g_native_writers[i].handle != writer_handle) continue;
-        g_native_writer_used[i] = false;
-        writer = &g_native_writers[i];
-        break;
-    }
-    if (writer) |w| lockWriter(w);
-    unlockGlobal();
-    const w = writer orelse {
-        setError("native writer finish missing handle", .{});
-        return JNI_FALSE;
-    };
-    defer unlockWriter(w);
+    if (thread) |t| t.join();
 
-    const has_output = w.output_path_set;
-    var temp_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    if (has_output) @memcpy(temp_path[0..], w.output_path[0..]);
-    const stopped = stopNativeWriterLocked(w, writer_handle);
-    if (!stopped or !has_output) {
-        releaseNativeWriterResources(w);
-        setError("native writer finish missing output path", .{});
-        return JNI_FALSE;
-    }
-    const renamed = rename(&temp_path, final_chars) == 0;
-    if (!renamed) {
-        _ = unlink(&temp_path);
-        releaseNativeWriterResources(w);
-        setError("native writer rename failed", .{});
-        return JNI_FALSE;
-    }
-    releaseNativeWriterResources(w);
-    return JNI_TRUE;
+    var finalize: ManagedSegmentFinalize = .{};
+    lockNativeCamera(cam);
+    finalize = cameraRecordingFinalizeLocked(cam, stop_wall_clock_ms);
+    finalize.finalize_mode = 1;
+    detachNativeCameraRecordingWindowLocked(cam);
+    cam.recording_worker_running = false;
+    cam.recording_worker_stop = false;
+    unlockNativeCamera(cam);
+    _ = drain_after_submit;
+    submitManagedFinalize(finalize, false);
+    return true;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeSegmentWriterRelease(_: [*c]c.JNIEnv, _: c.jobject, writer_handle: c.jlong) callconv(.c) c.jboolean {
-    lockGlobal();
-    var writer: ?*NativeSegmentWriter = null;
-    for (0..MAX_NATIVE_WRITERS) |i| {
-        if (!g_native_writer_used[i] or g_native_writers[i].handle != writer_handle) continue;
-        g_native_writer_used[i] = false;
-        writer = &g_native_writers[i];
-        break;
-    }
-    if (writer) |w| lockWriter(w);
-    unlockGlobal();
-    const w = writer orelse {
-        setError("native writer release missing handle", .{});
-        return JNI_FALSE;
+fn managedSwitchSegment(handle: c.jlong) bool {
+    var config: ManagedSegmentConfig = .{};
+    var old_finalize: ManagedSegmentFinalize = .{};
+    var segment_wall: i64 = 0;
+    if (lockPipeForHandle(handle)) |p| {
+        defer unlockPipe(p);
+        if (!p.recording.managed_native or p.recording.managed_writer_handle == 0 or !p.recording.recording) return false;
+        config = managedConfigFromRecording(p);
+        old_finalize = .{
+            .writer_handle = p.recording.managed_writer_handle,
+            .final_path = p.recording.managed_last_final_path,
+            .start_ms = p.recording.managed_last_final_start_ms,
+            .end_ms = p.recording.next_segment_wall_clock_ms,
+            .config = config,
+        };
+        segment_wall = p.recording.next_segment_wall_clock_ms;
+    } else return false;
+
+    var new_final_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    const next_writer = managedCreateStartSegment(config, segment_wall, &new_final_path);
+    if (next_writer == 0) return false;
+    const input_window = acquireWriterInputWindow(next_writer) orelse {
+        _ = releaseNativeSegmentWriterHandle(next_writer);
+        return false;
     };
-    releaseNativeWriterResources(w);
-    unlockWriter(w);
-    return JNI_TRUE;
+
+    var attached = false;
+    var input_window_consumed = false;
+    if (lockPipeForHandle(handle)) |p| {
+        defer unlockPipe(p);
+        if (!p.releasing and p.recording.managed_native and p.recording.recording and p.recording.managed_writer_handle == old_finalize.writer_handle) {
+            input_window_consumed = true;
+            attached = managedAttachPreparedSegmentLocked(p, input_window, &new_final_path);
+            if (attached) {
+                p.recording.managed_writer_handle = next_writer;
+                p.recording_worker_writer_handle = next_writer;
+                p.recording.segment_index += 1;
+                p.recording.next_segment_wall_clock_ms = segment_wall + p.recording.segment_duration_ms;
+                p.recording.encoder_segment_start_steady_ms = nowMs();
+                p.recording.last_presentation_time_ns = -1;
+                p.recording.managed_last_final_path = new_final_path;
+                p.recording.managed_last_final_start_ms = segment_wall;
+                p.recording.managed_last_final_end_ms = 0;
+            }
+        }
+    }
+    if (!attached) {
+        if (!input_window_consumed) c.ANativeWindow_release(input_window);
+        _ = releaseNativeSegmentWriterHandle(next_writer);
+        return false;
+    }
+
+    var available: i64 = old_finalize.config.available_bytes;
+    const finalized_async = finalize_queue.submit(old_finalize);
+    if (!finalized_async) {
+        finalize_queue.recordFallback();
+        available = managedFinalizeSegment(old_finalize);
+    }
+    if (lockPipeForHandle(handle)) |p| {
+        defer unlockPipe(p);
+        if (!finalized_async and p.recording.managed_native and p.recording.managed_writer_handle == next_writer) p.recording.managed_available_bytes = available;
+    }
+    return true;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPreview(env: [*c]c.JNIEnv, _: c.jobject, camera_id: c.jstring, surface: c.jobject) callconv(.c) c.jlong {
-    if (camera_id == null or surface == null) {
+fn finishNativeSegmentWriterToPath(writer_handle: c.jlong, final_chars: [*c]const u8) bool {
+    return writer_mod.finishToPath(writer_handle, final_chars);
+}
+
+fn finishNativeSegmentWriterSegmentOnly(writer_handle: c.jlong, final_chars: [*c]const u8) writer_mod.SegmentFinishResult {
+    return writer_mod.finishSegment(writer_handle, final_chars);
+}
+
+fn releaseNativeSegmentWriterHandle(writer_handle: c.jlong) bool {
+    return writer_mod.releaseHandle(writer_handle);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPreview(env: [*c]c.JNIEnv, _: c.jobject, camera_id: c.jstring, surface: c.jobject, pipe_handle: c.jlong, input_index: c.jint) callconv(.c) c.jlong {
+    if (camera_id == null or surface == null or pipe_handle == 0 or input_index < 0 or input_index >= 4) {
         setError("invalid native camera args", .{});
         return 0;
     }
+    if (lockPipeForHandle(pipe_handle)) |p| {
+        const i: usize = @intCast(input_index);
+        const input_ready = p.input[i].surface_texture_native != null and p.input[i].texture != 0;
+        unlockPipe(p);
+        if (!input_ready) {
+            setError("native camera input not ready pipe={d} input={d}", .{ pipe_handle, input_index });
+            return 0;
+        }
+    } else return 0;
     const camera_id_chars = env.*[0].GetStringUTFChars.?(env, camera_id, null) orelse {
         setError("native camera id unavailable", .{});
         return 0;
@@ -2297,6 +4223,8 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPrevi
     defer env.*[0].ReleaseStringUTFChars.?(env, camera_id, camera_id_chars);
 
     var cam = NativeCameraPreview{};
+    cam.pipe_handle = pipe_handle;
+    cam.input_index = input_index;
     cam.manager = c.ACameraManager_create() orelse {
         setError("ACameraManager_create failed", .{});
         return 0;
@@ -2306,13 +4234,8 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPrevi
         setError("native camera window unavailable", .{});
         return 0;
     };
-    var device_callbacks = c.ACameraDevice_StateCallbacks{
-        .context = null,
-        .onDisconnected = onNativeCameraDisconnected,
-        .onError = onNativeCameraError,
-    };
     var device: ?*c.ACameraDevice = null;
-    var status = c.ACameraManager_openCamera(cam.manager.?, camera_id_chars, &device_callbacks, &device);
+    const status = c.ACameraManager_openCamera(cam.manager.?, camera_id_chars, &g_native_camera_device_callbacks, &device);
     if (status != c.ACAMERA_OK or device == null) {
         releaseNativeCameraResources(&cam);
         setError("ACameraManager_openCamera failed status={d}", .{status});
@@ -2320,59 +4243,8 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPrevi
     }
     cam.device = device;
 
-    status = c.ACaptureSessionOutputContainer_create(&cam.outputs);
-    if (status != c.ACAMERA_OK or cam.outputs == null) {
+    if (!configureNativeCameraSessionLocked(&cam, false)) {
         releaseNativeCameraResources(&cam);
-        setError("ACaptureSessionOutputContainer_create failed status={d}", .{status});
-        return 0;
-    }
-    status = c.ACaptureSessionOutput_create(cam.window.?, &cam.output);
-    if (status != c.ACAMERA_OK or cam.output == null) {
-        releaseNativeCameraResources(&cam);
-        setError("ACaptureSessionOutput_create failed status={d}", .{status});
-        return 0;
-    }
-    status = c.ACaptureSessionOutputContainer_add(cam.outputs.?, cam.output.?);
-    if (status != c.ACAMERA_OK) {
-        releaseNativeCameraResources(&cam);
-        setError("ACaptureSessionOutputContainer_add failed status={d}", .{status});
-        return 0;
-    }
-    status = c.ACameraDevice_createCaptureRequest(cam.device.?, c.TEMPLATE_PREVIEW, &cam.request);
-    if (status != c.ACAMERA_OK or cam.request == null) {
-        releaseNativeCameraResources(&cam);
-        setError("ACameraDevice_createCaptureRequest failed status={d}", .{status});
-        return 0;
-    }
-    status = c.ACameraOutputTarget_create(cam.window.?, &cam.target);
-    if (status != c.ACAMERA_OK or cam.target == null) {
-        releaseNativeCameraResources(&cam);
-        setError("ACameraOutputTarget_create failed status={d}", .{status});
-        return 0;
-    }
-    status = c.ACaptureRequest_addTarget(cam.request.?, cam.target.?);
-    if (status != c.ACAMERA_OK) {
-        releaseNativeCameraResources(&cam);
-        setError("ACaptureRequest_addTarget failed status={d}", .{status});
-        return 0;
-    }
-    var session_callbacks = c.ACameraCaptureSession_stateCallbacks{
-        .context = null,
-        .onClosed = onNativeSessionClosed,
-        .onReady = onNativeSessionReady,
-        .onActive = onNativeSessionActive,
-    };
-    status = c.ACameraDevice_createCaptureSession(cam.device.?, cam.outputs.?, &session_callbacks, &cam.session);
-    if (status != c.ACAMERA_OK or cam.session == null) {
-        releaseNativeCameraResources(&cam);
-        setError("ACameraDevice_createCaptureSession failed status={d}", .{status});
-        return 0;
-    }
-    var request_array = [_]?*c.ACaptureRequest{cam.request.?};
-    status = c.ACameraCaptureSession_setRepeatingRequest(cam.session.?, null, 1, @ptrCast(&request_array), &cam.sequence_id);
-    if (status != c.ACAMERA_OK) {
-        releaseNativeCameraResources(&cam);
-        setError("ACameraCaptureSession_setRepeatingRequest failed status={d}", .{status});
         return 0;
     }
 
@@ -2395,17 +4267,119 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPrevi
     cam.handle = handle;
     g_native_camera_used[index] = true;
     g_native_cameras[index] = cam;
-    logi("NDK camera preview started handle={d}", .{handle});
+    logi("NDK camera preview started handle={d} singleStream pipe={d} input={d}", .{ handle, pipe_handle, input_index });
     return handle;
 }
 
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startNativeCameraRecording(env: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong, output_dir: c.jstring, suffix: c.jstring, label: c.jstring, width: c.jint, height: c.jint, bitrate: c.jint, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong, reserved_bytes: c.jlong, available_bytes: c.jlong) callconv(.c) c.jboolean {
+    if (output_dir == null or suffix == null or label == null or width <= 0 or height <= 0 or bitrate <= 0 or fps <= 0) return JNI_FALSE;
+    const dir_chars = env.*[0].GetStringUTFChars.?(env, output_dir, null) orelse return JNI_FALSE;
+    defer env.*[0].ReleaseStringUTFChars.?(env, output_dir, dir_chars);
+    const suffix_chars = env.*[0].GetStringUTFChars.?(env, suffix, null) orelse return JNI_FALSE;
+    defer env.*[0].ReleaseStringUTFChars.?(env, suffix, suffix_chars);
+    const label_chars = env.*[0].GetStringUTFChars.?(env, label, null) orelse return JNI_FALSE;
+    defer env.*[0].ReleaseStringUTFChars.?(env, label, label_chars);
+    _ = ensureSegmentCacheCallback(env);
+
+    var config = ManagedSegmentConfig{
+        .width = width,
+        .height = height,
+        .bitrate = bitrate,
+        .fps = @min(@max(fps, 1), 120),
+        .segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms,
+        .reserved_bytes = reserved_bytes,
+        .available_bytes = available_bytes,
+    };
+    if (!copyCStringToBuffer(&config.output_dir, dir_chars)) return JNI_FALSE;
+    if (!cameraBuildRecordingSuffix(&config.suffix, label_chars, suffix_chars)) return JNI_FALSE;
+
+    const align_to_wall_clock_segment = std.mem.len(suffix_chars) == 0;
+    const first = if (align_to_wall_clock_segment) floorToSegment(wall_clock_ms, config.segment_duration_ms) else wall_clock_ms;
+    var final_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
+    const writer_handle = managedCreateStartSegment(config, first, &final_path);
+    if (writer_handle == 0) return JNI_FALSE;
+    const input_window = acquireWriterInputWindow(writer_handle) orelse {
+        _ = releaseNativeSegmentWriterHandle(writer_handle);
+        return JNI_FALSE;
+    };
+
+    const cam = lockNativeCameraForHandle(camera_handle) orelse {
+        c.ANativeWindow_release(input_window);
+        _ = releaseNativeSegmentWriterHandle(writer_handle);
+        return JNI_FALSE;
+    };
+    var attached = false;
+    if (cam.recording_writer_handle == 0 and !cam.recording_worker_running) {
+        attached = cameraAttachRecordingWindowLocked(cam, input_window);
+        if (attached) {
+            cam.recording_config = config;
+            cam.recording_writer_handle = writer_handle;
+            cam.recording_final_path = final_path;
+            cam.recording_segment_start_ms = first;
+            cam.recording_next_segment_ms = first + config.segment_duration_ms;
+            cam.recording_segment_index = 0;
+            cam.recording_drained_samples = 0;
+            cam.recording_worker_stop = false;
+            cam.recording_worker_running = true;
+        }
+    }
+    unlockNativeCamera(cam);
+
+    if (!attached) {
+        c.ANativeWindow_release(input_window);
+        _ = releaseNativeSegmentWriterHandle(writer_handle);
+        return JNI_FALSE;
+    }
+
+    const thread = std.Thread.spawn(.{}, cameraRecordingWorkerLoop, .{cam}) catch |err| {
+        loge("camera recording worker spawn failed: {s}", .{@errorName(err)});
+        _ = stopNativeCameraRecordingByPointer(cam, wall_clock_ms, true);
+        return JNI_FALSE;
+    };
+    lockNativeCamera(cam);
+    cam.recording_worker_thread = thread;
+    unlockNativeCamera(cam);
+    logi("native camera recording started camera={d} writer={d} suffix={s} size={d}x{d} fps={d}", .{ camera_handle, writer_handle, &config.suffix, width, height, fps });
+    return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopNativeCameraRecording(_: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong, _: c.jlong, stop_wall_clock_ms: c.jlong) callconv(.c) c.jboolean {
+    const cam = lockNativeCameraForHandle(camera_handle) orelse return JNI_FALSE;
+    unlockNativeCamera(cam);
+    return if (stopNativeCameraRecordingByPointer(cam, stop_wall_clock_ms, true)) JNI_TRUE else JNI_FALSE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_snapshotNativeCameraRecording(env: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong) callconv(.c) c.jlongArray {
+    var values: [8]c.jlong = [_]c.jlong{0} ** 8;
+    if (lockNativeCameraForHandle(camera_handle)) |cam| {
+        values[0] = if (cam.recording_worker_running) 1 else 0;
+        values[1] = if (cam.recording_worker_stop) 1 else 0;
+        values[2] = cam.recording_writer_handle;
+        values[3] = cam.recording_segment_index;
+        values[4] = cam.recording_drained_samples;
+        values[5] = cam.recording_next_segment_ms;
+        values[6] = @intCast(cam.recording_config.width);
+        values[7] = @intCast(cam.recording_config.height);
+        unlockNativeCamera(cam);
+    }
+    const arr = env.*[0].NewLongArray.?(env, values.len) orelse return null;
+    env.*[0].SetLongArrayRegion.?(env, arr, 0, values.len, &values);
+    return arr;
+}
+
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseNativeCameraPreview(_: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong) callconv(.c) c.jboolean {
+    if (lockNativeCameraForHandle(camera_handle)) |cam_for_stop| {
+        unlockNativeCamera(cam_for_stop);
+        _ = stopNativeCameraRecordingByPointer(cam_for_stop, wallClockMs(), true);
+    }
     lockGlobal();
     var camera: ?*NativeCameraPreview = null;
+    var camera_index: usize = 0;
     for (0..MAX_NATIVE_CAMERAS) |i| {
         if (!g_native_camera_used[i] or g_native_cameras[i].handle != camera_handle) continue;
-        g_native_camera_used[i] = false;
+        g_native_cameras[i].handle = 0;
         camera = &g_native_cameras[i];
+        camera_index = i;
         break;
     }
     unlockGlobal();
@@ -2413,18 +4387,94 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseNativeCameraPrev
         setError("native camera release missing handle", .{});
         return JNI_FALSE;
     };
+    lockNativeCamera(cam);
     releaseNativeCameraResources(cam);
+    unlockNativeCamera(cam);
+    lockGlobal();
+    if (g_native_camera_used[camera_index] and &g_native_cameras[camera_index] == cam and g_native_cameras[camera_index].handle == 0) {
+        g_native_cameras[camera_index] = NativeCameraPreview{};
+        g_native_camera_used[camera_index] = false;
+    }
+    unlockGlobal();
     return JNI_TRUE;
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getMetricsSnapshot(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jlongArray {
-    var values = [_]c.jlong{0} ** 48;
-    if (lockPipeForHandle(handle)) |p| {
-        values[0]=p.preview_render_count; values[1]=p.encoder_render_count; values[2]=p.encoder_drop_count; values[3]=p.no_surface_count; values[4]=p.last_render_ms; values[5]=p.recording.requested_frames; values[6]=p.recording.rendered_frames; values[7]=p.recording.dropped_frames; values[8]=p.recording.segment_index; values[9]=if(p.recording.segment_switch_pending)1 else 0; values[10]=p.recording.pending_segment_index; values[11]=p.recording.next_segment_wall_clock_ms; values[12]=p.encoder_signal_count; values[13]=p.encoder_scheduled_count; values[14]=p.encoder_coalesced_count; values[15]=p.preview_max_fps; values[16]=p.preview_min_interval_ms; values[17]=p.config_version; values[18]=if(p.encoder_pending)1 else 0; values[19]=p.recording.generation; for (0..4) |i| { const base = 20 + i*7; values[base]=@max(p.input[i].frame_signal_count, p.input[i].update_count); values[base+1]=p.input[i].preview_scheduled_count; values[base+2]=p.input[i].preview_delayed_count; values[base+3]=p.input[i].preview_coalesced_count; values[base+4]=p.input[i].update_count; values[base+5]=p.input[i].preview_render_count; values[base+6]=p.input[i].preview_drop_count; }
+    var values = [_]c.jlong{0} ** METRICS_SNAPSHOT_LEN;
+    if (tryLockPipeForHandleBounded(handle, 2)) |p| {
+        values[0] = p.preview_render_count;
+        values[1] = p.encoder_render_count;
+        values[2] = p.encoder_drop_count;
+        values[3] = p.no_surface_count;
+        values[4] = p.last_render_ms;
+        values[5] = p.recording.requested_frames;
+        values[6] = p.recording.rendered_frames;
+        values[7] = p.recording.dropped_frames;
+        values[8] = p.recording.segment_index;
+        values[9] = if (p.recording.segment_switch_pending) 1 else 0;
+        values[10] = p.recording.pending_segment_index;
+        values[11] = p.recording.next_segment_wall_clock_ms;
+        values[12] = p.encoder_signal_count;
+        values[13] = p.encoder_scheduled_count;
+        values[14] = p.encoder_coalesced_count;
+        values[15] = p.preview_max_fps;
+        values[16] = p.preview_min_interval_ms;
+        values[17] = p.recording.encoded_samples;
+        values[18] = if (p.encoder_pending) 1 else 0;
+        values[19] = p.recording.generation;
+        for (0..4) |i| {
+            const base = 20 + i * 7;
+            values[base] = @max(p.input[i].frame_signal_count, p.input[i].update_count);
+            values[base + 1] = p.input[i].preview_scheduled_count;
+            values[base + 2] = p.input[i].preview_delayed_count;
+            values[base + 3] = p.input[i].preview_coalesced_count;
+            values[base + 4] = p.input[i].update_count;
+            values[base + 5] = p.input[i].preview_render_count;
+            values[base + 6] = p.input[i].preview_drop_count;
+        }
+        values[48] = if (p.recording_worker_running) 1 else 0;
+        values[49] = if (p.recording_worker_paused_for_segment) 1 else 0;
+        values[50] = p.recording_worker_writer_handle;
+        values[51] = p.recording_worker_generation;
+        values[52] = if (p.recording.thumbnail_path_set) 1 else 0;
+        values[53] = if (p.recording.thumbnail_written) 1 else 0;
+        values[64] = p.pipe_lock_acquire_count;
+        values[65] = p.pipe_lock_wait_total_ms;
+        values[66] = p.pipe_lock_wait_max_ms;
+        values[67] = p.pipe_try_lock_success_count;
+        values[68] = @atomicLoad(i64, &p.pipe_try_lock_fail_count, .monotonic);
+        values[69] = @atomicLoad(i64, &p.recording_lock_defer_count, .monotonic);
+        values[70] = p.recording_preview_yield_count;
+        values[71] = p.preview_worker_next_deadline_ms;
+        values[72] = p.recording_frame_queue_produced_count;
+        values[73] = p.recording_frame_queue_consumed_count;
+        values[74] = p.recording_frame_queue_drop_count;
+        values[75] = @intCast(p.recording_frame_queue_count);
+        values[76] = p.recording_frame_queue_max_depth;
+        values[77] = p.recording_frame_queue_fallback_count;
+        values[78] = p.recording_frame_queue_fbo_recreate_count;
+        values[79] = p.recording_frame_queue_next_capture_ms;
         unlockPipe(p);
+        storeMetricsCache(handle, &values);
+    } else {
+        _ = loadMetricsCache(handle, &values);
     }
-    const result = env.*[0].NewLongArray.?(env, 48);
-    if (result != null) env.*[0].SetLongArrayRegion.?(env, result, 0, 48, &values);
+    if (tryLockGlobalBounded(1)) {
+        values[54] = @intCast(g_emergency_source_count);
+        values[55] = @intCast(g_emergency_request_count);
+        unlockGlobal();
+    }
+    const finalize_metrics = finalize_queue.snapshotMetrics();
+    values[56] = @intCast(finalize_metrics.depth);
+    values[57] = @intCast(finalize_metrics.active);
+    values[58] = if (finalize_metrics.running) 1 else 0;
+    values[59] = finalize_metrics.last_available_bytes;
+    values[60] = finalize_metrics.submitted_count;
+    values[61] = finalize_metrics.completed_count;
+    values[62] = finalize_metrics.fallback_count;
+    values[63] = if (finalize_metrics.accepting) 1 else 0;
+    const result = env.*[0].NewLongArray.?(env, values.len);
+    if (result != null) env.*[0].SetLongArrayRegion.?(env, result, 0, values.len, &values);
     return result;
 }
 
@@ -2467,12 +4517,50 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createCompositor(_: [*c
     unlockGlobal();
     return handle;
 }
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createOesTexture(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jint { const p = lockPipeForHandle(handle) orelse return 0; defer unlockPipe(p); if (index < 0 or index >= 4 or !initEgl(p) or !makePbufferCurrent(p)) return 0; const i: usize = @intCast(index); if (p.input[i].texture != 0) { c.glDeleteTextures(1, &p.input[i].texture); p.input[i].texture = 0; } var tex: c.GLuint = 0; c.glGenTextures(1, &tex); if (tex == 0) { setError("glGenTextures returned 0", .{}); clearCurrent(p); return 0; } c.glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE); c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE); if (glError("createOesTexture")) |e| { setErrorSlice(e); c.glDeleteTextures(1, &tex); clearCurrent(p); return 0; } p.input[i].texture = tex; clearCurrent(p); logd("created OES texture index={d} tex={d}", .{index, tex}); return @intCast(tex); }
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_destroyOesInput(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); if (index < 0 or index >= 4) return JNI_FALSE; resetInput(env, p, @intCast(index), true); logd("destroyed OES input index={d}", .{index}); return JNI_TRUE; }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createOesTexture(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jint {
+    const p = lockPipeForHandle(handle) orelse return 0;
+    defer unlockPipe(p);
+    if (p.releasing or index < 0 or index >= 4 or !initEgl(p) or !makePbufferCurrent(p)) return 0;
+    const i: usize = @intCast(index);
+    if (p.input[i].texture != 0) {
+        c.glDeleteTextures(1, &p.input[i].texture);
+        p.input[i].texture = 0;
+    }
+    var tex: c.GLuint = 0;
+    c.glGenTextures(1, &tex);
+    if (tex == 0) {
+        setError("glGenTextures returned 0", .{});
+        clearCurrent(p);
+        return 0;
+    }
+    c.glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+    c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+    c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+    c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+    c.glTexParameteri(GL_TEXTURE_EXTERNAL_OES, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    if (glError("createOesTexture")) |e| {
+        setErrorSlice(e);
+        c.glDeleteTextures(1, &tex);
+        clearCurrent(p);
+        return 0;
+    }
+    p.input[i].texture = tex;
+    clearCurrent(p);
+    logd("created OES texture index={d} tex={d}", .{ index, tex });
+    return @intCast(tex);
+}
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_destroyOesInput(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean {
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    if (index < 0 or index >= 4) return JNI_FALSE;
+    resetInput(env, p, @intCast(index), true);
+    logd("destroyed OES input index={d}", .{index});
+    return JNI_TRUE;
+}
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createOesInput(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface_texture: c.jobject) callconv(.c) c.jboolean {
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
-    if (index < 0 or index >= 4 or surface_texture == null) return JNI_FALSE;
+    if (p.releasing or index < 0 or index >= 4 or surface_texture == null) return JNI_FALSE;
     const i: usize = @intCast(index);
     resetInput(env, p, i, false);
     const native_st = c.ASurfaceTexture_fromSurfaceTexture(env, surface_texture) orelse {
@@ -2491,14 +4579,160 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createOesInput(env: [*c
     logd("created OES input index={d}", .{index});
     return JNI_TRUE;
 }
-fn attachPreviewSurfaceLocked(env: [*c]c.JNIEnv, p: *Pipe, index: c.jint, surface: c.jobject, apply_fisheye: bool, apply_native_transform: bool) c.jboolean { if (index < 0 or index >= 4 or !initEgl(p)) return JNI_FALSE; const i: usize = @intCast(index); if (p.preview_surface[i] != c.EGL_NO_SURFACE) { if (p.current_surface == p.preview_surface[i]) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.preview_surface[i]); p.preview_surface[i] = c.EGL_NO_SURFACE; } if (p.preview_window[i]) |w| c.ANativeWindow_release(w); p.preview_window[i] = c.ANativeWindow_fromSurface(env, surface); if (p.preview_window[i] == null) { setError("preview window unavailable", .{}); return JNI_FALSE; } p.preview_surface[i] = c.eglCreateWindowSurface(p.display, p.config, p.preview_window[i], null); if (p.preview_surface[i] == c.EGL_NO_SURFACE) { setErrorSlice(eglError("eglCreateWindowSurface preview failed")); c.ANativeWindow_release(p.preview_window[i].?); p.preview_window[i] = null; return JNI_FALSE; } p.preview_apply_fisheye[i] = apply_fisheye; p.preview_apply_native_transform[i] = apply_native_transform; updatePreviewLayout(p, index, c.ANativeWindow_getWidth(p.preview_window[i].?), c.ANativeWindow_getHeight(p.preview_window[i].?)); logd("attached preview surface index={d} size={d}x{d} fisheye={d} nativeTransform={d}", .{index, c.ANativeWindow_getWidth(p.preview_window[i].?), c.ANativeWindow_getHeight(p.preview_window[i].?), if(apply_fisheye)@as(i32,1) else @as(i32,0), if(apply_native_transform)@as(i32,1) else @as(i32,0)}); return JNI_TRUE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurfaceWithMode(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); return attachPreviewSurfaceLocked(env, p, index, surface, apply_fisheye == JNI_TRUE, apply_native_transform == JNI_TRUE); }
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); if (index < 0 or index >= 4) return JNI_FALSE; const i: usize = @intCast(index); if (p.preview_surface[i] != c.EGL_NO_SURFACE) { if (p.current_surface == p.preview_surface[i]) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.preview_surface[i]); p.preview_surface[i] = c.EGL_NO_SURFACE; } if (p.preview_window[i]) |w| { c.ANativeWindow_release(w); p.preview_window[i] = null; } p.input[i].preview_pending = false; return JNI_TRUE; }
+fn attachPreviewSurfaceLocked(env: [*c]c.JNIEnv, p: *Pipe, index: c.jint, surface: c.jobject, apply_fisheye: bool, apply_native_transform: bool) c.jboolean {
+    if (p.releasing or index < 0 or index >= 4 or !initEgl(p)) return JNI_FALSE;
+    const i: usize = @intCast(index);
+    if (p.preview_surface[i] != c.EGL_NO_SURFACE) {
+        if (p.current_surface == p.preview_surface[i]) clearCurrent(p);
+        _ = c.eglDestroySurface(p.display, p.preview_surface[i]);
+        p.preview_surface[i] = c.EGL_NO_SURFACE;
+    }
+    if (p.preview_window[i]) |w| c.ANativeWindow_release(w);
+    p.preview_window[i] = c.ANativeWindow_fromSurface(env, surface);
+    if (p.preview_window[i] == null) {
+        setError("preview window unavailable", .{});
+        return JNI_FALSE;
+    }
+    p.preview_surface[i] = c.eglCreateWindowSurface(p.display, p.config, p.preview_window[i], null);
+    if (p.preview_surface[i] == c.EGL_NO_SURFACE) {
+        setErrorSlice(eglError("eglCreateWindowSurface preview failed"));
+        c.ANativeWindow_release(p.preview_window[i].?);
+        p.preview_window[i] = null;
+        return JNI_FALSE;
+    }
+    p.preview_apply_fisheye[i] = apply_fisheye;
+    p.preview_apply_native_transform[i] = apply_native_transform;
+    updatePreviewLayout(p, index, c.ANativeWindow_getWidth(p.preview_window[i].?), c.ANativeWindow_getHeight(p.preview_window[i].?));
+    logd("attached preview surface index={d} size={d}x{d} fisheye={d} nativeTransform={d}", .{ index, c.ANativeWindow_getWidth(p.preview_window[i].?), c.ANativeWindow_getHeight(p.preview_window[i].?), if (apply_fisheye) @as(i32, 1) else @as(i32, 0), if (apply_native_transform) @as(i32, 1) else @as(i32, 0) });
+    return JNI_TRUE;
+}
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachEncoderSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, surface: c.jobject) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); if (!initEgl(p)) return JNI_FALSE; const new_window = c.ANativeWindow_fromSurface(env, surface); if (new_window == null) { setError("encoder window unavailable", .{}); return JNI_FALSE; } const new_surface = c.eglCreateWindowSurface(p.display, p.config, new_window, null); if (new_surface == c.EGL_NO_SURFACE) { setErrorSlice(eglError("eglCreateWindowSurface encoder failed")); c.ANativeWindow_release(new_window); return JNI_FALSE; } const old_surface = p.encoder_surface; const old_window = p.encoder_window; p.encoder_surface = new_surface; p.encoder_window = new_window; if (old_surface != c.EGL_NO_SURFACE) { if (p.current_surface == old_surface) clearCurrent(p); _ = c.eglDestroySurface(p.display, old_surface); } if (old_window) |w| c.ANativeWindow_release(w); p.encoder_frame_index = 0; if (p.recording.recording) { p.recording.encoder_segment_start_steady_ms = nowMs(); p.recording.last_presentation_time_ns = -1; } p.encoder_pending = false; p.encoder_generation += 1; return JNI_TRUE; }
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachEncoderSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean { const p = lockPipeForHandle(handle) orelse return JNI_FALSE; defer unlockPipe(p); if (p.encoder_surface != c.EGL_NO_SURFACE) { if (p.current_surface == p.encoder_surface) clearCurrent(p); _ = c.eglDestroySurface(p.display, p.encoder_surface); p.encoder_surface = c.EGL_NO_SURFACE; } if (p.encoder_window) |w| { c.ANativeWindow_release(w); p.encoder_window = null; } p.encoder_generation = 0; p.encoder_frame_index = 0; p.encoder_pending = false; return JNI_TRUE; }
+fn detachCompositePreviewSurfaceLocked(p: *Pipe) void {
+    if (p.composite_preview_surface != c.EGL_NO_SURFACE) {
+        if (p.current_surface == p.composite_preview_surface) clearCurrent(p);
+        _ = c.eglDestroySurface(p.display, p.composite_preview_surface);
+        p.composite_preview_surface = c.EGL_NO_SURFACE;
+    }
+    if (p.composite_preview_window) |w| {
+        c.ANativeWindow_release(w);
+        p.composite_preview_window = null;
+    }
+    p.recording_worker_condition.broadcast(nativeIo());
+}
+
+fn attachCompositePreviewSurfaceLocked(env: [*c]c.JNIEnv, p: *Pipe, surface: c.jobject) c.jboolean {
+    if (p.releasing or surface == null or !initEgl(p)) return JNI_FALSE;
+    detachCompositePreviewSurfaceLocked(p);
+    p.composite_preview_window = c.ANativeWindow_fromSurface(env, surface);
+    if (p.composite_preview_window == null) {
+        setError("composite preview window unavailable", .{});
+        return JNI_FALSE;
+    }
+    p.composite_preview_surface = c.eglCreateWindowSurface(p.display, p.config, p.composite_preview_window, null);
+    if (p.composite_preview_surface == c.EGL_NO_SURFACE) {
+        setErrorSlice(eglError("eglCreateWindowSurface composite preview failed"));
+        if (p.composite_preview_window) |w| c.ANativeWindow_release(w);
+        p.composite_preview_window = null;
+        return JNI_FALSE;
+    }
+    logd("attached composite preview surface size={d}x{d}", .{ c.ANativeWindow_getWidth(p.composite_preview_window.?), c.ANativeWindow_getHeight(p.composite_preview_window.?) });
+    return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachCompositePreviewSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, surface: c.jobject) callconv(.c) c.jboolean {
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    return attachCompositePreviewSurfaceLocked(env, p, surface);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachCompositePreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean {
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    detachCompositePreviewSurfaceLocked(p);
+    return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurfaceWithMode(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean) callconv(.c) c.jboolean {
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    return attachPreviewSurfaceLocked(env, p, index, surface, apply_fisheye == JNI_TRUE, apply_native_transform == JNI_TRUE);
+}
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean {
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    if (index < 0 or index >= 4) return JNI_FALSE;
+    const i: usize = @intCast(index);
+    if (p.preview_surface[i] != c.EGL_NO_SURFACE) {
+        if (p.current_surface == p.preview_surface[i]) clearCurrent(p);
+        _ = c.eglDestroySurface(p.display, p.preview_surface[i]);
+        p.preview_surface[i] = c.EGL_NO_SURFACE;
+    }
+    if (p.preview_window[i]) |w| {
+        c.ANativeWindow_release(w);
+        p.preview_window[i] = null;
+    }
+    p.input[i].preview_pending = false;
+    return JNI_TRUE;
+}
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurfaces(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, indexes: c.jintArray) callconv(.c) c.jboolean {
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    if (indexes == null) return JNI_TRUE;
+    const count = getArrayLen(env, indexes);
+    const raw = env.*[0].GetIntArrayElements.?(env, indexes, null) orelse return JNI_FALSE;
+    defer env.*[0].ReleaseIntArrayElements.?(env, indexes, raw, c.JNI_ABORT);
+    var n: c.jsize = 0;
+    while (n < count) : (n += 1) {
+        const index = raw[@intCast(n)];
+        if (index < 0 or index >= 4) continue;
+        const i: usize = @intCast(index);
+        if (p.preview_surface[i] != c.EGL_NO_SURFACE) {
+            if (p.current_surface == p.preview_surface[i]) clearCurrent(p);
+            _ = c.eglDestroySurface(p.display, p.preview_surface[i]);
+            p.preview_surface[i] = c.EGL_NO_SURFACE;
+        }
+        if (p.preview_window[i]) |w| {
+            c.ANativeWindow_release(w);
+            p.preview_window[i] = null;
+        }
+        p.input[i].preview_pending = false;
+    }
+    return JNI_TRUE;
+}
+
+fn stopCompositorWorkersForRelease(env: [*c]c.JNIEnv, obj: c.jobject, handle: c.jlong) void {
+    var managed_recording = false;
+    var recording_worker = false;
+    var preview_worker = false;
+    if (lockPipeForHandle(handle)) |p| {
+        managed_recording = p.recording.managed_native or p.recording.managed_writer_handle != 0;
+        recording_worker = p.recording_worker_running or p.recording_worker_thread != null;
+        preview_worker = p.preview_worker_running or p.preview_worker_thread != null;
+        unlockPipe(p);
+    } else return;
+
+    if (managed_recording) {
+        _ = Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopManagedRecording(env, obj, handle, 2000, nowMs());
+    } else if (recording_worker) {
+        _ = stopRecordingWorkerNative(handle, 2000);
+    }
+    if (preview_worker) {
+        _ = Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopPreviewWorker(env, obj, handle, 2000);
+    }
+    if (lockPipeForHandle(handle)) |p| {
+        defer unlockPipe(p);
+        detachEncoderSurfaceLocked(p);
+    }
+}
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseCompositor(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) void {
+    clearMetricsCache(handle);
+    if (lockPipeForHandle(handle)) |p| {
+        p.releasing = true;
+        unlockPipe(p);
+    }
+    stopCompositorWorkersForRelease(env, null, handle);
+
     lockGlobal();
     var pipe: ?*Pipe = null;
     var pipe_index: usize = 0;
@@ -2515,31 +4749,67 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseCompositor(env: 
     const p = pipe orelse return;
     if (p.display != c.EGL_NO_DISPLAY) {
         _ = makePbufferCurrent(p);
+        releaseRecordingFrameQueueLocked(p);
         for (0..4) |i| {
             if (p.preview_surface[i] != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.preview_surface[i]);
+            p.preview_surface[i] = c.EGL_NO_SURFACE;
             if (p.input[i].texture != 0) c.glDeleteTextures(1, &p.input[i].texture);
+            p.input[i].texture = 0;
         }
+        if (p.composite_preview_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.composite_preview_surface);
+        p.composite_preview_surface = c.EGL_NO_SURFACE;
         if (p.encoder_surface != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.encoder_surface);
+        p.encoder_surface = c.EGL_NO_SURFACE;
         if (p.overlay_font_texture != 0) c.glDeleteTextures(1, &p.overlay_font_texture);
+        p.overlay_font_texture = 0;
+        releaseWatermarkTextureLocked(p);
         if (p.program != 0) c.glDeleteProgram(p.program);
+        p.program = 0;
         if (p.overlay_program != 0) c.glDeleteProgram(p.overlay_program);
+        p.overlay_program = 0;
         if (p.overlay_text_program != 0) c.glDeleteProgram(p.overlay_text_program);
+        p.overlay_text_program = 0;
+        if (p.texture_program != 0) c.glDeleteProgram(p.texture_program);
+        p.texture_program = 0;
         clearCurrent(p);
         if (p.pbuffer != c.EGL_NO_SURFACE) _ = c.eglDestroySurface(p.display, p.pbuffer);
+        p.pbuffer = c.EGL_NO_SURFACE;
         if (p.context != c.EGL_NO_CONTEXT) _ = c.eglDestroyContext(p.display, p.context);
+        p.context = c.EGL_NO_CONTEXT;
         _ = c.eglTerminate(p.display);
+        p.display = c.EGL_NO_DISPLAY;
+        p.config = null;
+        p.current_surface = c.EGL_NO_SURFACE;
     }
     for (0..4) |i| {
         if (p.input[i].surface_texture_native) |st| c.ASurfaceTexture_release(st);
         if (p.input[i].surface_texture != null) env.*[0].DeleteGlobalRef.?(env, p.input[i].surface_texture);
+        p.input[i] = Input{};
         if (p.preview_window[i]) |w| c.ANativeWindow_release(w);
+        p.preview_window[i] = null;
     }
     if (p.encoder_window) |w| c.ANativeWindow_release(w);
+    p.encoder_window = null;
+    if (p.composite_preview_window) |w| c.ANativeWindow_release(w);
+    p.composite_preview_window = null;
+    p.recording_worker_running = false;
+    p.recording_worker_stop = true;
+    p.recording_worker_paused_for_segment = false;
+    p.recording_worker_writer_handle = 0;
+    p.recording_worker_next_deadline_ms = 0;
+    p.recording_worker_thread = null;
+    p.preview_worker_running = false;
+    p.preview_worker_stop = true;
+    p.preview_worker_next_deadline_ms = 0;
+    p.preview_worker_thread = null;
+    p.recording = RecordingState{};
+    p.encoder_pending = false;
 
+    unlockPipe(p);
     lockGlobal();
     if (g_used[pipe_index] and &g_pipes[pipe_index] == p and p.handle == 0) g_used[pipe_index] = false;
     unlockGlobal();
-    p.* = Pipe{};
-    unlockPipe(p);
 }
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getLastError(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring { return newString(env, &g_last_error); }
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getLastError(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring {
+    return newString(env, &g_last_error);
+}

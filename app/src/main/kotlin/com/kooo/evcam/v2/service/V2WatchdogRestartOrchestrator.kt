@@ -1,17 +1,15 @@
 package com.kooo.evcam.v2.service
 
-import android.os.Handler
 import android.os.SystemClock
 import com.kooo.evcam.v2.log.V2AppLog
 
 internal class V2WatchdogRestartOrchestrator(
-    private val handler: Handler,
     private val engine: V2CameraEngine,
     private val isDisplayPowerOn: () -> Boolean,
     private val isAvoidanceActive: () -> Boolean,
     private val restoreMainPreviews: () -> Unit,
-    private val syncRecordingState: () -> Unit,
-    private val syncRecordingStateAndUi: () -> Unit,
+    private val publishSnapshot: (String) -> Unit,
+    private val dispatchDelayed: (String, Long, () -> Unit) -> Unit,
 ) {
     fun restartCameras(reason: String) {
         if (!isDisplayPowerOn()) return
@@ -21,15 +19,15 @@ internal class V2WatchdogRestartOrchestrator(
         runCatching {
             if (wasRecording) {
                 engine.stopRecording()
-                syncRecordingState()
+                publishSnapshot("watchdog_stop_recording")
             }
             engine.stopCameras()
             engine.startCameras()
             restoreMainPreviews()
             if (wasRecording && isDisplayPowerOn()) {
-                handler.postDelayed({ restartRecordingIfNeeded() }, RECORDING_RESTART_DELAY_MS)
+                dispatchDelayed("watchdogRestartRecording", RECORDING_RESTART_DELAY_MS) { restartRecordingIfNeeded() }
             }
-            syncRecordingStateAndUi()
+            publishSnapshot("watchdog_restart")
             V2AppLog.perf(
                 TAG,
                 "watchdogRestartCameras_schedule",
@@ -43,11 +41,12 @@ internal class V2WatchdogRestartOrchestrator(
         if (isDisplayPowerOn() && !isAvoidanceActive() && !engine.isRecording()) {
             V2AppLog.w(TAG, "watchdog restarting recording")
             engine.startRecording()
-            syncRecordingState()
+            publishSnapshot("watchdog_restart_recording")
         }
     }
 
-    private companion object {
+    companion object {
+        val RECORDING_RESTART_TOKEN: Any = "watchdog_recording_restart"
         private const val TAG = "V2CameraService"
         private const val RECORDING_RESTART_DELAY_MS = 3_000L
     }

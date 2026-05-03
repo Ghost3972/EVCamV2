@@ -3,86 +3,43 @@ package com.kooo.evcam.v2.storage
 import android.content.Context
 import android.os.SystemClock
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.nativebridge.GlesNative
 import com.kooo.evcam.v2.settings.V2StorageCleanupSettings
 import java.io.File
 
 object V2StorageCleaner {
-    private const val STALE_RECORDING_AGE_MS = 10 * 60 * 1000L
-
     fun cleanupForReservedSpace(context: Context, outputDir: File): V2StorageCleanupResult {
         val startedMs = SystemClock.elapsedRealtime()
         outputDir.mkdirs()
         val reservedBytes = V2StorageCleanupSettings.reservedSpaceBytes(context)
-        val staleResult = cleanupStaleRecordingFiles(outputDir)
-        if (reservedBytes <= 0L) return V2StorageCleanupResult(staleResult.first, staleResult.second, outputDir.usableSpace, reservedBytes)
-            .also { logCleanupPerf(startedMs, it, "no_reserve") }
-
-        var available = outputDir.usableSpace
-        if (available >= reservedBytes) return V2StorageCleanupResult(staleResult.first, staleResult.second, available, reservedBytes)
-            .also { logCleanupPerf(startedMs, it, "enough_space") }
-
-        var deletedCount = staleResult.first
-        var deletedBytes = staleResult.second
-        val videos = outputDir.listFiles { file -> file.isFile && file.extension.equals("mp4", ignoreCase = true) }
-            ?.sortedWith(compareBy<File> { it.lastModified() }.thenBy { it.name })
-            .orEmpty()
-
-        for (video in videos) {
-            if (available >= reservedBytes) break
-            val before = video.length().coerceAtLeast(0L)
-            if (video.delete()) {
-                deletedCount += 1
-                deletedBytes += before
-                deletedBytes += deleteThumbnailSidecars(video)
-                available = outputDir.usableSpace
-                V2AppLog.w("V2StorageCleaner", "deleted old segment ${video.name} freed=${formatBytes(before)} available=${formatBytes(available)} reserve=${formatBytes(reservedBytes)}")
-            } else {
-                V2AppLog.w("V2StorageCleaner", "delete failed ${video.absolutePath}")
+        val native = if (GlesNative.isLoaded) {
+            runCatching {
+                GlesNative.nativeCleanupStorage(
+                    outputDir = outputDir.absolutePath,
+                    reservedBytes = reservedBytes,
+                    availableBytes = outputDir.usableSpace,
+                )
+            }.getOrElse {
+                V2AppLog.w("V2StorageCleaner", "native cleanup failed", it)
+                longArrayOf()
             }
+        } else {
+            longArrayOf()
         }
-
-        val result = V2StorageCleanupResult(deletedCount, deletedBytes, available, reservedBytes)
-        if (deletedCount > 0 || available < reservedBytes) {
-            V2AppLog.w("V2StorageCleaner", "cleanup result deleted=$deletedCount freed=${formatBytes(deletedBytes)} available=${formatBytes(available)} reserve=${formatBytes(reservedBytes)}")
+        val result = if (native.size >= 3) {
+            V2StorageCleanupResult(native[0].toInt(), native[1], outputDir.usableSpace.coerceAtLeast(native[2]), reservedBytes)
+        } else {
+            V2StorageCleanupResult(0, 0L, outputDir.usableSpace, reservedBytes)
         }
-        logCleanupPerf(startedMs, result, if (available >= reservedBytes) "recovered" else "low_space")
+        if (result.deletedCount > 0 || result.availableBytes < reservedBytes) {
+            V2AppLog.w("V2StorageCleaner", "cleanup result deleted=${result.deletedCount} freed=${formatBytes(result.deletedBytes)} available=${formatBytes(result.availableBytes)} reserve=${formatBytes(reservedBytes)}")
+        }
+        logCleanupPerf(startedMs, result, if (result.availableBytes >= reservedBytes) "native" else "native_low_space")
         return result
     }
 
     private fun logCleanupPerf(startedMs: Long, result: V2StorageCleanupResult, reason: String) {
         V2AppLog.perf("V2StoragePerf", "cleanup", SystemClock.elapsedRealtime() - startedMs, "reason=$reason deleted=${result.deletedCount} freed=${formatBytes(result.deletedBytes)} available=${formatBytes(result.availableBytes)} reserve=${formatBytes(result.reservedBytes)}")
-    }
-
-    private fun cleanupStaleRecordingFiles(outputDir: File): Pair<Int, Long> {
-        val cutoff = System.currentTimeMillis() - STALE_RECORDING_AGE_MS
-        var deletedCount = 0
-        var deletedBytes = 0L
-        val staleTemps = outputDir.listFiles { file ->
-            file.isFile && file.name.endsWith(".mp4.recording", ignoreCase = true) && file.lastModified() in 1 until cutoff
-        }.orEmpty()
-        for (temp in staleTemps) {
-            val before = temp.length().coerceAtLeast(0L)
-            if (temp.delete()) {
-                deletedCount += 1
-                deletedBytes += before
-                V2AppLog.w("V2StorageCleaner", "deleted stale temp segment ${temp.name} freed=${formatBytes(before)}")
-            } else {
-                V2AppLog.w("V2StorageCleaner", "delete stale temp failed ${temp.absolutePath}")
-            }
-        }
-        return deletedCount to deletedBytes
-    }
-
-    private fun deleteThumbnailSidecars(video: File): Long {
-        val parent = video.parentFile ?: return 0L
-        return listOf("bmp", "jpg", "jpeg")
-            .map { ext -> File(parent, "${video.nameWithoutExtension}.$ext") }
-            .distinctBy { it.absolutePath }
-            .sumOf { thumb ->
-                if (!thumb.exists()) return@sumOf 0L
-                val bytes = thumb.length().coerceAtLeast(0L)
-                if (thumb.delete()) bytes else 0L
-            }
     }
 
     fun formatBytes(bytes: Long): String {

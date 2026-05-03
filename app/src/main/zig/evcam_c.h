@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/native_window_jni.h>
 #include <android/surface_texture_jni.h>
+#include <android/bitmap.h>
 #include <android/log.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaExtractor.h>
@@ -14,3 +15,5 @@
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <dirent.h>
+#include <sys/statvfs.h>

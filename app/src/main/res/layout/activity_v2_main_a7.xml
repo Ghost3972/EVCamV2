@@ -5,194 +5,46 @@
     android:layout_height="match_parent"
     android:background="@color/home_background">
 
-    <LinearLayout
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginStart="240dp"
-        android:orientation="vertical">
+        android:background="@color/home_preview_background">
 
-        <LinearLayout
+        <com.kooo.evcam.v2.ui.V2AutoFitTextureView
+            android:id="@+id/texture_front"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:orientation="horizontal">
+            android:layout_height="match_parent"
+            android:layout_gravity="center" />
 
-            <FrameLayout
-                android:id="@+id/frame_front"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@color/home_preview_background">
-
-                <com.kooo.evcam.v2.ui.V2AutoFitTextureView
-                    android:id="@+id/texture_front"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:layout_gravity="center" />
-
-                <TextView
-                    android:id="@+id/preview_placeholder_front"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@color/home_placeholder_background"
-                    android:gravity="center"
-                    android:text="预览已停止"
-                    android:textColor="@color/home_placeholder_text"
-                    android:textSize="26sp"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/fps_front"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="bottom|start"
-                    android:layout_marginStart="10dp"
-                    android:layout_marginBottom="10dp"
-                    android:background="@drawable/camera_label_background"
-                    android:gravity="center"
-                    android:paddingStart="10dp"
-                    android:paddingTop="6dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="6dp"
-                    android:text="--×--"
-                    android:textColor="@color/playback_video_text"
-                    android:textSize="12sp" />
-            </FrameLayout>
-
-            <FrameLayout
-                android:id="@+id/frame_back"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@color/home_preview_background">
-
-                <com.kooo.evcam.v2.ui.V2AutoFitTextureView
-                    android:id="@+id/texture_back"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:layout_gravity="center" />
-
-                <TextView
-                    android:id="@+id/preview_placeholder_back"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@color/home_placeholder_background"
-                    android:gravity="center"
-                    android:text="预览已停止"
-                    android:textColor="@color/home_placeholder_text"
-                    android:textSize="26sp"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/fps_back"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="bottom|start"
-                    android:layout_marginStart="10dp"
-                    android:layout_marginBottom="10dp"
-                    android:background="@drawable/camera_label_background"
-                    android:gravity="center"
-                    android:paddingStart="10dp"
-                    android:paddingTop="6dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="6dp"
-                    android:text="--×--"
-                    android:textColor="@color/playback_video_text"
-                    android:textSize="12sp" />
-            </FrameLayout>
-        </LinearLayout>
-
-        <LinearLayout
+        <TextView
+            android:id="@+id/preview_placeholder_front"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:orientation="horizontal">
+            android:layout_height="match_parent"
+            android:background="@color/home_placeholder_background"
+            android:gravity="center"
+            android:text="预览已停止"
+            android:textColor="@color/home_placeholder_text"
+            android:textSize="26sp"
+            android:visibility="gone" />
 
-            <FrameLayout
-                android:id="@+id/frame_left"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@color/home_preview_background">
-
-                <com.kooo.evcam.v2.ui.V2AutoFitTextureView
-                    android:id="@+id/texture_left"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:layout_gravity="center" />
-
-                <TextView
-                    android:id="@+id/preview_placeholder_left"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@color/home_placeholder_background"
-                    android:gravity="center"
-                    android:text="预览已停止"
-                    android:textColor="@color/home_placeholder_text"
-                    android:textSize="26sp"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/fps_left"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="bottom|start"
-                    android:layout_marginStart="10dp"
-                    android:layout_marginBottom="10dp"
-                    android:background="@drawable/camera_label_background"
-                    android:gravity="center"
-                    android:paddingStart="10dp"
-                    android:paddingTop="6dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="6dp"
-                    android:text="--×--"
-                    android:textColor="@color/playback_video_text"
-                    android:textSize="12sp" />
-            </FrameLayout>
-
-            <FrameLayout
-                android:id="@+id/frame_right"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@color/home_preview_background">
-
-                <com.kooo.evcam.v2.ui.V2AutoFitTextureView
-                    android:id="@+id/texture_right"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:layout_gravity="center" />
-
-                <TextView
-                    android:id="@+id/preview_placeholder_right"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@color/home_placeholder_background"
-                    android:gravity="center"
-                    android:text="预览已停止"
-                    android:textColor="@color/home_placeholder_text"
-                    android:textSize="26sp"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/fps_right"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="bottom|start"
-                    android:layout_marginStart="10dp"
-                    android:layout_marginBottom="10dp"
-                    android:background="@drawable/camera_label_background"
-                    android:gravity="center"
-                    android:paddingStart="10dp"
-                    android:paddingTop="6dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="6dp"
-                    android:text="--×--"
-                    android:textColor="@color/playback_video_text"
-                    android:textSize="12sp" />
-            </FrameLayout>
-        </LinearLayout>
-    </LinearLayout>
+        <TextView
+            android:id="@+id/fps_front"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_marginStart="10dp"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/camera_label_background"
+            android:gravity="center"
+            android:paddingStart="10dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="6dp"
+            android:text="--×--"
+            android:textColor="@color/playback_video_text"
+            android:textSize="12sp" />
+    </FrameLayout>
 
     <LinearLayout
         android:layout_width="240dp"

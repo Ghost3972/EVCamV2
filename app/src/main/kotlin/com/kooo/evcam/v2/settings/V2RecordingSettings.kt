@@ -12,6 +12,10 @@ object V2RecordingSettings {
     private const val KEY_SEGMENT_MINUTES = "segment_minutes"
 
     private const val FALLBACK_RESOLUTION = "1280x720"
+    private const val MAX_PLAYBACK_COMPOSITE_WIDTH = 2560
+    private const val MAX_PLAYBACK_COMPOSITE_HEIGHT = 1440
+    private const val COMPOSITE_COLUMNS = 2
+    private const val COMPOSITE_ROWS = 2
     private const val DEFAULT_FPS = 15
     const val BITRATE_LOW = "low"
     const val BITRATE_MEDIUM = "medium"
@@ -22,10 +26,18 @@ object V2RecordingSettings {
         Option(BITRATE_MEDIUM, "标准"),
         Option(BITRATE_HIGH, "高")
     )
-    val fpsOptions = listOf(15, 30)
+    val fpsOptions = listOf(15)
     val segmentMinuteOptions = listOf(1, 3, 5, 10)
 
-    fun resolution(context: Context): String = prefs(context).getString(KEY_RESOLUTION, null) ?: maxSupportedResolution(context)
+    fun resolution(context: Context): String {
+        val options = supportedResolutionOptions(context)
+        val saved = prefs(context).getString(KEY_RESOLUTION, null)
+        val next = options.firstOrNull { it.value == saved }?.value
+            ?: options.firstOrNull()?.value
+            ?: FALLBACK_RESOLUTION
+        if (saved != next) prefs(context).edit().putString(KEY_RESOLUTION, next).apply()
+        return next
+    }
     fun bitrateLevel(context: Context): String = prefs(context).getString(KEY_BITRATE_LEVEL, BITRATE_MEDIUM) ?: BITRATE_MEDIUM
     fun fps(context: Context): Int = fpsOptions.minByOrNull {
         kotlin.math.abs(it - prefs(context).getInt(KEY_FPS, DEFAULT_FPS).coerceIn(15, 30))
@@ -61,7 +73,8 @@ object V2RecordingSettings {
 
     fun supportedResolutionOptions(context: Context): List<Option> {
         val supported = V2CameraCapabilityResolver.commonSupportedSurfaceTextureSizes(context)
-        val options = supported.map { Option(valueForSize(it), "${it.width}×${it.height}") }
+        val safeSupported = supported.filter { isPlaybackSafeCompositeSize(it) }
+        val options = safeSupported.map { Option(valueForSize(it), "${it.width}×${it.height}") }
         if (options.isNotEmpty()) return options
         val fallback = listOf(Size(1280, 720))
         return fallback.map { Option(valueForSize(it), "${it.width}×${it.height}") }
@@ -119,6 +132,9 @@ object V2RecordingSettings {
     }
     private fun valueForSize(size: Size) = "${size.width}x${size.height}"
     private fun evenSize(size: Size) = Size(size.width - size.width % 2, size.height - size.height % 2)
+    private fun isPlaybackSafeCompositeSize(size: Size): Boolean =
+        size.width * COMPOSITE_COLUMNS <= MAX_PLAYBACK_COMPOSITE_WIDTH &&
+            size.height * COMPOSITE_ROWS <= MAX_PLAYBACK_COMPOSITE_HEIGHT
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     data class Option(val value: String, val label: String)

@@ -131,7 +131,7 @@ class V2ForegroundAppMonitor(private val context: Context) {
     }
 
     private companion object {
-        private const val LOOKUP_CACHE_MS = 5_000L
+        private const val LOOKUP_CACHE_MS = 250L
         private const val USAGE_EVENTS_WINDOW_MS = 60_000L
         private const val MAX_USAGE_EVENT_SAMPLES = 12
         private const val USAGE_EVENTS_LOG_INTERVAL_MS = 30_000L

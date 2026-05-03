@@ -3,6 +3,7 @@ package com.kooo.evcam.v2.service
 import android.util.Log
 import com.kooo.evcam.VhalNative
 import io.grpc.ManagedChannel
+import io.grpc.Status
 
 internal class V2VhalSharedStream private constructor() {
     fun interface BatchListener {
@@ -69,7 +70,11 @@ internal class V2VhalSharedStream private constructor() {
                             Log.d(TAG, "shared stream completed")
                         }
                         override fun onStreamError(t: Throwable) {
-                            Log.e(TAG, "shared stream error: ${t.message}", t)
+                            if (isExpectedDisconnect(t)) {
+                                Log.d(TAG, "shared stream closed: ${t.message}")
+                            } else {
+                                Log.w(TAG, "shared stream error: ${t.message}", t)
+                            }
                         }
                     },
                 )
@@ -107,6 +112,17 @@ internal class V2VhalSharedStream private constructor() {
         val old = channel
         channel = null
         streamClient.disconnect(old)
+    }
+
+    private fun isExpectedDisconnect(t: Throwable): Boolean {
+        if (!isRunning()) return true
+        val status = Status.fromThrowable(t)
+        val message = t.message.orEmpty()
+        return status.code == Status.Code.CANCELLED ||
+            (status.code == Status.Code.UNAVAILABLE && (
+                message.contains("shutdown", ignoreCase = true) ||
+                    message.contains("Channel shutdown", ignoreCase = true)
+                ))
     }
 
     companion object {

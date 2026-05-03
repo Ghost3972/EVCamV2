@@ -32,16 +32,17 @@ import java.io.File
 class V2StorageSettingsSection(
     private val activity: V2SettingsActivity,
     private val cards: V2SettingsCardFactory,
-    private val onStorageLocationChanged: () -> Unit,
 ) {
     fun create(): View {
         val row = cards.cardContainer()
-        row.addView(cards.cardTexts(
+        val header = cards.cardTexts(
             "空间清理",
-            "设置预留空间；录像分段开始前检测，可用空间低于该值时滚动覆盖最旧录像。当前仍按‘可用空间低于预留值时删除最旧录像’逻辑执行。\n${V2StorageCleanupSettings.summary(activity)}",
+            storageSubtitle(),
             0,
             useWeight = false
-        ))
+        )
+        val summaryText = header.getChildAt(1) as TextView
+        row.addView(header)
         val locationOptions = V2StoragePathHelper.storageOptions(activity)
         val selectedIndex = when (V2StoragePathHelper.preferredLocation(activity)) {
             V2StoragePathHelper.StorageLocation.INTERNAL -> 0
@@ -76,7 +77,7 @@ class V2StorageSettingsSection(
             addView(currentPathText)
         })
         row.addView(usbDetectionRow(currentPathText))
-        row.addView(reservedSpaceRow())
+        row.addView(reservedSpaceRow { summaryText.text = storageSubtitle() })
         return row
     }
 
@@ -170,7 +171,7 @@ class V2StorageSettingsSection(
             .show()
     }
 
-    private fun reservedSpaceRow(): View {
+    private fun reservedSpaceRow(onChanged: () -> Unit): View {
         val inputRow = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -195,11 +196,15 @@ class V2StorageSettingsSection(
                 override fun afterTextChanged(s: Editable?) {
                     val value = s?.toString()?.trim()?.toIntOrNull() ?: 0
                     V2StorageCleanupSettings.setReservedSpaceGb(activity, value)
+                    onChanged()
                 }
             })
         }, LinearLayout.LayoutParams(cards.dp(120), ViewGroup.LayoutParams.WRAP_CONTENT))
         return inputRow
     }
+
+    private fun storageSubtitle(): String =
+        "设置预留空间；录像分段开始前检测，可用空间低于该值时滚动覆盖最旧录像。当前仍按‘可用空间低于预留值时删除最旧录像’逻辑执行。\n${V2StorageCleanupSettings.summary(activity)}"
 
     private fun spinnerRow(label: String, labels: List<String>, selectedIndex: Int, onSelected: (Int) -> Boolean): View {
         val row = LinearLayout(activity).apply {

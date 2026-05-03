@@ -1,11 +1,13 @@
 package com.kooo.evcam.v2.ui.settings
 
+import android.content.res.ColorStateList
 import android.content.Intent
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -26,7 +28,6 @@ import java.io.File
 class V2GeneralSettingsSection(
     private val activity: V2SettingsActivity,
     private val cards: V2SettingsCardFactory,
-    private val onRefreshHome: () -> Unit
 ) {
     private val updateManager by lazy { V2VersionUpdateManager(activity) }
 
@@ -37,12 +38,21 @@ class V2GeneralSettingsSection(
         onClick = { checkUpdate() }
     )
 
-    fun keepAliveStatusCard(): View = cards.entryCard(
-        title = "保活状态",
-        subtitle = V2KeepAliveStatus.summary(activity),
-        buttonText = "刷新 →",
-        onClick = onRefreshHome
-    )
+    fun keepAliveStatusCard(): View {
+        val row = cards.cardRow()
+        val texts = cards.cardTexts("保活状态", V2KeepAliveStatus.summary(activity), 0)
+        val summaryText = texts.getChildAt(1) as TextView
+        row.addView(texts)
+        row.addView(Button(activity).apply {
+            text = "刷新 →"
+            textSize = 16f
+            minHeight = dp(48)
+            setTextColor(ContextCompat.getColor(activity, R.color.button_text))
+            backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(activity, R.color.button_background))
+            setOnClickListener { summaryText.text = V2KeepAliveStatus.summary(activity) }
+        })
+        return row
+    }
 
     fun logExportCard(): View = cards.entryCard(
         title = "保存日志",
@@ -57,8 +67,9 @@ class V2GeneralSettingsSection(
         val row = cards.cardRow()
         val texts = cards.cardTexts(
             "车型配置",
-            V2VehicleModelSettings.mappingSummary(activity) + "\n使用当前预览布局，仅切换前后左右摄像头映射；更改后重启应用生效"
+            vehicleModelSubtitle()
         )
+        val summaryText = texts.getChildAt(1) as TextView
 
         var initialized = false
         val spinner = Spinner(activity).apply {
@@ -71,9 +82,9 @@ class V2GeneralSettingsSection(
                         return
                     }
                     V2VehicleModelSettings.setModelId(activity, models[position].id)
+                    summaryText.text = vehicleModelSubtitle()
                     V2AppLog.i(TAG, "vehicle model changed to ${models[position].label} ${V2VehicleModelSettings.mappingSummary(activity).replace('\n', ' ')}")
                     Toast.makeText(activity, "需重启生效", Toast.LENGTH_SHORT).show()
-                    onRefreshHome()
                 }
 
                 override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -256,6 +267,9 @@ class V2GeneralSettingsSection(
         @Suppress("DEPRECATION")
         activity.packageManager.getPackageInfo(activity.packageName, 0).versionName ?: "未知"
     }.getOrDefault("未知")
+
+    private fun vehicleModelSubtitle(): String =
+        V2VehicleModelSettings.mappingSummary(activity) + "\n使用当前预览布局，仅切换前后左右摄像头映射；更改后重启应用生效"
 
     private fun dp(value: Int): Int = cards.dp(value)
 

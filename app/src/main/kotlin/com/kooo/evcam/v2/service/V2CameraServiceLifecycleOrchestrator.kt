@@ -1,12 +1,10 @@
 package com.kooo.evcam.v2.service
 
-import android.os.Handler
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.storage.V2PlaybackCacheMaintainer
 
 internal class V2CameraServiceLifecycleOrchestrator(
     private val service: V2CameraForegroundService,
-    private val handler: Handler,
     private val engine: V2CameraEngine,
     private val displayPowerController: V2DisplayPowerController,
     private val customKeyController: V2CustomKeyController,
@@ -32,18 +30,18 @@ internal class V2CameraServiceLifecycleOrchestrator(
         avoidanceController.start()
         cameraWatchdog.start()
         keepAliveOrchestrator.startInitialChain()
-        statusReporter.syncRecordingState()
+        statusReporter.publishSnapshot("runtime_start", notifyUi = false)
         V2PlaybackCacheMaintainer.scheduleRefresh(service)
         autoRecordingController.scheduleIfEnabled()
     }
 
     fun destroyRuntime() {
         V2AppLog.i(TAG, "onDestroy recording=${engine.isRecording()}")
-        handler.removeCallbacksAndMessages(null)
         displayPowerController.unregister()
         blindSpotController.stopObserver()
         blindSpotController.hide()
         fisheyePreviewController.hide()
+        avoidanceController.stop()
         customKeyController.stop()
         keepAliveOrchestrator.handleDestroy()
         engine.release()
@@ -54,9 +52,8 @@ internal class V2CameraServiceLifecycleOrchestrator(
     fun shutdownFromUi() {
         V2AppLog.w(TAG, "manual shutdown from UI")
         keepAliveOrchestrator.markManualShutdown()
-        handler.removeCallbacksAndMessages(null)
         engine.stopRecording()
-        statusReporter.syncRecordingState()
+        statusReporter.publishSnapshot("shutdown_from_ui", notifyUi = false)
         removeForeground()
         stopService()
     }

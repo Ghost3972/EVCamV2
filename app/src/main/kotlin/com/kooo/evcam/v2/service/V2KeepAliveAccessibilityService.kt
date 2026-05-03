@@ -122,7 +122,7 @@ class V2KeepAliveAccessibilityService : AccessibilityService() {
         fun runningMinutes(): Long = instance?.let { (System.currentTimeMillis() - it.startMs) / 60_000L } ?: 0L
         fun currentWindow(): ForegroundWindow? = lastWindow?.takeIf { System.currentTimeMillis() - it.timestampMs <= WINDOW_FRESH_MS }
 
-        private const val WINDOW_FRESH_MS = 30_000L
+        private const val WINDOW_FRESH_MS = 1_500L
     }
 
     data class ForegroundWindow(

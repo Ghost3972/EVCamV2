@@ -72,6 +72,7 @@ class V2BlindSpotOverlay(
     private var lastFpsFrames = 0L
     private var fpsWindowStartedMs = 0L
     private var lastFpsPerfLogMs = 0L
+    private var displayedFrameCount = 0L
 
     private val metricsRunnable = object : Runnable {
         override fun run() {
@@ -96,6 +97,7 @@ class V2BlindSpotOverlay(
             }
             cameraIndex = index
             refreshCurrentSurface(index)
+            resetMetricsCounter()
             animateSideSwitch(previousSide, side)
             V2AppLog.perf("V2BlindSpotPerf", "switchOverlay", SystemClock.elapsedRealtime() - startedMs, "side=$side index=$index previousSide=$previousSide")
             return
@@ -188,7 +190,9 @@ class V2BlindSpotOverlay(
             override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
                 applyPreviewTransform(texture)
             }
-            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+                displayedFrameCount += 1
+            }
             override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
                 detachCurrentSurface()
                 return true
@@ -207,7 +211,7 @@ class V2BlindSpotOverlay(
             }
         if (texture.isAvailable && texture.surfaceTexture != null) attachSurface(index, texture.surfaceTexture!!)
         resetMetricsCounter()
-        root?.post(metricsRunnable)
+        root?.postDelayed(metricsRunnable, METRICS_UPDATE_INTERVAL_MS)
         V2AppLog.perf("V2BlindSpotPerf", "showOverlay", SystemClock.elapsedRealtime() - startedMs, "side=$side index=$index")
     }
 
@@ -265,9 +269,16 @@ class V2BlindSpotOverlay(
     }
 
     private fun resetMetricsCounter() {
-        lastFpsFrames = if (cameraIndex >= 0) renderedFrames(cameraIndex) else 0L
+        displayedFrameCount = 0L
+        lastFpsFrames = 0L
         fpsWindowStartedMs = android.os.SystemClock.elapsedRealtime()
-        updateMetricsText(fps = 0f)
+        lastFpsPerfLogMs = 0L
+        updateMetricsPlaceholder()
+    }
+
+    private fun updateMetricsPlaceholder() {
+        val params = windowParams ?: return
+        metricsView?.text = String.format(java.util.Locale.US, "%dx%d\n-- fps", params.width, params.height)
     }
 
     private fun updateMetricsText(fps: Float? = null) {
@@ -278,7 +289,9 @@ class V2BlindSpotOverlay(
             val now = android.os.SystemClock.elapsedRealtime()
             val elapsed = now - fpsWindowStartedMs
             if (elapsed <= 0L) return
-            val frames = renderedFrames(index)
+            if (elapsed < FPS_MIN_SAMPLE_MS) return
+            val frames = displayedFrameCount
+            if (frames == 0L && elapsed < FPS_STARTUP_GRACE_MS) return
             val currentFps = (frames - lastFpsFrames).coerceAtLeast(0L) * 1000f / elapsed
             lastFpsFrames = frames
             fpsWindowStartedMs = now
@@ -293,7 +306,7 @@ class V2BlindSpotOverlay(
         val now = SystemClock.elapsedRealtime()
         if (fps >= LOW_FPS_THRESHOLD && now - lastFpsPerfLogMs < FPS_PERF_LOG_INTERVAL_MS) return
         lastFpsPerfLogMs = now
-        V2AppLog.perf("V2BlindSpotPerf", if (fps < LOW_FPS_THRESHOLD) "overlayFps_low" else "overlayFps", 0L, "index=$index fps=${String.format(java.util.Locale.US, "%.1f", fps)} window=${width}x$height rendered=${renderedFrames(index)}")
+        V2AppLog.perf("V2BlindSpotPerf", if (fps < LOW_FPS_THRESHOLD) "overlayFps_low" else "overlayFps", 0L, "index=$index fps=${String.format(java.util.Locale.US, "%.1f", fps)} window=${width}x$height displayed=$displayedFrameCount nativeRendered=${renderedFrames(index)}")
     }
 
     private fun refreshCurrentSurface(index: Int) {
@@ -645,6 +658,8 @@ class V2BlindSpotOverlay(
         private const val RESIZE_UPDATE_THRESHOLD_PX = 6
         private const val LAYOUT_UPDATE_INTERVAL_MS = 80L
         private const val METRICS_UPDATE_INTERVAL_MS = 1_000L
+        private const val FPS_MIN_SAMPLE_MS = 750L
+        private const val FPS_STARTUP_GRACE_MS = 1_500L
         private const val FPS_PERF_LOG_INTERVAL_MS = 5_000L
         private const val LOW_FPS_THRESHOLD = 18f
         private const val SIDE_SWITCH_ANIMATION_MS = 180L

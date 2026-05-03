@@ -30,9 +30,6 @@ import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.V2CameraServiceCommands
 import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
 import com.kooo.evcam.v2.ui.playback.V2VideoPlaybackActivity
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlin.math.roundToInt
 
 class V2MainActivity : AppCompatActivity() {
@@ -53,7 +50,7 @@ class V2MainActivity : AppCompatActivity() {
     private val fpsCounters = Array(V2_CAMERA_SLOT_COUNT) { FpsCounter() }
     private val previewSizeLabels = Array(V2_CAMERA_SLOT_COUNT) { "--×--" }
     private val previewSurfaces = arrayOfNulls<Surface>(V2_CAMERA_SLOT_COUNT)
-    private val dateTimeFormat = SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss", Locale.CHINA)
+    private var compositePreviewSurfaceTexture: android.graphics.SurfaceTexture? = null
     private var normalRecordingAnimator: ObjectAnimator? = null
     private var emergencyProgressAnimator: ValueAnimator? = null
     private var recordingDotBlinking = false
@@ -67,8 +64,8 @@ class V2MainActivity : AppCompatActivity() {
     private var startServiceWhenPermissionsGranted = false
     private val dateTimeTicker = object : Runnable {
         override fun run() {
-            binding.tvDatetime.text = dateTimeFormat.format(Date())
-            mainHandler.postDelayed(this, 1000L)
+            binding.tvDatetime.text = V2TimeWatermark.format()
+            mainHandler.postDelayed(this, V2TimeWatermark.nextSecondDelayMs())
         }
     }
     private val emergencyRecordingTicker = object : Runnable {
@@ -118,6 +115,7 @@ class V2MainActivity : AppCompatActivity() {
         V2AppLog.i("V2MainActivity", "onCreate")
         binding = ActivityV2MainA7Binding.inflate(layoutInflater)
         setContentView(binding.root)
+        V2TimeWatermark.applyStyle(binding.tvDatetime)
         consumeBootIntent(intent)
         binding.btnStartRecord.setOnClickListener { toggleRecordingWithToast() }
         binding.btnExit.setOnClickListener {
@@ -156,12 +154,17 @@ class V2MainActivity : AppCompatActivity() {
         maybeStartBootRecording()
     }
 
+    override fun onUserLeaveHint() {
+        unbindPreviews()
+        super.onUserLeaveHint()
+    }
+
     override fun onPause() {
         V2AppLog.i("V2MainActivity", "onPause")
-        if (isFinishing) unbindPreviews()
         service?.setUiStatusListener(null)
         service?.setUiEmergencyRecordingListener(null)
         service?.setUiVisibility(false)
+        unbindPreviews()
         if (bound) { unbindService(connection); bound = false; service = null }
         super.onPause()
     }
@@ -172,7 +175,7 @@ class V2MainActivity : AppCompatActivity() {
         stopNormalRecordingAnimation()
         stopEmergencyProgressAnimation()
         stopRecordingDotAnimation()
-        if (isFinishing && bound) unbindPreviews()
+        releasePreviewSurfaces()
         V2AppLog.saveToPersistentLog(this)
         super.onDestroy()
     }
@@ -192,7 +195,7 @@ class V2MainActivity : AppCompatActivity() {
         if (!autoStartFromBoot || !autoRecordingRequested || !bound) return
         val cameraService = service ?: return
         autoRecordingRequested = false
-        V2AppLog.i("V2MainActivity", "schedule boot auto recording alreadyRecording=${cameraService.isRecording()}")
+        V2AppLog.i("V2MainActivity", "schedule boot auto recording alreadyRecording=${cameraService.isNormalRecording()}")
         mainHandler.postDelayed({
             val readyService = service
             if (readyService == null || !bound) {
@@ -200,13 +203,13 @@ class V2MainActivity : AppCompatActivity() {
                 autoRecordingRequested = true
                 return@postDelayed
             }
-            if (!readyService.isRecording()) {
+            if (!readyService.isNormalRecording()) {
                 V2AppLog.i("V2MainActivity", "boot auto recording start")
                 readyService.startRecording()
-                updateRecordButton(readyService.isRecording())
+                updateRecordButton(readyService.isNormalRecording())
             }
             mainHandler.postDelayed({
-                if (silentMode && service?.isRecording() == true) {
+                if (silentMode && service?.isNormalRecording() == true) {
                     V2AppLog.i("V2MainActivity", "boot auto recording active, move task to back")
                     moveTaskToBack(true)
                 }
@@ -320,7 +323,7 @@ class V2MainActivity : AppCompatActivity() {
     }
 
     private fun syncRecordButtonFromService() {
-        service?.let { updateRecordButton(it.isRecording()) }
+        service?.let { updateRecordButton(it.isNormalRecording()) }
     }
 
     private fun toggleRecordingWithToast() {
@@ -330,7 +333,7 @@ class V2MainActivity : AppCompatActivity() {
             Toast.makeText(this, "相机服务启动中", Toast.LENGTH_SHORT).show()
             return
         }
-        val wasRecording = cameraService.isRecording()
+        val wasRecording = cameraService.isNormalRecording()
         val isRecording = cameraService.toggleRecording()
         V2AppLog.i("V2MainActivity", "toggle recording was=$wasRecording now=$isRecording")
         updateRecordButton(isRecording)
@@ -406,54 +409,75 @@ class V2MainActivity : AppCompatActivity() {
     }
 
     private fun bindPreviews() {
-        val sizeViews = listOf(binding.fpsFront, binding.fpsBack, binding.fpsLeft, binding.fpsRight)
-        listOf(binding.textureFront, binding.textureBack, binding.textureLeft, binding.textureRight).forEachIndexed { index, texture ->
-            texture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                override fun onSurfaceTextureAvailable(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
-                    V2AppLog.i("V2MainActivity", "preview surface available index=$index size=${width}x$height")
-                    fpsCounters[index].reset()
-                    previewSizeLabels[index] = service?.previewInputSizeLabel(index) ?: "--×--"
-                    sizeViews[index].text = "${previewSizeLabels[index]}\n-- fps"
-                    attachPreviewSurface(index, surface)
-                }
-                override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {}
-                override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean { V2AppLog.i("V2MainActivity", "preview surface destroyed index=$index"); detachPreviewSurface(index); return true }
-                override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {
-                    fpsCounters[index].onFrame()?.let { fps -> sizeViews[index].text = "${previewSizeLabels[index]}\n$fps fps" }
-                }
+        binding.textureFront.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                V2AppLog.i("V2MainActivity", "composite preview surface available size=${width}x$height")
+                fpsCounters[0].reset()
+                previewSizeLabels[0] = service?.compositePreviewSizeLabel() ?: "--×--"
+                binding.fpsFront.text = "${previewSizeLabels[0]}\n-- fps"
+                attachCompositePreviewSurface(surface)
             }
-            if (texture.isAvailable && texture.surfaceTexture != null) attachPreviewSurface(index, texture.surfaceTexture!!)
+            override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {}
+            override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean {
+                V2AppLog.i("V2MainActivity", "composite preview surface destroyed")
+                detachCompositePreviewSurface(releaseSurface = true)
+                return true
+            }
+            override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {
+                fpsCounters[0].onFrame()?.let { fps -> binding.fpsFront.text = "${previewSizeLabels[0]}\n$fps fps" }
+            }
+        }
+        if (binding.textureFront.isAvailable && binding.textureFront.surfaceTexture != null) {
+            attachCompositePreviewSurface(binding.textureFront.surfaceTexture!!)
+        }
+        binding.textureFront.post { attachCompositePreviewIfAvailable("post") }
+        mainHandler.postDelayed({ attachCompositePreviewIfAvailable("delayed300") }, 300L)
+        mainHandler.postDelayed({ attachCompositePreviewIfAvailable("delayed1000") }, 1_000L)
+    }
+
+    private fun attachCompositePreviewIfAvailable(reason: String) {
+        val surfaceTexture = binding.textureFront.surfaceTexture
+        V2AppLog.i(
+            "V2MainActivity",
+            "composite preview bind check reason=$reason available=${binding.textureFront.isAvailable} surface=${surfaceTexture != null} size=${binding.textureFront.width}x${binding.textureFront.height}"
+        )
+        if (binding.textureFront.isAvailable && surfaceTexture != null) attachCompositePreviewSurface(surfaceTexture)
+    }
+
+    private fun attachCompositePreviewSurface(surfaceTexture: android.graphics.SurfaceTexture) {
+        if (compositePreviewSurfaceTexture === surfaceTexture && previewSurfaces[0]?.isValid == true) {
+            V2AppLog.d("V2MainActivity", "reattachCompositePreviewSurface existing valid=${previewSurfaces[0]?.isValid}")
+            service?.attachCompositePreviewSurface(previewSurfaces[0]!!)
+            return
+        }
+        detachCompositePreviewSurface(releaseSurface = true)
+        val surface = Surface(surfaceTexture)
+        compositePreviewSurfaceTexture = surfaceTexture
+        previewSurfaces[0] = surface
+        V2AppLog.d("V2MainActivity", "attachCompositePreviewSurface valid=${surface.isValid}")
+        service?.attachCompositePreviewSurface(surface)
+        updatePreviewPlaceholders(service?.isPreviewPausedByAvoidance() == true)
+        previewSizeLabels[0] = service?.compositePreviewSizeLabel() ?: "--×--"
+        binding.fpsFront.text = "${previewSizeLabels[0]}\n-- fps"
+    }
+
+    private fun detachCompositePreviewSurface(releaseSurface: Boolean = true) {
+        V2AppLog.d("V2MainActivity", "detachCompositePreviewSurface hadSurface=${previewSurfaces[0] != null} release=$releaseSurface")
+        service?.detachCompositePreviewSurface()
+        if (releaseSurface) {
+            previewSurfaces[0]?.release()
+            previewSurfaces[0] = null
+            compositePreviewSurfaceTexture = null
         }
     }
 
-    private fun attachPreviewSurface(index: Int, surfaceTexture: android.graphics.SurfaceTexture) {
-        detachPreviewSurface(index)
-        val surface = Surface(surfaceTexture)
-        previewSurfaces[index] = surface
-        V2AppLog.d("V2MainActivity", "attachPreviewSurface index=$index valid=${surface.isValid}")
-        service?.attachPreviewSurface(index, surface)
-        updatePreviewPlaceholders(service?.isPreviewPausedByAvoidance() == true)
-        previewSizeLabels[index] = service?.previewInputSizeLabel(index) ?: "--×--"
-        listOf(binding.fpsFront, binding.fpsBack, binding.fpsLeft, binding.fpsRight).getOrNull(index)?.text = "${previewSizeLabels[index]}\n-- fps"
-    }
+    private fun unbindPreviews() { detachCompositePreviewSurface(releaseSurface = false) }
 
-    private fun detachPreviewSurface(index: Int) {
-        V2AppLog.d("V2MainActivity", "detachPreviewSurface index=$index hadSurface=${previewSurfaces[index] != null}")
-        service?.detachPreviewSurface(index)
-        previewSurfaces[index]?.release()
-        previewSurfaces[index] = null
-    }
-
-    private fun unbindPreviews() { repeat(V2_CAMERA_SLOT_COUNT) { detachPreviewSurface(it) } }
+    private fun releasePreviewSurfaces() { detachCompositePreviewSurface(releaseSurface = true) }
 
     private fun updatePreviewPlaceholders(paused: Boolean) {
         val visibility = if (paused) View.VISIBLE else View.GONE
-        listOf(
-            binding.previewPlaceholderFront,
-            binding.previewPlaceholderBack,
-            binding.previewPlaceholderLeft,
-            binding.previewPlaceholderRight
-        ).forEach { it.visibility = visibility }
+        binding.previewPlaceholderFront.visibility = visibility
     }
 
     private class FpsCounter {

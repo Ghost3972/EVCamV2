@@ -20,6 +20,7 @@ class V2VhalCustomKeyObserver(
     }
     @Volatile private var lastButtonState = -1
     @Volatile private var batchCount = 0L
+    @Volatile private var emptyBatchCount = 0L
     @Volatile private var customKeyEventCount = 0L
 
     @Synchronized
@@ -32,6 +33,7 @@ class V2VhalCustomKeyObserver(
         running = true
         lastButtonState = -1
         batchCount = 0
+        emptyBatchCount = 0
         customKeyEventCount = 0
         Log.d(TAG, "configure custom key buttonPropId=$buttonPropId")
         VhalNative.configureCustomKey(DEFAULT_SPEED_PROP_ID, buttonPropId, 0f)
@@ -55,7 +57,10 @@ class V2VhalCustomKeyObserver(
         batchCount++
         val events = V2VhalEventDecoder.decode(data, TAG)
         if (events.isEmpty()) {
-            Log.w(TAG, "Decoded empty custom key batch count=$batchCount bytes=${data.size}")
+            emptyBatchCount++
+            if (emptyBatchCount == 1L || emptyBatchCount % EMPTY_BATCH_LOG_INTERVAL == 0L) {
+                Log.d(TAG, "Decoded empty custom key batch count=$emptyBatchCount total=$batchCount bytes=${data.size}")
+            }
             return
         }
         for (event in events) {
@@ -81,5 +86,6 @@ class V2VhalCustomKeyObserver(
         private const val TAG = "V2VhalCustomKey"
         private const val DEFAULT_SPEED_PROP_ID = 291504647
         private const val LONG_PRESS_VALUE = 4
+        private const val EMPTY_BATCH_LOG_INTERVAL = 1000L
     }
 }

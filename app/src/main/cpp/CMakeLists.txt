@@ -6,12 +6,15 @@ find_program(ZIG_EXECUTABLE zig REQUIRED)
 set(EVCAM_ZIG_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../zig/evcam_gles_compositor.zig")
 set(EVCAM_ZIG_BUILD "${CMAKE_CURRENT_SOURCE_DIR}/../zig/build.zig")
 set(EVCAM_ZIG_C_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/../zig/evcam_c.h")
+file(GLOB EVCAM_ZIG_DEPS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/../zig/*.zig"
+        "${EVCAM_ZIG_C_HEADER}")
 
 set(EVCAM_ZIG_ANCHOR "${CMAKE_CURRENT_BINARY_DIR}/evcam_zig_anchor.c")
 file(WRITE "${EVCAM_ZIG_ANCHOR}" "void evcam_zig_anchor(void) {}\n")
 set_source_files_properties(
         "${EVCAM_ZIG_ANCHOR}"
-        PROPERTIES OBJECT_DEPENDS "${EVCAM_ZIG_SOURCE};${EVCAM_ZIG_BUILD};${EVCAM_ZIG_C_HEADER}")
+        PROPERTIES OBJECT_DEPENDS "${EVCAM_ZIG_DEPS};${EVCAM_ZIG_BUILD}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/zig_android_libc.txt"
         "include_dir=${CMAKE_SYSROOT}/usr/include\n"
         "sys_include_dir=${CMAKE_SYSROOT}/usr/include/aarch64-linux-android\n"

@@ -10,9 +10,7 @@ internal class V2RecordingOrchestrator(
     private val isSystemInteractive: () -> Boolean,
     private val isAvoidanceActive: () -> Boolean,
     private val avoidanceTarget: () -> String?,
-    private val updatePlaybackCacheRecordingState: () -> Unit,
-    private val updateStatusBarPluginState: () -> Unit,
-    private val notifyUiStatus: (String) -> Unit,
+    private val publishSnapshot: (String) -> Unit,
     private val notifyEmergencyRecordingState: (Boolean, Long) -> Unit,
     private val showToast: (String) -> Unit,
 ) {
@@ -30,8 +28,7 @@ internal class V2RecordingOrchestrator(
             return false
         }
         val result = engine.toggleRecording()
-        updatePlaybackCacheRecordingState()
-        updateStatusBarPluginState()
+        publishSnapshot("toggle_recording")
         V2AppLog.d(TAG, "toggleRecording result=$result")
         return result
     }
@@ -44,8 +41,7 @@ internal class V2RecordingOrchestrator(
         }
         if (isDisplayPowerOn()) {
             engine.startRecording()
-            updatePlaybackCacheRecordingState()
-            updateStatusBarPluginState()
+            publishSnapshot("manual_start_recording")
         } else {
             V2AppLog.w(TAG, "manual startRecording skipped: display off")
         }
@@ -54,8 +50,7 @@ internal class V2RecordingOrchestrator(
     fun stopRecording() {
         V2AppLog.i(TAG, "manual stopRecording")
         engine.stopRecording()
-        updatePlaybackCacheRecordingState()
-        updateStatusBarPluginState()
+        publishSnapshot("manual_stop_recording")
     }
 
     fun startAutoRecordingIfAllowed() {
@@ -64,15 +59,14 @@ internal class V2RecordingOrchestrator(
             return
         }
         engine.startRecording()
-        updatePlaybackCacheRecordingState()
-        updateStatusBarPluginState()
+        publishSnapshot("auto_start_recording")
     }
 
     fun startEmergencyRecording(
         durationMs: Long = V2CameraForegroundService.EMERGENCY_RECORDING_DURATION_MS,
         onStateChanged: ((Boolean) -> Unit)? = null,
     ): Boolean {
-        V2AppLog.i(TAG, "emergency start requested durationMs=$durationMs active=$emergencyRecordingActive recording=${engine.isRecording()}")
+        V2AppLog.i(TAG, "emergency start requested durationMs=$durationMs active=$emergencyRecordingActive recording=${engine.isRecording()} normalRecording=${engine.isNormalRecording()}")
         if (!isDisplayPowerOn()) {
             V2AppLog.w(TAG, "emergency skipped: display off")
             return false
@@ -85,12 +79,12 @@ internal class V2RecordingOrchestrator(
 
         emergencyRecordingActive = true
         emergencyRecordingEndsAtMs = android.os.SystemClock.elapsedRealtime() + durationMs
-        resumeNormalRecordingAfterEmergency = engine.isRecording()
+        resumeNormalRecordingAfterEmergency = engine.isNormalRecording()
         emergencyRecordingStopRunnable?.let(handler::removeCallbacks)
         emergencyRecordingStopRunnable = null
         onStateChanged?.invoke(true)
         notifyEmergencyRecordingState(true, emergencyRecordingEndsAtMs)
-        updateStatusBarPluginState()
+        publishSnapshot("emergency_state_on")
 
         if (resumeNormalRecordingAfterEmergency) {
             if (!engine.requestEmergencyClip(durationMs)) {
@@ -99,15 +93,13 @@ internal class V2RecordingOrchestrator(
                 resumeNormalRecordingAfterEmergency = false
                 onStateChanged?.invoke(false)
                 notifyEmergencyRecordingState(false, emergencyRecordingEndsAtMs)
-                updateStatusBarPluginState()
+                publishSnapshot("emergency_start_failed")
                 return false
             }
         } else {
             engine.startEventRecording(durationMs)
         }
-        updatePlaybackCacheRecordingState()
-        updateStatusBarPluginState()
-        notifyUiStatus(engine.statusText())
+        publishSnapshot("emergency_start")
 
         val stopRunnable = Runnable { finishEmergencyRecording(onStateChanged) }
         emergencyRecordingStopRunnable = stopRunnable
@@ -143,9 +135,7 @@ internal class V2RecordingOrchestrator(
         emergencyRecordingStopRunnable = null
         emergencyRecordingEndsAtMs = 0L
         if (!resumeNormalRecordingAfterEmergency) engine.stopRecording()
-        updatePlaybackCacheRecordingState()
-        updateStatusBarPluginState()
-        notifyUiStatus(engine.statusText())
+        publishSnapshot("emergency_finish")
         onStateChanged?.invoke(false)
         notifyEmergencyRecordingState(false, emergencyRecordingEndsAtMs)
         resumeNormalRecordingAfterEmergency = false

@@ -30,4 +30,6 @@
 # runtime interface/annotation names. Keep this ABI stable in release builds.
 -keep class com.flyme.** { *; }
 -keep class com.kooo.evcam.v2.plugin.** { *; }
+-keep class com.kooo.evcam.v2.recording.V2RecordingSegmentCacheUpdater { *; }
+-keep class com.kooo.evcam.v2.storage.V2PlaybackThumbnailBridge { *; }
 -keepattributes RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations,AnnotationDefault

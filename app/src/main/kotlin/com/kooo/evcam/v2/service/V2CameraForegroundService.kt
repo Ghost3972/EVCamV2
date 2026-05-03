@@ -42,6 +42,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
 
     private val binder = LocalBinder()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private lateinit var commandQueue: V2ServiceCommandQueue
     private lateinit var engine: V2CameraEngine
     private lateinit var keepAliveOrchestrator: V2KeepAliveOrchestrator
     private lateinit var autoRecordingController: V2AutoRecordingController
@@ -63,6 +64,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     private lateinit var settingsRuntimeCoordinator: V2SettingsRuntimeCoordinator
     private lateinit var actionRouter: V2CameraServiceActionRouter
     private lateinit var lifecycleOrchestrator: V2CameraServiceLifecycleOrchestrator
+    private var compositePreviewSurface: Surface? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -79,12 +81,13 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     }
 
     private fun initializeCoreRuntime() {
+        commandQueue = V2ServiceCommandQueue(mainHandler)
         displayPowerController = V2DisplayPowerController(
             service = this,
             handler = mainHandler,
             systemInteractive = isSystemInteractive(),
-            onDisplayOff = { action -> displayPowerOrchestrator.handleDisplayOff(action) },
-            onDisplayOn = { action -> displayPowerOrchestrator.handleDisplayOn(action) },
+            onDisplayOff = { action -> commandQueue.dispatch("displayOff:$action") { displayPowerOrchestrator.handleDisplayOff(action) } },
+            onDisplayOn = { action -> commandQueue.dispatch("displayOn:$action") { displayPowerOrchestrator.handleDisplayOn(action) } },
         )
         V2AppLog.i("V2CameraService", "onCreate autoRecord=${startupPolicy().autoStartRecording} displayPowerOn=${isDisplayPowerOn()} systemInteractive=${isSystemInteractive()} stableApi=ecarx_display_power")
         engine = V2CameraEngine(this, this)
@@ -94,7 +97,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             isDisplayPowerOn = { isDisplayPowerOn() },
             isAutoStartEnabled = { startupPolicy().autoStartRecording && !avoidanceController.isActive },
             isRecording = { engine.isRecording() },
-            startRecording = { recordingOrchestrator.startAutoRecordingIfAllowed() },
+            startRecording = { commandQueue.dispatch("autoStartRecording") { recordingOrchestrator.startAutoRecordingIfAllowed() } },
             showToast = { statusReporter.showToast(it) }
         )
         keepAliveOrchestrator = V2KeepAliveOrchestrator(
@@ -114,7 +117,8 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         statusReporter = V2ServiceStatusReporter(
             service = this,
             statusText = { engine.statusText() },
-            isRecording = { engine.isRecording() },
+            isRecording = { engine.isNormalRecording() },
+            isAnyRecording = { engine.isRecording() },
             isEmergencyRecordingActive = { recordingOrchestrator.emergencyRecordingActive },
             emergencyRecordingEndsAtWallClockMs = { recordingOrchestrator.emergencyRecordingEndsAtWallClockMs() },
             notifyUiStatus = { status -> uiStatusListener?.invoke(status) },
@@ -138,9 +142,9 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             isDisplayPowerOn = { isDisplayPowerOn() },
             isUiVisible = { uiVisibilityOrchestrator.isVisible },
             hasOverlayPreview = { previewCoordinator.hasOverlayOwner() },
-            restoreMainPreviews = { previewCoordinator.restoreAllMain() },
+            restoreMainPreviews = { restorePreviewSurfaces() },
             resetWatchdog = { reason -> cameraWatchdog.reset(reason) },
-            syncRecordingStateAndUi = { statusReporter.syncRecordingStateAndUi() },
+            syncRecordingStateAndUi = { statusReporter.publishSnapshot("readiness") },
         )
     }
 
@@ -150,19 +154,17 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             engine = engine,
             isDisplayPowerOn = { isDisplayPowerOn() },
             shouldExpectPreviewRendering = { recording -> readinessOrchestrator.shouldExpectPreviewRendering(recording) },
-            onRestartRequired = { reason -> watchdogRestartOrchestrator.restartCameras(reason) }
+            onRestartRequired = { reason -> commandQueue.dispatch("watchdogRestart:$reason") { watchdogRestartOrchestrator.restartCameras(reason) } }
         )
         watchdogRestartOrchestrator = V2WatchdogRestartOrchestrator(
-            handler = mainHandler,
             engine = engine,
             isDisplayPowerOn = { isDisplayPowerOn() },
             isAvoidanceActive = { avoidanceController.isActive },
-            restoreMainPreviews = { previewCoordinator.restoreAllMain() },
-            syncRecordingState = { statusReporter.syncRecordingState() },
-            syncRecordingStateAndUi = { statusReporter.syncRecordingStateAndUi() },
+            restoreMainPreviews = { restorePreviewSurfaces() },
+            publishSnapshot = { reason -> statusReporter.publishSnapshot(reason) },
+            dispatchDelayed = { name, delayMs, block -> commandQueue.dispatchDelayed(name, delayMs, V2WatchdogRestartOrchestrator.RECORDING_RESTART_TOKEN, block) },
         )
         displayPowerOrchestrator = V2DisplayPowerOrchestrator(
-            handler = mainHandler,
             displayPowerController = displayPowerController,
             isDisplayPowerOn = { isDisplayPowerOn() },
             isAutoRecordingEnabled = { startupPolicy().autoStartRecording },
@@ -172,10 +174,8 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             stopRecordingAndReleaseCameras = { reason -> engine.stopRecordingAndReleaseCameras(reason) },
             setCameraAccessAllowed = { allowed -> engine.setCameraAccessAllowed(allowed) },
             startRecording = { engine.startRecording() },
-            statusText = { engine.statusText() },
-            updatePlaybackCacheRecordingState = { statusReporter.updatePlaybackCacheRecordingState() },
-            updateStatusBarPluginState = { statusReporter.updateStatusBarPluginState() },
-            notifyUiStatus = { status -> uiStatusListener?.invoke(status) },
+            publishSnapshot = { reason -> statusReporter.publishSnapshot(reason) },
+            dispatchDelayed = { name, delayMs, block -> commandQueue.dispatchDelayed(name, delayMs, V2DisplayPowerOrchestrator.DISPLAY_ON_RECORDING_RESTORE_TOKEN, block) },
             resetWatchdog = { reason -> cameraWatchdog.reset(reason) },
             startWatchdog = { cameraWatchdog.start() },
             cancelAutoRecording = { autoRecordingController.cancelPending() },
@@ -183,7 +183,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             clearAvoidance = { reason -> avoidanceController.clear(reason) },
             hideBlindSpot = { blindSpotController.hide() },
             hideFisheye = { fisheyePreviewController.hide() },
-            restoreMainPreviews = { previewCoordinator.restoreAllMain() },
+            restoreMainPreviews = { restorePreviewSurfaces() },
             saveLog = { V2AppLog.saveToPersistentLog(this) },
         )
     }
@@ -236,16 +236,14 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             onHideUi = { uiVisibilityOrchestrator.hideForAvoidance() },
             onStopRecording = {
                 engine.stopRecording()
-                statusReporter.updatePlaybackCacheRecordingState()
-                uiStatusListener?.invoke(engine.statusText())
+                statusReporter.publishSnapshot("avoidance_stop_recording")
             },
             onRestoreRecording = {
                 engine.startRecording()
-                statusReporter.updatePlaybackCacheRecordingState()
-                uiStatusListener?.invoke(engine.statusText())
+                statusReporter.publishSnapshot("avoidance_restore_recording")
             },
             onRestoreUi = { uiVisibilityOrchestrator.restoreFromAvoidance() },
-            onScheduleAutoRecording = { V2AppLog.i("V2CameraService", "auto recording restore skipped: cold start only") },
+            onScheduleAutoRecording = { autoRecordingController.scheduleIfEnabled() },
             showToast = { statusReporter.showToast(it) }
         )
     }
@@ -258,9 +256,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             isSystemInteractive = { isSystemInteractive() },
             isAvoidanceActive = { avoidanceController.isActive },
             avoidanceTarget = { avoidanceController.activeTarget },
-            updatePlaybackCacheRecordingState = { statusReporter.updatePlaybackCacheRecordingState() },
-            updateStatusBarPluginState = { statusReporter.updateStatusBarPluginState() },
-            notifyUiStatus = { status -> uiStatusListener?.invoke(status) },
+            publishSnapshot = { reason -> statusReporter.publishSnapshot(reason) },
             notifyEmergencyRecordingState = { active, endsAtMs -> uiEmergencyRecordingListener?.invoke(active, endsAtMs) },
             showToast = { statusReporter.showToast(it) },
         )
@@ -278,23 +274,22 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             updateAvoidance = { config -> avoidanceController.updateConfig(config) },
         )
         actionRouter = V2CameraServiceActionRouter(
-            scheduleAutoRecording = { autoRecordingController.scheduleIfEnabled() },
-            settingsChanged = { category -> settingsRuntimeCoordinator.onSettingsChanged(category) },
-            showFisheyePreview = { index -> fisheyePreviewController.show(index) },
-            hideFisheyePreview = { fisheyePreviewController.hide() },
-            showBlindSpotPreview = { side -> blindSpotController.showPreview(side) },
-            hideBlindSpotPreview = { blindSpotController.hide() },
-            toggleRecordingFromPlugin = { recordingOrchestrator.toggleRecordingFromPlugin() },
-            startEmergencyFromPlugin = { recordingOrchestrator.startEmergencyRecordingFromPlugin() },
-            displayOff = { action -> displayPowerOrchestrator.handleDisplayOff(action) },
-            displayOn = { action -> displayPowerOrchestrator.handleDisplayOn(action) },
+            scheduleAutoRecording = { commandQueue.dispatch("action:autoStartRecording") { autoRecordingController.scheduleIfEnabled() } },
+            settingsChanged = { category -> commandQueue.dispatch("action:settingsChanged:$category") { settingsRuntimeCoordinator.onSettingsChanged(category) } },
+            showFisheyePreview = { index -> commandQueue.dispatch("action:showFisheye:$index") { fisheyePreviewController.show(index) } },
+            hideFisheyePreview = { commandQueue.dispatch("action:hideFisheye") { fisheyePreviewController.hide() } },
+            showBlindSpotPreview = { side -> commandQueue.dispatch("action:showBlindSpot:$side") { blindSpotController.showPreview(side) } },
+            hideBlindSpotPreview = { commandQueue.dispatch("action:hideBlindSpot") { blindSpotController.hide() } },
+            toggleRecordingFromPlugin = { commandQueue.dispatch("action:toggleRecording") { recordingOrchestrator.toggleRecordingFromPlugin() } },
+            startEmergencyFromPlugin = { commandQueue.dispatch("action:startEmergency") { recordingOrchestrator.startEmergencyRecordingFromPlugin() } },
+            displayOff = { action -> commandQueue.dispatch("action:displayOff:$action") { displayPowerOrchestrator.handleDisplayOff(action) } },
+            displayOn = { action -> commandQueue.dispatch("action:displayOn:$action") { displayPowerOrchestrator.handleDisplayOn(action) } },
         )
     }
 
     private fun initializeLifecycleOrchestrator() {
         lifecycleOrchestrator = V2CameraServiceLifecycleOrchestrator(
             service = this,
-            handler = mainHandler,
             engine = engine,
             displayPowerController = displayPowerController,
             customKeyController = customKeyController,
@@ -335,6 +330,7 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         return recordingOrchestrator.toggleRecording()
     }
     fun isRecording(): Boolean = engine.isRecording()
+    fun isNormalRecording(): Boolean = engine.isNormalRecording()
     fun statusText(): String = engine.statusText()
     fun isPreviewPausedByAvoidance(): Boolean = false
     fun ensureReadyAfterPermissions() {
@@ -342,6 +338,15 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
     }
     fun previewInputSizeLabel(index: Int): String = engine.previewInputSizeLabel(index)
     fun previewInputSize(index: Int): android.util.Size? = engine.previewInputSize(index)
+    fun compositePreviewSizeLabel(): String = engine.compositePreviewSizeLabel()
+    fun attachCompositePreviewSurface(surface: Surface) {
+        compositePreviewSurface = surface
+        engine.attachCompositePreviewSurface(surface)
+    }
+    fun detachCompositePreviewSurface() {
+        compositePreviewSurface = null
+        engine.detachCompositePreviewSurface()
+    }
     fun attachPreviewSurface(index: Int, surface: Surface) {
         previewCoordinator.attachMain(index, surface)
     }
@@ -370,6 +375,11 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
 
     private fun restoreMainPreviewSurface(index: Int) {
         previewCoordinator.restoreMain(index)
+    }
+
+    private fun restorePreviewSurfaces() {
+        compositePreviewSurface?.takeIf { it.isValid }?.let { engine.attachCompositePreviewSurface(it) }
+        previewCoordinator.restoreAllMain()
     }
     fun startRecording() {
         recordingOrchestrator.startRecording()

@@ -16,12 +16,12 @@ import com.kooo.evcam.v2.service.V2CameraServiceCommands
 class V2SettingsActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private val cards by lazy { V2SettingsCardFactory(this) }
-    private val recordingSection by lazy { V2RecordingSettingsSection(this, cards) { showHomePage() } }
-    private val storageSection by lazy { V2StorageSettingsSection(this, cards) { recreate() } }
+    private val recordingSection by lazy { V2RecordingSettingsSection(this, cards) }
+    private val storageSection by lazy { V2StorageSettingsSection(this, cards) }
     private val avoidanceSection by lazy { V2AvoidanceSettingsSection(this, cards) }
-    private val fisheyeSection by lazy { V2FisheyeSettingsSection(this, cards) { refreshHomePreservingScroll() } }
-    private val signalSection by lazy { V2SignalSettingsSection(this, cards) { refreshHomePreservingScroll() } }
-    private val generalSection by lazy { V2GeneralSettingsSection(this, cards) { showHomePage() } }
+    private val fisheyeSection by lazy { V2FisheyeSettingsSection(this, cards) }
+    private val signalSection by lazy { V2SignalSettingsSection(this, cards) }
+    private val generalSection by lazy { V2GeneralSettingsSection(this, cards) }
     private var showingPermissionPage = false
     private var homeScrollView: ScrollView? = null
 
@@ -58,10 +58,6 @@ class V2SettingsActivity : AppCompatActivity() {
         if (restoreScrollY != null) {
             homeScrollView?.post { homeScrollView?.scrollTo(0, restoreScrollY) }
         }
-    }
-
-    private fun refreshHomePreservingScroll() {
-        showHomePage(homeScrollView?.scrollY ?: 0)
     }
 
     private fun showPermissionPage() {

@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.SystemClock
+import com.kooo.evcam.v2.nativebridge.GlesNative
 import com.kooo.evcam.v2.storage.V2PlaybackListEntry
 import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
@@ -39,7 +40,7 @@ data class V2VideoGroup(
 
 object V2VideoScanner {
     private val fileNamePattern = Regex(
-        "^(\\d{8}_\\d{4}(?:\\d{2})?)(?:_[A-Za-z0-9]+)?(?:_\\d{2}(?:_\\d{3})?)?(?:(?:_seg\\d{3})?(?:_[A-Za-z0-9_]+)?_composite)?(?:_\\d{3})?\\.mp4$",
+        "^(\\d{8}_\\d{4}(?:\\d{2})?)(?:_[A-Za-z0-9]+)*(?:_\\d{2}(?:_\\d{3})?)?(?:(?:_seg\\d{3})?(?:_[A-Za-z0-9_]+)?_composite)?(?:_\\d{3})?\\.mp4$",
         RegexOption.IGNORE_CASE
     )
     private val imageNamePattern = Regex("^(\\d{8}_\\d{4}(?:\\d{2})?)_snapshot(?:_\\d{3})?\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE)
@@ -59,20 +60,13 @@ object V2VideoScanner {
         var count = 0
         var lastYieldMs = SystemClock.uptimeMillis()
 
-        val cursors = V2StoragePathHelper.playbackScanDirs(context).mapNotNull { dir ->
-            if (isCancelled() || !dir.isDirectory || !dir.canRead()) return@mapNotNull null
-            val files = dir.listFiles()
-                .orEmpty()
-                .filter { isPlayableVideoFile(it) && fileNamePattern.matches(it.name) }
-                .sortedByDescending { videoKey(it).lowercase(Locale.US) }
-            if (files.isEmpty()) null else ScanCursor(files)
-        }.toMutableList()
+        val files = nativePlaybackFiles(context)
+            .filter { isPlayableVideoFile(it) && fileNamePattern.matches(it.name) }
+            .distinctBy { it.absolutePath }
+            .sortedByDescending { videoKey(it).lowercase(Locale.US) }
 
-        while (cursors.isNotEmpty()) {
+        for (file in files) {
             if (isCancelled()) return count
-            val cursorIndex = cursors.indices.maxByOrNull { videoKey(cursors[it].current()).lowercase(Locale.US) } ?: break
-            val cursor = cursors[cursorIndex]
-            val file = cursor.current()
             val key = videoKey(file)
             if (emitted.add(file.absolutePath)) {
                 onGroup(V2VideoGroup(timestamp = key, composite = file))
@@ -83,7 +77,6 @@ object V2VideoScanner {
                     lastYieldMs = now
                 }
             }
-            if (!cursor.advance()) cursors.removeAt(cursorIndex)
         }
         return count
     }
@@ -103,9 +96,8 @@ object V2VideoScanner {
     fun loadCachedGroups(context: Context, eventOnly: Boolean): List<V2VideoGroup> = loadCachedGroups(context)
         .filter { group -> group.composite?.name?.contains("_event", ignoreCase = true) == eventOnly }
 
-    fun scanPhotoGroups(context: Context): List<V2VideoGroup> = V2StoragePathHelper.photoScanDirs(context)
+    fun scanPhotoGroups(context: Context): List<V2VideoGroup> = nativePlaybackImages(context)
         .asSequence()
-        .flatMap { dir -> dir.listFiles().orEmpty().asSequence() }
         .filter { isImageFile(it) && imageNamePattern.matches(it.name) }
         .distinctBy { it.absolutePath }
         .sortedWith(compareByDescending<File> { it.nameWithoutExtension.lowercase(Locale.US) }.thenByDescending { it.absolutePath })
@@ -147,16 +139,19 @@ object V2VideoScanner {
         })
     }
 
-    private class ScanCursor(private val files: List<File>) {
-        private var index = 0
-        fun current(): File = files[index]
-        fun advance(): Boolean {
-            index += 1
-            return index < files.size
-        }
+    private fun videoKey(file: File): String = file.nameWithoutExtension
+
+    private fun nativePlaybackFiles(context: Context): List<File> {
+        if (!GlesNative.isLoaded) return emptyList()
+        val dirs = V2StoragePathHelper.playbackScanDirs(context).map { it.absolutePath }.toTypedArray()
+        return runCatching { GlesNative.nativeListPlaybackVideos(dirs).map(::File) }.getOrDefault(emptyList())
     }
 
-    private fun videoKey(file: File): String = file.nameWithoutExtension
+    private fun nativePlaybackImages(context: Context): List<File> {
+        if (!GlesNative.isLoaded) return emptyList()
+        val dirs = V2StoragePathHelper.photoScanDirs(context).map { it.absolutePath }.toTypedArray()
+        return runCatching { GlesNative.nativeListPlaybackImages(dirs).map(::File) }.getOrDefault(emptyList())
+    }
 
     private fun isPlayableVideoFile(file: File): Boolean =
         file.isFile && file.exists() && file.canRead() && file.length() > 0L &&
@@ -184,18 +179,24 @@ object V2VideoScanner {
     fun cachedThumbnail(context: Context, file: File): Bitmap? {
         val thumb = findThumbnailFile(file) ?: return null
         val bitmap = decodeThumbnailFile(thumb) ?: return null
-        V2PlaybackListCache.updateThumbnail(context, file, thumb)
+        val cachedFile = thumb
+        V2PlaybackListCache.updateThumbnail(context, file, cachedFile)
         return bitmap
     }
 
-    private fun findThumbnailFile(file: File): File? =
-        thumbnailCandidates(file).firstOrNull { it.isFile && it.canRead() && it.length() > 0L }
+    fun cachedOrSidecarThumbnail(context: Context, file: File, cachedPath: String?): Bitmap? {
+        val cached = cachedThumbnailPath(cachedPath)
+        if (cached != null) return cached
+        return cachedThumbnail(context, file)
+    }
 
     private fun decodeThumbnailFile(thumb: File): Bitmap? {
+        if (thumb.extension.equals("bmp", ignoreCase = true) && !isCompleteBmpFile(thumb)) return null
         return runCatching {
             BitmapFactory.Options().run {
                 inJustDecodeBounds = true
                 BitmapFactory.decodeFile(thumb.absolutePath, this)
+                if (outWidth <= 0 || outHeight <= 0) return@run null
                 inSampleSize = thumbnailSampleSize(outWidth, outHeight, 240, 160)
                 inJustDecodeBounds = false
                 BitmapFactory.decodeFile(thumb.absolutePath, this)
@@ -217,34 +218,57 @@ object V2VideoScanner {
         return cached ?: cachedThumbnail(context, file)
     }
 
-    private fun defaultThumbnailFile(file: File): File = File(file.parentFile, file.nameWithoutExtension + ".bmp")
+    private fun defaultThumbnailFile(file: File): File = File(file.parentFile, file.nameWithoutExtension + ".jpg")
 
     private fun thumbnailCandidates(file: File): List<File> {
         val parent = file.parentFile ?: return emptyList()
         val stem = file.nameWithoutExtension
-        val timestamp = fileNamePattern.matchEntire(file.name)?.groupValues?.getOrNull(1)
-        val direct = listOf(
+        return listOf(
             defaultThumbnailFile(file),
-            File(parent, "$stem.jpg"),
             File(parent, "$stem.jpeg"),
+            File(parent, "$stem.bmp"),
             File(parent, "${stem}_thumb.jpg"),
             File(parent, "${stem}_thumbnail.jpg"),
             File(parent, "${stem.removeSuffix("_composite")}.jpg"),
-            File(parent, "${stem.removeSuffix("_composite")}.jpeg")
-        )
-        val prefixMatches = timestamp?.let { prefix ->
-            parent.listFiles { candidate ->
-                candidate.isFile && candidate.canRead() && candidate.length() > 0L &&
-                    (candidate.extension.equals("jpg", ignoreCase = true) || candidate.extension.equals("jpeg", ignoreCase = true)) &&
-                    candidate.name.startsWith(prefix, ignoreCase = true)
-            }.orEmpty().sortedWith(
-                compareByDescending<File> { it.nameWithoutExtension.equals(stem, ignoreCase = true) }
-                    .thenByDescending { it.nameWithoutExtension.length }
-                    .thenByDescending { it.name.lowercase(Locale.US) }
-            )
-        }.orEmpty()
-        return (direct + prefixMatches).distinctBy { it.absolutePath }
+            File(parent, "${stem.removeSuffix("_composite")}.jpeg"),
+            File(parent, "${stem.removeSuffix("_composite")}.bmp")
+        ).distinctBy { it.absolutePath }
     }
+
+    private fun isCompleteBmpFile(file: File): Boolean = runCatching {
+        if (file.length() < BMP_HEADER_BYTES) return false
+        val header = ByteArray(BMP_HEADER_BYTES)
+        file.inputStream().use { if (it.read(header) != BMP_HEADER_BYTES) return false }
+        if (header[0] != 'B'.code.toByte() || header[1] != 'M'.code.toByte()) return false
+        val width = readLe32(header, 18)
+        val height = readLe32(header, 22)
+        val bitsPerPixel = readLe16(header, 28)
+        val dataOffset = readLe32(header, 10)
+        if (width <= 0 || height <= 0 || dataOffset < BMP_HEADER_BYTES) return false
+        val bytesPerPixel = when (bitsPerPixel) {
+            24 -> 3
+            32 -> 4
+            else -> return false
+        }
+        val rowStride = ((width * bytesPerPixel + 3) / 4) * 4
+        val expected = dataOffset.toLong() + rowStride.toLong() * height.toLong()
+        file.length() >= expected
+    }.getOrDefault(false)
+
+    private fun readLe16(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 8)
+
+    private fun readLe32(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xff) shl 24)
+
+    private const val BMP_HEADER_BYTES = 54
+
+    private fun findThumbnailFile(file: File): File? =
+        thumbnailCandidates(file).firstOrNull { it.isFile && it.canRead() && it.length() > 0L }
 
     private fun thumbnailSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
         var sample = 1

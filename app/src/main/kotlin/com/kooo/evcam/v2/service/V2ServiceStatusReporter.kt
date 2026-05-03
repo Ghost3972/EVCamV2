@@ -8,6 +8,7 @@ internal class V2ServiceStatusReporter(
     private val service: V2CameraForegroundService,
     private val statusText: () -> String,
     private val isRecording: () -> Boolean,
+    private val isAnyRecording: () -> Boolean,
     private val isEmergencyRecordingActive: () -> Boolean,
     private val emergencyRecordingEndsAtWallClockMs: () -> Long,
     private val notifyUiStatus: (String) -> Unit,
@@ -37,13 +38,16 @@ internal class V2ServiceStatusReporter(
         Toast.makeText(service, message, Toast.LENGTH_SHORT).show()
     }
 
-    fun onStatusChanged(status: String) {
-        val recording = parseRecordingState(status)
-        updateUiStatusIfChanged(status)
-        recording?.let { V2PlaybackCacheMaintainer.setRecordingActive(it) }
-        updateStatusBarPluginState(status)
-        if (shouldUpdateNotification(status)) {
-            updateStatusBarNotification(status, recording)
+    fun onStatusChanged(status: String) = publishSnapshot("engine", status)
+
+    fun publishSnapshot(reason: String, status: String = statusText(), notifyUi: Boolean = true) {
+        val recordingFromStatus = parseRecordingState(status)
+        val recording = recordingFromStatus ?: isRecording()
+        if (notifyUi) updateUiStatusIfChanged(status)
+        V2PlaybackCacheMaintainer.setRecordingActive(isAnyRecording())
+        updateStatusBarPluginState(status, recording)
+        if (shouldUpdateNotification(status, recordingFromStatus)) {
+            updateStatusBarNotification(status, recordingFromStatus)
         }
     }
 
@@ -52,23 +56,15 @@ internal class V2ServiceStatusReporter(
         lastUiStatusText = status
     }
 
-    fun updatePlaybackCacheRecordingState() {
-        V2PlaybackCacheMaintainer.setRecordingActive(isRecording())
-    }
+    fun updatePlaybackCacheRecordingState() = publishSnapshot("compat_playback", notifyUi = false)
 
-    fun syncRecordingState(status: String = statusText()) {
-        updatePlaybackCacheRecordingState()
-        updateStatusBarPluginState(status)
-    }
+    fun syncRecordingState(status: String = statusText()) = publishSnapshot("compat_sync", status, notifyUi = false)
 
-    fun syncRecordingStateAndUi(status: String = statusText()) {
-        syncRecordingState(status)
-        updateUiStatus(status)
-    }
+    fun syncRecordingStateAndUi(status: String = statusText()) = publishSnapshot("compat_sync_ui", status, notifyUi = true)
 
-    fun updateStatusBarPluginState(status: String = statusText()) {
+    fun updateStatusBarPluginState(status: String = statusText(), recordingOverride: Boolean? = null) {
         val now = android.os.SystemClock.elapsedRealtime()
-        val recording = isRecording()
+        val recording = recordingOverride ?: isRecording()
         val emergencyRecordingActive = isEmergencyRecordingActive()
         val stateChanged = recording != lastStatusBarRecording || emergencyRecordingActive != lastStatusBarEmergency
         val textRefreshDue = status != lastStatusBarStatus && now - lastStatusBarUpdateMs >= STATUS_BAR_STATE_INTERVAL_MS
@@ -106,9 +102,8 @@ internal class V2ServiceStatusReporter(
         notifyUiStatus(status)
     }
 
-    private fun shouldUpdateNotification(status: String): Boolean {
+    private fun shouldUpdateNotification(status: String, recording: Boolean? = parseRecordingState(status)): Boolean {
         val now = System.currentTimeMillis()
-        val recording = parseRecordingState(status)
         val recordingChanged = recording != null && lastNotificationRecording != recording
         val emergencyChanged = lastNotificationEmergency != isEmergencyRecordingActive()
         val textChanged = lastNotificationText != status

@@ -1,6 +1,9 @@
 package com.kooo.evcam.v2.ui.playback
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
@@ -24,8 +27,10 @@ import androidx.core.view.WindowCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import com.kooo.evcam.R
 import com.kooo.evcam.databinding.ActivityV2VideoPlaybackBinding
-import com.kooo.evcam.v2.storage.V2PlaybackListCache
+import com.kooo.evcam.v2.nativebridge.GlesNative
+import com.kooo.evcam.v2.storage.V2PlaybackCacheEvents
 import com.kooo.evcam.v2.storage.V2PlaybackCacheMaintainer
+import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import com.kooo.evcam.v2.ui.settings.V2SettingsActivity
 import java.io.File
@@ -49,6 +54,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     private var playerSystemBottomInset = 0
     private var playerImmersive = false
     private var playbackMode = PlaybackMode.NORMAL
+    private var playbackCacheReceiverRegistered = false
     private val playerUiInterpolator = AccelerateDecelerateInterpolator()
     private val playerTitleDateFormat = SimpleDateFormat("yyyy年MM月dd日", Locale.CHINA)
     private val playerTitleTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.CHINA)
@@ -61,6 +67,12 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
                 binding.seekBar.progress = pos.coerceAtMost(binding.seekBar.max.coerceAtLeast(1))
             }
             progressHandler.postDelayed(this, 1_000L)
+        }
+    }
+    private val playbackCacheReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != V2PlaybackCacheEvents.ACTION_CHANGED) return
+            reloadVideosFromCache()
         }
     }
 
@@ -134,6 +146,16 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    override fun onStart() {
+        super.onStart()
+        registerPlaybackCacheReceiver()
+    }
+
+    override fun onStop() {
+        unregisterPlaybackCacheReceiver()
+        super.onStop()
+    }
+
     override fun onPause() { exitPlayerImmersive(); pauseAll(); super.onPause() }
 
     override fun finish() {
@@ -147,6 +169,40 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         selected = null
         pendingVideo = null
         loadVideos(autoSelect = false, preferCache = false)
+    }
+
+    private fun registerPlaybackCacheReceiver() {
+        if (playbackCacheReceiverRegistered) return
+        ContextCompat.registerReceiver(
+            this,
+            playbackCacheReceiver,
+            IntentFilter(V2PlaybackCacheEvents.ACTION_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        playbackCacheReceiverRegistered = true
+    }
+
+    private fun unregisterPlaybackCacheReceiver() {
+        if (!playbackCacheReceiverRegistered) return
+        runCatching { unregisterReceiver(playbackCacheReceiver) }
+        playbackCacheReceiverRegistered = false
+    }
+
+    private fun reloadVideosFromCache() {
+        if (playbackMode == PlaybackMode.PHOTO) return
+        val generation = ++loadGeneration
+        requestedThumbnailKeys.clear()
+        executor.execute {
+            val cachedGroups = loadGroupsForCurrentMode()
+            runOnUiThread {
+                if (generation != loadGeneration) return@runOnUiThread
+                adapter.replaceAll(cachedGroups)
+                val empty = cachedGroups.isEmpty()
+                binding.emptyText.visibility = if (empty) View.VISIBLE else View.GONE
+                if (empty && !showingPlayer) stopCurrentPlaybackUi()
+                binding.swipeRefresh.isRefreshing = false
+            }
+        }
     }
 
     private fun loadVideos(autoSelect: Boolean, preferCache: Boolean = true) {
@@ -176,7 +232,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
                 return@execute
             }
 
-            if (playbackMode != PlaybackMode.PHOTO) V2PlaybackCacheMaintainer.refreshNow(this)
+            if (playbackMode != PlaybackMode.PHOTO) V2PlaybackCacheMaintainer.refreshNow(this, force = true)
             val refreshedGroups = loadGroupsForCurrentMode()
             runOnUiThread {
                 if (generation != loadGeneration) return@runOnUiThread
@@ -200,7 +256,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
             val thumbnail = if (group.isPhoto) {
                 group.composite?.let { V2VideoScanner.imageThumbnail(it) }
             } else {
-                V2VideoScanner.cachedThumbnailPath(group.thumbnailPath)
+                group.composite?.let { V2VideoScanner.cachedOrSidecarThumbnail(this, it, group.thumbnailPath) }
             }
                 ?: return@execute
             runOnUiThread {
@@ -647,18 +703,21 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         binding.btnPlayerDelete.isEnabled = false
         val appContext = applicationContext
         executor.execute {
-            val deletedFiles = mutableListOf<File>()
             val success = runCatching {
                 val targets = group.files.ifEmpty { listOf(file) }
                     .filter { it.exists() }
                     .distinctBy { it.absolutePath }
-                targets.forEach { target ->
-                    if (target.delete()) deletedFiles += target
+                val refreshedJson = GlesNative.nativeDeleteVideosAndBuildPlaybackCache(
+                    targets.map { it.absolutePath }.toTypedArray(),
+                    V2StoragePathHelper.playbackScanDirs(appContext).map { it.absolutePath }.toTypedArray(),
+                )
+                if (refreshedJson != null) {
+                    V2PlaybackListCache.replaceWithNativeJson(appContext, refreshedJson)
+                } else {
+                    V2PlaybackListCache.removeVideo(appContext, file)
+                    V2PlaybackCacheMaintainer.refreshNow(appContext)
                 }
-                deleteThumbnailFiles(file)
-                V2PlaybackListCache.removeVideo(appContext, file)
-                V2PlaybackCacheMaintainer.refreshNow(appContext)
-                deletedFiles.isNotEmpty() && targets.none { it.exists() }
+                targets.isNotEmpty() && targets.none { it.exists() }
             }.getOrDefault(false)
             runOnUiThread {
                 binding.btnPlayerDelete.isEnabled = true
@@ -671,20 +730,6 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
                 }
             }
         }
-    }
-
-    private fun deleteThumbnailFiles(video: File) {
-        val parent = video.parentFile ?: return
-        val stem = video.nameWithoutExtension
-        listOf(
-            File(parent, "$stem.jpg"),
-            File(parent, "$stem.jpeg"),
-            File(parent, "${stem}_thumb.jpg"),
-            File(parent, "${stem}_thumbnail.jpg"),
-            File(parent, "${stem.removeSuffix("_composite")}.jpg"),
-            File(parent, "${stem.removeSuffix("_composite")}.jpeg"),
-        ).distinctBy { it.absolutePath }
-            .forEach { candidate -> if (candidate.isFile) runCatching { candidate.delete() } }
     }
 
     private fun switchMode(mode: PlaybackMode) {

@@ -5,6 +5,13 @@ import android.os.Handler
 import java.io.File
 
 object V2RecordingPipelineFactory {
+    data class CameraTarget(
+        val cameraHandle: Long,
+        val label: String,
+        val width: Int,
+        val height: Int,
+    )
+
     data class Config(
         val outputDir: File,
         val nativeHandle: Long,
@@ -15,23 +22,25 @@ object V2RecordingPipelineFactory {
         val recordingFps: Int,
         val segmentDurationMs: Long,
         val fileSuffix: String = "",
+        val cameraTargets: List<CameraTarget> = emptyList(),
     )
 
     fun create(
         context: Context,
         config: Config,
         onFailure: (String) -> Unit,
-    ): V2CompositeRecorder = V2CompositeRecorder(
-        context = context,
-        outputDir = config.outputDir,
-        nativeHandle = config.nativeHandle,
-        renderHandler = config.renderHandler,
-        outputWidth = config.outputWidth,
-        outputHeight = config.outputHeight,
-        videoBitrate = config.videoBitrate,
-        recordingFps = config.recordingFps,
-        segmentDurationMs = config.segmentDurationMs,
-        fileSuffix = config.fileSuffix,
-        onFailure = onFailure,
-    )
+    ): V2RecordingPipeline =
+        V2CompositeRecorder(
+            context = context,
+            outputDir = config.outputDir,
+            nativeHandle = config.nativeHandle,
+            renderHandler = config.renderHandler,
+            outputWidth = config.outputWidth,
+            outputHeight = config.outputHeight,
+            videoBitrate = config.videoBitrate,
+            recordingFps = config.recordingFps,
+            segmentDurationMs = config.segmentDurationMs,
+            fileSuffix = config.fileSuffix,
+            onFailure = onFailure,
+        )
 }

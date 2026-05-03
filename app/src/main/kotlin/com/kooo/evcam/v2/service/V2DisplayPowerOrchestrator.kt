@@ -1,11 +1,9 @@
 package com.kooo.evcam.v2.service
 
-import android.os.Handler
 import android.os.SystemClock
 import com.kooo.evcam.v2.log.V2AppLog
 
 internal class V2DisplayPowerOrchestrator(
-    private val handler: Handler,
     private val displayPowerController: V2DisplayPowerController,
     private val isDisplayPowerOn: () -> Boolean,
     private val isAutoRecordingEnabled: () -> Boolean,
@@ -15,10 +13,8 @@ internal class V2DisplayPowerOrchestrator(
     private val stopRecordingAndReleaseCameras: (String) -> Unit,
     private val setCameraAccessAllowed: (Boolean) -> Unit,
     private val startRecording: () -> Unit,
-    private val statusText: () -> String,
-    private val updatePlaybackCacheRecordingState: () -> Unit,
-    private val updateStatusBarPluginState: () -> Unit,
-    private val notifyUiStatus: (String) -> Unit,
+    private val publishSnapshot: (String) -> Unit,
+    private val dispatchDelayed: (String, Long, () -> Unit) -> Unit,
     private val resetWatchdog: (String) -> Unit,
     private val startWatchdog: () -> Unit,
     private val cancelAutoRecording: () -> Unit,
@@ -43,7 +39,7 @@ internal class V2DisplayPowerOrchestrator(
         hideBlindSpot()
         hideFisheye()
         pauseCameraForDisplayOff()
-        notifyUiStatus(statusText())
+        publishSnapshot("display_off")
         V2AppLog.perf(TAG, "displayOff", SystemClock.elapsedRealtime() - startedMs, "action=$action")
         saveLog()
     }
@@ -51,7 +47,7 @@ internal class V2DisplayPowerOrchestrator(
     fun releaseCamerasIfSystemAlreadyNonInteractive(reason: String) {
         if (!isDisplayPowerOn()) {
             stopRecordingAndReleaseCameras("$reason:display_power_off")
-            updatePlaybackCacheRecordingState()
+            publishSnapshot("release_non_interactive")
             return
         }
         displayPowerController.queryCurrentState(reason)
@@ -72,7 +68,7 @@ internal class V2DisplayPowerOrchestrator(
         restoreRecordingAfterDisplayOnIfNeeded()
         resetWatchdog("display_on")
         startWatchdog()
-        notifyUiStatus(statusText())
+        publishSnapshot("display_on")
         V2AppLog.perf(TAG, "displayOn_schedule", SystemClock.elapsedRealtime() - startedMs, "action=$action")
     }
 
@@ -82,39 +78,38 @@ internal class V2DisplayPowerOrchestrator(
             return
         }
         resumeRecordingAfterDisplayOn = false
-        handler.postDelayed({
+        dispatchDelayed("displayOnRestoreRecording", DISPLAY_ON_RECORDING_RESTORE_DELAY_MS) {
             if (!isDisplayPowerOn()) {
                 V2AppLog.i(TAG, "display-on recording restore skipped: display off")
-                return@postDelayed
+                return@dispatchDelayed
             }
             if (isAvoidanceActive()) {
                 V2AppLog.i(TAG, "display-on recording restore skipped: avoidance active target=${avoidanceTarget()}")
-                return@postDelayed
+                return@dispatchDelayed
             }
             if (isRecording()) {
                 V2AppLog.i(TAG, "display-on recording restore skipped: already recording")
-                return@postDelayed
+                return@dispatchDelayed
             }
             val startedMs = SystemClock.elapsedRealtime()
             V2AppLog.i(TAG, "display-on recording restore start")
             startRecording()
-            updatePlaybackCacheRecordingState()
-            updateStatusBarPluginState()
-            notifyUiStatus(statusText())
+            publishSnapshot("display_on_restore_recording")
             V2AppLog.perf(TAG, "displayOnRestoreRecording", SystemClock.elapsedRealtime() - startedMs)
-        }, DISPLAY_ON_RECORDING_RESTORE_DELAY_MS)
+        }
     }
 
     private fun pauseCameraForDisplayOff() {
         stopRecordingAndReleaseCameras("display_off")
-        updatePlaybackCacheRecordingState()
+        publishSnapshot("display_off_pause_camera")
     }
 
     private fun resumeCameraForDisplayOn() {
         setCameraAccessAllowed(true)
     }
 
-    private companion object {
+    companion object {
+        val DISPLAY_ON_RECORDING_RESTORE_TOKEN: Any = "display_on_recording_restore"
         private const val TAG = "V2CameraService"
         private const val DISPLAY_ON_RECORDING_RESTORE_DELAY_MS = 500L
     }
