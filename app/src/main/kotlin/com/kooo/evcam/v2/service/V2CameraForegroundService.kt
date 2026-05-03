@@ -11,9 +11,6 @@ import android.os.PowerManager
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2BroadcastLogger
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.recording.V2EncoderCapabilityLogger
-import com.kooo.evcam.v2.recording.V2EncoderStressTester
-import com.kooo.evcam.v2.recording.V2NativeWriterSmokeTester
 import com.kooo.evcam.v2.settings.V2SettingsRepository
 
 class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
@@ -30,20 +27,9 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         const val ACTION_HIDE_BLIND_SPOT_PREVIEW = "com.kooo.evcam.v2.action.HIDE_BLIND_SPOT_PREVIEW"
         const val ACTION_TOGGLE_RECORDING_FROM_PLUGIN = "com.kooo.evcam.v2.action.PLUGIN_TOGGLE_RECORDING"
         const val ACTION_START_EMERGENCY_FROM_PLUGIN = "com.kooo.evcam.v2.action.PLUGIN_START_EMERGENCY"
-        const val ACTION_START_ENCODER_STRESS_TEST = "com.kooo.evcam.v2.action.START_ENCODER_STRESS_TEST"
-        const val ACTION_STOP_ENCODER_STRESS_TEST = "com.kooo.evcam.v2.action.STOP_ENCODER_STRESS_TEST"
-        const val ACTION_START_NATIVE_WRITER_SMOKE_TEST = "com.kooo.evcam.v2.action.START_NATIVE_WRITER_SMOKE_TEST"
-        const val ACTION_STOP_NATIVE_WRITER_SMOKE_TEST = "com.kooo.evcam.v2.action.STOP_NATIVE_WRITER_SMOKE_TEST"
         const val EXTRA_CAMERA_INDEX = "camera_index"
         const val EXTRA_SIDE = "side"
         const val EXTRA_SETTINGS_CATEGORY = "settings_category"
-        const val EXTRA_STRESS_LANES = "lanes"
-        const val EXTRA_STRESS_WIDTH = "width"
-        const val EXTRA_STRESS_HEIGHT = "height"
-        const val EXTRA_STRESS_FPS = "fps"
-        const val EXTRA_STRESS_BITRATE = "bitrate"
-        const val EXTRA_STRESS_DURATION_MS = "duration_ms"
-        const val EXTRA_STRESS_H265 = "h265"
         internal const val AUTO_START_RECORDING_DELAY_MS = 0L
         const val EMERGENCY_RECORDING_DURATION_MS = 15_000L
         @Volatile var isRunning = false
@@ -82,7 +68,6 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
         super.onCreate()
         isRunning = true
         V2AppLog.init(this)
-        V2EncoderCapabilityLogger.logOnce()
         initializeCoreRuntime()
         keepAliveOrchestrator.recordCreated()
         initializePreviewAndReadiness()
@@ -301,40 +286,9 @@ class V2CameraForegroundService : Service(), V2CameraEngine.Listener {
             hideBlindSpotPreview = { blindSpotController.hide() },
             toggleRecordingFromPlugin = { recordingOrchestrator.toggleRecordingFromPlugin() },
             startEmergencyFromPlugin = { recordingOrchestrator.startEmergencyRecordingFromPlugin() },
-            startEncoderStressTest = { intent -> startEncoderStressTest(intent) },
-            stopEncoderStressTest = { V2EncoderStressTester.stop() },
-            startNativeWriterSmokeTest = { intent -> startNativeWriterSmokeTest(intent) },
-            stopNativeWriterSmokeTest = { V2NativeWriterSmokeTester.stop() },
             displayOff = { action -> displayPowerOrchestrator.handleDisplayOff(action) },
             displayOn = { action -> displayPowerOrchestrator.handleDisplayOn(action) },
         )
-    }
-
-    private fun startEncoderStressTest(intent: Intent) {
-        val config = V2EncoderStressTester.Config(
-            lanes = intent.getIntExtra(EXTRA_STRESS_LANES, 4),
-            width = intent.getIntExtra(EXTRA_STRESS_WIDTH, 1280),
-            height = intent.getIntExtra(EXTRA_STRESS_HEIGHT, 720),
-            fps = intent.getIntExtra(EXTRA_STRESS_FPS, 15),
-            bitrate = intent.getIntExtra(EXTRA_STRESS_BITRATE, 4_000_000),
-            durationMs = intent.getLongExtra(EXTRA_STRESS_DURATION_MS, 60_000L),
-            h265 = intent.getBooleanExtra(EXTRA_STRESS_H265, true),
-        )
-        val started = V2EncoderStressTester.start(this, config)
-        V2AppLog.i("V2CameraService", "encoder stress test start requested started=$started config=$config")
-    }
-
-    private fun startNativeWriterSmokeTest(intent: Intent) {
-        val config = V2NativeWriterSmokeTester.Config(
-            width = intent.getIntExtra(EXTRA_STRESS_WIDTH, 1280),
-            height = intent.getIntExtra(EXTRA_STRESS_HEIGHT, 720),
-            fps = intent.getIntExtra(EXTRA_STRESS_FPS, 15),
-            bitrate = intent.getIntExtra(EXTRA_STRESS_BITRATE, 4_000_000),
-            durationMs = intent.getLongExtra(EXTRA_STRESS_DURATION_MS, 10_000L),
-            h265 = intent.getBooleanExtra(EXTRA_STRESS_H265, false),
-        )
-        val started = V2NativeWriterSmokeTester.start(this, config)
-        V2AppLog.i("V2CameraService", "native writer smoke test start requested started=$started config=$config")
     }
 
     private fun initializeLifecycleOrchestrator() {

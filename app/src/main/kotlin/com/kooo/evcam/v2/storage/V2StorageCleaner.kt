@@ -30,14 +30,10 @@ object V2StorageCleaner {
         for (video in videos) {
             if (available >= reservedBytes) break
             val before = video.length().coerceAtLeast(0L)
-            val thumb = File(video.parentFile, video.nameWithoutExtension + ".jpg")
             if (video.delete()) {
                 deletedCount += 1
                 deletedBytes += before
-                if (thumb.exists()) {
-                    val thumbBytes = thumb.length().coerceAtLeast(0L)
-                    if (thumb.delete()) deletedBytes += thumbBytes
-                }
+                deletedBytes += deleteThumbnailSidecars(video)
                 available = outputDir.usableSpace
                 V2AppLog.w("V2StorageCleaner", "deleted old segment ${video.name} freed=${formatBytes(before)} available=${formatBytes(available)} reserve=${formatBytes(reservedBytes)}")
             } else {
@@ -75,6 +71,18 @@ object V2StorageCleaner {
             }
         }
         return deletedCount to deletedBytes
+    }
+
+    private fun deleteThumbnailSidecars(video: File): Long {
+        val parent = video.parentFile ?: return 0L
+        return listOf("bmp", "jpg", "jpeg")
+            .map { ext -> File(parent, "${video.nameWithoutExtension}.$ext") }
+            .distinctBy { it.absolutePath }
+            .sumOf { thumb ->
+                if (!thumb.exists()) return@sumOf 0L
+                val bytes = thumb.length().coerceAtLeast(0L)
+                if (thumb.delete()) bytes else 0L
+            }
     }
 
     fun formatBytes(bytes: Long): String {

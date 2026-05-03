@@ -7,6 +7,8 @@ build/
 local.properties
 .cxx/
 .externalNativeBuild/
+.zig-cache/
+**/.zig-cache/
 *.log
 captures/
 .trae/

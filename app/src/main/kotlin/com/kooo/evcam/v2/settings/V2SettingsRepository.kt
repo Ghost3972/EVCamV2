@@ -38,8 +38,6 @@ object V2SettingsRepository {
         bitrateLevel = V2RecordingSettings.bitrateLevel(context),
         fps = V2RecordingSettings.fps(context),
         segmentMinutes = V2RecordingSettings.segmentMinutes(context),
-        segmentPrecreateEnabled = V2RecordingSettings.segmentPrecreateEnabled(context),
-        h265Enabled = V2RecordingSettings.h265Enabled(context),
     )
 
     fun fisheyeConfig(context: Context) = V2SettingsSnapshot.Fisheye(

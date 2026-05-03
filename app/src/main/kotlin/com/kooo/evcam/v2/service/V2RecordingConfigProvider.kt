@@ -14,8 +14,6 @@ object V2RecordingConfigProvider {
             fps = recording.fps,
             segmentDurationMs = recording.segmentMinutes * 60_000L,
             bitrate = V2RecordingSettings.bitrateForLevel(size, recording.bitrateLevel),
-            segmentPrecreateEnabled = recording.segmentPrecreateEnabled,
-            h265Enabled = recording.h265Enabled && V2RecordingSettings.h265Supported(),
         )
     }
 }

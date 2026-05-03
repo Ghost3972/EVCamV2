@@ -126,7 +126,7 @@ object V2PlaybackListCache {
 
     private fun cacheFile(context: Context): File = File(context.cacheDir, CACHE_FILE_NAME)
 
-    private fun defaultThumbnailFile(video: File): File = File(video.parentFile, video.nameWithoutExtension + ".jpg")
+    private fun defaultThumbnailFile(video: File): File = File(video.parentFile, video.nameWithoutExtension + ".bmp")
 
     private fun isPlayableVideoFile(file: File): Boolean =
         file.isFile && file.exists() && file.canRead() && file.length() > 0L &&

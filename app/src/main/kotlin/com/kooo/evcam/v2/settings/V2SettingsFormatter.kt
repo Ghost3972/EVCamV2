@@ -7,9 +7,7 @@ object V2SettingsFormatter {
         val snapshot = V2SettingsRepository.currentSnapshot(context).recording
         val res = labelFor(V2RecordingSettings.supportedResolutionOptions(context), snapshot.resolution)
         val br = labelFor(V2RecordingSettings.bitrateOptionsWithMbps(context), snapshot.bitrateLevel)
-        val precreate = if (snapshot.segmentPrecreateEnabled) "开" else "关"
-        val codec = if (snapshot.h265Enabled) "H.265" else "H.264"
-        return "分辨率：$res；编码：$codec；码率：$br；帧率：${snapshot.fps}fps；分段：${snapshot.segmentMinutes}分钟；预创建：$precreate\n更改后重启应用/服务生效"
+        return "分辨率：$res；编码：H.264；码率：$br；帧率：${snapshot.fps}fps；分段：${snapshot.segmentMinutes}分钟\n更改后重启应用/服务生效"
     }
 
     fun fisheyeParamsSummary(context: Context): String {

@@ -1,8 +1,6 @@
 package com.kooo.evcam.v2.settings
 
 import android.content.Context
-import android.media.MediaCodecList
-import android.media.MediaFormat
 import android.util.Size
 import com.kooo.evcam.v2.log.V2AppLog
 
@@ -12,8 +10,6 @@ object V2RecordingSettings {
     private const val KEY_BITRATE_LEVEL = "bitrate_level"
     private const val KEY_FPS = "fps"
     private const val KEY_SEGMENT_MINUTES = "segment_minutes"
-    private const val KEY_SEGMENT_PRECREATE = "segment_precreate"
-    private const val KEY_H265_ENABLED = "h265_enabled"
 
     private const val FALLBACK_RESOLUTION = "1280x720"
     private const val DEFAULT_FPS = 15
@@ -36,13 +32,6 @@ object V2RecordingSettings {
     } ?: DEFAULT_FPS
     fun segmentMinutes(context: Context): Int = prefs(context).getInt(KEY_SEGMENT_MINUTES, 1).coerceAtLeast(1)
     fun segmentDurationMs(context: Context): Long = segmentMinutes(context) * 60_000L
-    fun segmentPrecreateEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_SEGMENT_PRECREATE, true)
-    fun h265Enabled(context: Context): Boolean = prefs(context).getBoolean(KEY_H265_ENABLED, false)
-    fun h265Supported(): Boolean = runCatching {
-        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { codec ->
-            codec.isEncoder && codec.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true) }
-        }
-    }.getOrDefault(false)
 
     fun setResolution(context: Context, value: String) {
         val next = supportedResolutionOptions(context).firstOrNull { it.value == value }?.value
@@ -68,16 +57,6 @@ object V2RecordingSettings {
         val next = segmentMinuteOptions.minByOrNull { kotlin.math.abs(it - value) } ?: 1
         prefs(context).edit().putInt(KEY_SEGMENT_MINUTES, next).apply()
         V2AppLog.i("V2RecordingSettings", "segmentMinutes=$next")
-    }
-
-    fun setSegmentPrecreateEnabled(context: Context, enabled: Boolean) {
-        prefs(context).edit().putBoolean(KEY_SEGMENT_PRECREATE, enabled).apply()
-        V2AppLog.i("V2RecordingSettings", "segmentPrecreateEnabled=$enabled")
-    }
-
-    fun setH265Enabled(context: Context, enabled: Boolean) {
-        prefs(context).edit().putBoolean(KEY_H265_ENABLED, enabled).apply()
-        V2AppLog.i("V2RecordingSettings", "h265Enabled=$enabled")
     }
 
     fun supportedResolutionOptions(context: Context): List<Option> {

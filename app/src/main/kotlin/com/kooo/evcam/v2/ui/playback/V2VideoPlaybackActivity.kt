@@ -2,7 +2,6 @@ package com.kooo.evcam.v2.ui.playback
 
 import android.content.Intent
 import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -30,9 +29,7 @@ import com.kooo.evcam.v2.storage.V2PlaybackCacheMaintainer
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import com.kooo.evcam.v2.ui.settings.V2SettingsActivity
 import java.io.File
-import java.io.FileOutputStream
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -204,7 +201,6 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
                 group.composite?.let { V2VideoScanner.imageThumbnail(it) }
             } else {
                 V2VideoScanner.cachedThumbnailPath(group.thumbnailPath)
-                    ?: group.composite?.let { V2VideoScanner.videoFrameThumbnail(this, it) }
             }
                 ?: return@execute
             runOnUiThread {
@@ -728,51 +724,7 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
     }
 
     private fun saveSnapshot() {
-        val file = selected?.composite?.takeIf { selected?.isPhoto != true && it.isFile && it.canRead() }
-        if (file == null) {
-            Toast.makeText(this, "无视频", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val positionUs = binding.videoFront.currentPosition.coerceAtLeast(0).toLong() * 1000L
-        val snapshot = runCatching {
-            val retriever = MediaMetadataRetriever()
-            try {
-                retriever.setDataSource(file.absolutePath)
-                retriever.getFrameAtTime(positionUs, MediaMetadataRetriever.OPTION_CLOSEST)
-                    ?: retriever.frameAtTime
-            } finally {
-                retriever.release()
-            }
-        }.getOrNull()
-
-        if (snapshot == null) {
-            Toast.makeText(this, "截图失败", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val out = uniqueSnapshotFile()
-        val saved = runCatching {
-            out.parentFile?.mkdirs()
-            FileOutputStream(out).use { stream ->
-                snapshot.compress(Bitmap.CompressFormat.JPEG, 92, stream)
-            }
-        }.isSuccess
-        snapshot.recycle()
-        Toast.makeText(this, if (saved) "已截图" else "截图失败", Toast.LENGTH_SHORT).show()
-        if (saved && playbackMode == PlaybackMode.PHOTO) loadVideos(autoSelect = false, preferCache = false)
-    }
-
-    private fun uniqueSnapshotFile(): File {
-        val dir = V2StoragePathHelper.photoDir(this)
-        val base = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + "_snapshot"
-        val first = File(dir, "$base.jpg")
-        if (!first.exists()) return first
-        for (index in 1..999) {
-            val candidate = File(dir, "%s_%03d.jpg".format(Locale.US, base, index))
-            if (!candidate.exists()) return candidate
-        }
-        return File(dir, "$base-${System.currentTimeMillis()}.jpg")
+        Toast.makeText(this, "截图已从 Kotlin 媒体路径移除", Toast.LENGTH_SHORT).show()
     }
 
     private enum class PlaybackMode { NORMAL, EVENT, PHOTO }

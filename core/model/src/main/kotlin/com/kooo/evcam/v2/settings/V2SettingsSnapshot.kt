@@ -29,8 +29,6 @@ data class V2SettingsSnapshot(
         val bitrateLevel: String,
         val fps: Int,
         val segmentMinutes: Int,
-        val segmentPrecreateEnabled: Boolean,
-        val h265Enabled: Boolean,
     )
 
     data class Fisheye(

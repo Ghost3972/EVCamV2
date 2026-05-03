@@ -1,12 +1,6 @@
 package com.kooo.evcam.v2.recording
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Typeface
-import android.media.MediaFormat
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -15,15 +9,13 @@ import com.kooo.evcam.v2.nativebridge.V2NativeRecordingBridge
 import com.kooo.evcam.v2.storage.V2StorageCleanupResult
 import com.kooo.evcam.v2.storage.V2StorageCleaner
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
-import java.util.Locale
 
 class V2CompositeRecorder(
     private val context: Context,
@@ -36,20 +28,17 @@ class V2CompositeRecorder(
     private val recordingFps: Int,
     private val segmentDurationMs: Long,
     private val fileSuffix: String,
-    segmentPrecreateEnabled: Boolean,
-    private val h265Enabled: Boolean,
     private val onFailure: (String) -> Unit = {},
 ) {
     companion object {
-        private const val TICK_SHOULD_RENDER = 1L
-        private const val TICK_DROPPED = 2L
-        private const val TICK_SEGMENT_DUE = 4L
         private const val START_CAPTURE_TIMEOUT_MS = 2_000L
         private const val STOP_RENDER_TIMEOUT_MS = 2_000L
         private const val STOP_WRITER_TIMEOUT_MS = 2_500L
         private const val RECORDING_SLOW_RENDER_MS = 24L
         private const val RECORDING_FRAME_PERF_LOG_INTERVAL_MS = 5_000L
         private const val RECORDING_FRAME_WARN_LOG_INTERVAL_MS = 1_000L
+        private const val WORKER_POLL_INTERVAL_MS = 100L
+        private const val MIME_VIDEO_AVC = "video/avc"
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -57,13 +46,11 @@ class V2CompositeRecorder(
     private val metrics = RecordingMetrics()
     private var recording = false
     private var generation = 0L
-    private val recordingBackend = V2RecordingBackend.fromPreferences(context)
-    private var writer: V2SegmentWriter? = null
+    private var writer: V2NativeSegmentWriter? = null
+    private var nativeWorkerActive = false
     private val releaseExecutor = Executors.newSingleThreadExecutor()
     private val cleanupExecutor = Executors.newSingleThreadExecutor()
-    private val segmentPrepareExecutor = Executors.newSingleThreadExecutor()
-    private val timestampOverlay = TimestampOverlayRenderer(context, outputWidth, outputHeight)
-    private val videoMimeType = if (h265Enabled) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
+    private val videoMimeType = MIME_VIDEO_AVC
     private val emergencyClips = V2EmergencyClipCoordinator(
         context = context,
         outputDir = outputDir,
@@ -72,11 +59,6 @@ class V2CompositeRecorder(
         stoppedWallClockMs = { stoppedWallClockMs },
     )
     @Volatile private var cleanupFuture: Future<V2StorageCleanupResult>? = null
-    private var recordingSessionId = ""
-    private var preparedSegmentIndex = -1
-    private var preparedSegmentWallClockMs = 0L
-    private var preparedSegmentFuture: Future<V2SegmentWriter>? = null
-    private var segmentPrecreateEnabled = segmentPrecreateEnabled
     private var lastFramePerfLogMs = 0L
     private var lastFramePerfRequested = 0L
     private var lastFramePerfRendered = 0L
@@ -84,19 +66,14 @@ class V2CompositeRecorder(
     private var lastFramePerfDropped = 0L
     @Volatile private var stoppedWallClockMs = 0L
 
-    init {
-        V2RecordingBackend.forceNativeExperimentalDefault(context)
-    }
-
     fun start(): Boolean {
         val startedMs = SystemClock.elapsedRealtime()
-        V2AppLog.i("V2CompositeRecorder", "start size=${outputWidth}x${outputHeight} bitrate=$videoBitrate fps=$recordingFps segmentMs=$segmentDurationMs precreate=$segmentPrecreateEnabled mime=$videoMimeType backend=$recordingBackend outputDir=${outputDir.absolutePath}")
+        V2AppLog.i("V2CompositeRecorder", "start size=${outputWidth}x${outputHeight} bitrate=$videoBitrate fps=$recordingFps segmentMs=$segmentDurationMs mime=$videoMimeType backend=ZigNative outputDir=${outputDir.absolutePath}")
         metrics.apply {
             requestedFrames = 0; renderedFrames = 0; encodedSamples = 0; droppedFrames = 0
             segmentIndex = 0; segmentSwitchMs = 0; firstSampleLatencyMs = -1; lastError = "无"
         }
         scheduleStorageCleanup()
-        recordingSessionId = createRecordingSessionId()
         val startWallClockMs = System.currentTimeMillis()
         val firstSegmentWallClockMs = native.startSession(recordingFps, segmentDurationMs, startWallClockMs)
         recording = true
@@ -113,13 +90,29 @@ class V2CompositeRecorder(
             native.stopSession()
             runCatching { native.detachEncoderSurface() }
                 .onFailure { detachError -> V2AppLog.e("V2CompositeRecorder", "detach encoder after start failure failed", detachError) }
-            writer?.let { releaseWriterAsync(it, finish = false, generateThumbnail = false) }
+            writer?.let { releaseWriterAsync(it, finish = false) }
             writer = null
             V2AppLog.e("V2CompositeRecorder", "start failed", it)
             return false
         }
-        scheduleRecordingTick(startGeneration, 0L)
-        V2AppLog.perf("V2CompositeRecorder", "start", SystemClock.elapsedRealtime() - startedMs, "session=$recordingSessionId")
+        val currentWriter = writer
+        if (currentWriter == null || !native.startWorker(currentWriter.nativeHandle, recordingFps)) {
+            val error = "native recording worker unavailable: ${native.lastError()}"
+            metrics.lastError = error
+            recording = false
+            generation += 1
+            native.stopSession()
+            runCatching { native.detachEncoderSurface() }
+                .onFailure { detachError -> V2AppLog.e("V2CompositeRecorder", "detach encoder after worker start failure failed", detachError) }
+            writer?.let { releaseWriterAsync(it, finish = false) }
+            writer = null
+            V2AppLog.e("V2CompositeRecorder", error)
+            return false
+        }
+        nativeWorkerActive = true
+        scheduleWorkerPoll(startGeneration, WORKER_POLL_INTERVAL_MS)
+        V2AppLog.i("V2CompositeRecorder", "native recording worker started ${workerSnapshotSummary()}")
+        V2AppLog.perf("V2CompositeRecorder", "start", SystemClock.elapsedRealtime() - startedMs)
         return true
     }
 
@@ -127,6 +120,8 @@ class V2CompositeRecorder(
         val startedMs = SystemClock.elapsedRealtime()
         V2AppLog.i("V2CompositeRecorder", "stop requested segment=${metrics.segmentIndex} requested=${metrics.requestedFrames} rendered=${metrics.renderedFrames} encoded=${metrics.encodedSamples} dropped=${metrics.droppedFrames}")
         recording = false
+        stopNativeWorkerIfActive("stop", STOP_RENDER_TIMEOUT_MS)
+        nativeWorkerActive = false
         native.stopSession()
         val stopGeneration = ++generation
         val writerToStop = writer
@@ -138,13 +133,9 @@ class V2CompositeRecorder(
         renderHandler.post {
             try {
                 if (stopGeneration != generation) return@post
-                writerToStop?.requestDrain()
                 if (writerToStop != null) {
                     runCatching {
-                        if (native.renderCompositor()) {
-                            metrics.renderedFrames += 1
-                            writerToStop.requestDrain()
-                        }
+                        applyFinalRenderAndDrain(writerToStop, native.finalRenderAndDrain(writerToStop.nativeHandle, 10_000L))
                     }.onFailure { t ->
                         metrics.lastError = t.javaClass.simpleName + ": " + (t.message ?: "停止补帧失败")
                         V2AppLog.e("V2CompositeRecorder", "stop final render failed", t)
@@ -155,9 +146,8 @@ class V2CompositeRecorder(
             } finally {
                 latch.countDown()
                 writerToStop?.let {
-                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, generateThumbnail = true, segmentEndWallClockMs = stopWallClockMs)
+                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, segmentEndWallClockMs = stopWallClockMs)
                 }
-                releasePreparedSegmentAsync()
                 releaseExecutor.shutdown()
             }
         }
@@ -166,9 +156,8 @@ class V2CompositeRecorder(
                 V2AppLog.e("V2CompositeRecorder", "stop timed out; release writer without final render")
                 generation += 1
                 writerToStop?.let {
-                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, generateThumbnail = true, segmentEndWallClockMs = stopWallClockMs)
+                    if (releaseQueued.compareAndSet(false, true)) releaseWriterAsync(it, finish = true, segmentEndWallClockMs = stopWallClockMs)
                 }
-                releasePreparedSegmentAsync()
                 releaseExecutor.shutdown()
             }
         } else {
@@ -177,7 +166,6 @@ class V2CompositeRecorder(
         cleanupFuture?.cancel(false)
         cleanupFuture = null
         cleanupExecutor.shutdown()
-        segmentPrepareExecutor.shutdown()
         V2AppLog.perf("V2CompositeRecorder", "stop_queue", SystemClock.elapsedRealtime() - startedMs)
     }
 
@@ -185,6 +173,8 @@ class V2CompositeRecorder(
         val startedMs = SystemClock.elapsedRealtime()
         V2AppLog.i("V2CompositeRecorder", "stopBlockingForRelease requested segment=${metrics.segmentIndex} requested=${metrics.requestedFrames} rendered=${metrics.renderedFrames} encoded=${metrics.encodedSamples} dropped=${metrics.droppedFrames}")
         recording = false
+        stopNativeWorkerIfActive("release", STOP_RENDER_TIMEOUT_MS)
+        nativeWorkerActive = false
         native.stopSession()
         val stopGeneration = ++generation
         val writerToStop = writer
@@ -195,13 +185,9 @@ class V2CompositeRecorder(
         val renderTask = Runnable {
             try {
                 if (stopGeneration != generation) return@Runnable
-                writerToStop?.requestDrain()
                 if (writerToStop != null) {
                     runCatching {
-                        if (native.renderCompositor()) {
-                            metrics.renderedFrames += 1
-                            writerToStop.requestDrain()
-                        }
+                        applyFinalRenderAndDrain(writerToStop, native.finalRenderAndDrain(writerToStop.nativeHandle, 10_000L))
                     }.onFailure { t ->
                         metrics.lastError = t.javaClass.simpleName + ": " + (t.message ?: "停止补帧失败")
                         V2AppLog.e("V2CompositeRecorder", "release final render failed", t)
@@ -217,16 +203,14 @@ class V2CompositeRecorder(
         if (Looper.myLooper() != renderHandler.looper && !latch.await(STOP_RENDER_TIMEOUT_MS.coerceAtMost(timeoutMs), TimeUnit.MILLISECONDS)) {
             V2AppLog.e("V2CompositeRecorder", "stopBlockingForRelease render detach timed out")
         }
-        val finished = writerToStop?.finishAndReleaseBlocking(generateThumbnail = true, timeoutMs = STOP_WRITER_TIMEOUT_MS.coerceAtMost(timeoutMs))
+        val finished = writerToStop?.finishAndReleaseBlocking()
         if (finished != null && fileSuffix.isEmpty()) {
             onSegmentFinalized(finished, writerToStop.mediaStartWallClockMs(), stopWallClockMs)
         }
         finishEmergencyClipExportsIfStopped()
-        releasePreparedSegmentAsync()
         cleanupFuture?.cancel(false)
         cleanupFuture = null
         cleanupExecutor.shutdown()
-        segmentPrepareExecutor.shutdown()
         releaseExecutor.shutdown()
         V2AppLog.perf("V2CompositeRecorder", "stopBlockingForRelease", SystemClock.elapsedRealtime() - startedMs)
     }
@@ -241,292 +225,133 @@ class V2CompositeRecorder(
     private fun startNewSegment(segmentIndex: Int, segmentWallClockMs: Long) {
         val segmentStartMs = SystemClock.elapsedRealtime()
         val actualSegmentStartWallClockMs = System.currentTimeMillis()
-        V2AppLog.d("V2CompositeRecorder", "start segment index=$segmentIndex preparedFuture=${preparedSegmentFuture != null} precreate=$segmentPrecreateEnabled")
+        V2AppLog.d("V2CompositeRecorder", "start segment index=$segmentIndex")
         consumeFinishedCleanupResult()
-        val newWriter = takePreparedSegment(segmentIndex, segmentWallClockMs)
         val oldWriter = writer
-        if (newWriter == null && oldWriter != null) {
+        if (oldWriter != null) {
             runCatching { native.detachEncoderSurface() }
                 .onFailure { V2AppLog.e("V2CompositeRecorder", "detach encoder surface before sync segment switch failed", it) }
-            releaseWriterAsync(oldWriter, finish = true, generateThumbnail = true, segmentEndWallClockMs = actualSegmentStartWallClockMs)
+            releaseWriterAsync(oldWriter, finish = true, segmentEndWallClockMs = actualSegmentStartWallClockMs)
             writer = null
         }
-        val segmentWriter = newWriter ?: createStartedSegmentWriter(segmentIndex, segmentWallClockMs)
+        val segmentWriter = createStartedSegmentWriter(segmentIndex, segmentWallClockMs)
         val surface = segmentWriter.surface ?: throw IllegalStateException("Encoder surface unavailable")
         try {
             if (!native.isAvailable) throw java.lang.IllegalStateException(native.lastError())
+            segmentWriter.currentFile()?.let { finalFile ->
+                native.setThumbnailPath(nativeThumbnailFile(finalFile).absolutePath)
+            }
             if (!native.attachEncoderSurface(surface)) throw java.lang.IllegalStateException(native.lastError())
         } catch (t: Throwable) {
-            if (newWriter == null && recordingBackend == V2RecordingBackend.NativeExperimental) {
-                releaseWriterAsync(segmentWriter, finish = false, generateThumbnail = false)
-                V2AppLog.w("V2CompositeRecorder", "native writer attach failed; falling back to AndroidMedia for segment index=$segmentIndex", t)
-                val fallbackWriter = createStartedSegmentWriter(segmentIndex, segmentWallClockMs, V2RecordingBackend.AndroidMedia)
-                val fallbackSurface = fallbackWriter.surface ?: throw IllegalStateException("Fallback encoder surface unavailable")
-                if (!native.attachEncoderSurface(fallbackSurface)) {
-                    releaseWriterAsync(fallbackWriter, finish = false, generateThumbnail = false)
-                    throw IllegalStateException(native.lastError())
-                }
-                fallbackWriter.markAttached(segmentIndex, actualSegmentStartWallClockMs)
-                writer = fallbackWriter
-                metrics.segmentIndex = segmentIndex
-                V2AppLog.perf("V2CompositeRecorder", "segmentAttach", SystemClock.elapsedRealtime() - segmentStartMs, "index=$segmentIndex prepared=false fallback=AndroidMedia file=${fallbackWriter.currentFile()?.name}")
-                prepareNextSegment(segmentIndex + 1, segmentWallClockMs + segmentDurationMs)
-                scheduleStorageCleanup()
-                return
-            }
-            releaseWriterAsync(segmentWriter, finish = false, generateThumbnail = false)
+            releaseWriterAsync(segmentWriter, finish = false)
             throw t
         }
-        segmentWriter.markAttached(segmentIndex, actualSegmentStartWallClockMs)
         writer = segmentWriter
-        if (newWriter != null) oldWriter?.let { releaseWriterAsync(it, finish = true, generateThumbnail = true, segmentEndWallClockMs = actualSegmentStartWallClockMs) }
         metrics.segmentIndex = segmentIndex
-        V2AppLog.perf("V2CompositeRecorder", "segmentAttach", SystemClock.elapsedRealtime() - segmentStartMs, "index=$segmentIndex prepared=${newWriter != null} file=${segmentWriter.currentFile()?.name}")
-        prepareNextSegment(segmentIndex + 1, segmentWallClockMs + segmentDurationMs)
+        V2AppLog.perf("V2CompositeRecorder", "segmentAttach", SystemClock.elapsedRealtime() - segmentStartMs, "index=$segmentIndex file=${segmentWriter.currentFile()?.name}")
         scheduleStorageCleanup()
-    }
-
-    private fun prepareNextSegment(segmentIndex: Int, segmentWallClockMs: Long) {
-        if (!segmentPrecreateEnabled) return
-        if (recordingBackend == V2RecordingBackend.NativeExperimental) {
-            V2AppLog.d("V2CompositeRecorder", "native backend skips precreate index=$segmentIndex")
-            return
-        }
-        val existing = preparedSegmentFuture
-        if (existing != null && !existing.isDone && preparedSegmentIndex == segmentIndex && preparedSegmentWallClockMs == segmentWallClockMs) return
-        if (existing != null && existing.isDone && preparedSegmentIndex == segmentIndex && preparedSegmentWallClockMs == segmentWallClockMs) return
-        releasePreparedSegmentAsync()
-        preparedSegmentIndex = segmentIndex
-        preparedSegmentWallClockMs = segmentWallClockMs
-        preparedSegmentFuture = segmentPrepareExecutor.submit<V2SegmentWriter> {
-            val startedMs = SystemClock.elapsedRealtime()
-            createStartedSegmentWriter(segmentIndex, segmentWallClockMs).also {
-                V2AppLog.perf("V2CompositeRecorder", "prepareSegment", SystemClock.elapsedRealtime() - startedMs, "index=$segmentIndex backend=$recordingBackend file=${it.currentFile()?.name}")
-            }
-        }
     }
 
     private fun createStartedSegmentWriter(
         segmentIndex: Int,
         segmentWallClockMs: Long,
-        backend: V2RecordingBackend = recordingBackend,
-    ): V2SegmentWriter {
-        return runCatching {
-            createSegmentWriter(backend).also {
-                it.startSegment(segmentIndex, segmentWallClockMs)
-                check(it.surface != null) { "Encoder surface unavailable" }
-            }
-        }.getOrElse { error ->
-            if (backend != V2RecordingBackend.NativeExperimental) throw error
-            V2AppLog.w("V2CompositeRecorder", "native writer start failed; falling back to AndroidMedia index=$segmentIndex", error)
-            createSegmentWriter(V2RecordingBackend.AndroidMedia).also {
-                it.startSegment(segmentIndex, segmentWallClockMs)
-                check(it.surface != null) { "Fallback encoder surface unavailable" }
-            }
+    ): V2NativeSegmentWriter {
+        return createSegmentWriter().also {
+            it.startSegment(segmentIndex, segmentWallClockMs)
+            check(it.surface != null) { "Native encoder surface unavailable" }
         }
     }
 
-    private fun createSegmentWriter(backend: V2RecordingBackend): V2SegmentWriter = V2SegmentWriterFactory.create(
-        backend = backend,
+    private fun createSegmentWriter(): V2NativeSegmentWriter = V2NativeSegmentWriter(
         config = V2SegmentWriterConfig(
-            context = context,
             outputDir = outputDir,
-            metrics = metrics,
             width = outputWidth,
             height = outputHeight,
             fps = recordingFps,
             bitrate = videoBitrate,
-            recordingSessionId = recordingSessionId,
             fileSuffix = fileSuffix,
             mimeType = videoMimeType,
         )
     )
 
-    private fun createRecordingSessionId(): String {
-        val sessionTime = java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(java.util.Date(System.currentTimeMillis()))
-        val nonce = SystemClock.elapsedRealtimeNanos().toString(36)
-        return "${sessionTime}_$nonce"
+    private fun scheduleWorkerPoll(tickGeneration: Long, delayMs: Long) {
+        renderHandler.postDelayed({ pollWorker(tickGeneration) }, delayMs.coerceAtLeast(0L))
     }
 
-    private fun takePreparedSegment(segmentIndex: Int, segmentWallClockMs: Long): V2SegmentWriter? {
-        val future = preparedSegmentFuture ?: return null
-        if (preparedSegmentIndex != segmentIndex || preparedSegmentWallClockMs != segmentWallClockMs) return null
-        if (!future.isDone) {
-            V2AppLog.w("V2CompositeRecorder", "prepared segment still busy at switch index=$segmentIndex; fall back for this segment")
-            releasePreparedSegmentAsync()
-            return null
-        }
-        val waitStartedMs = SystemClock.elapsedRealtime()
-        return runCatching { future.get() }
-            .onSuccess {
-                preparedSegmentFuture = null
-                preparedSegmentIndex = -1
-                preparedSegmentWallClockMs = 0L
-                V2AppLog.perf("V2CompositeRecorder", "takePreparedSegment", SystemClock.elapsedRealtime() - waitStartedMs, "index=$segmentIndex")
-            }
-            .onFailure {
-                releasePreparedSegmentAsync()
-                V2AppLog.w("V2CompositeRecorder", "prepared segment unavailable; fall back index=$segmentIndex waitMs=${SystemClock.elapsedRealtime() - waitStartedMs}", it)
-            }
-            .getOrNull()
-    }
-
-    private fun releasePreparedSegmentAsync() {
-        val future = preparedSegmentFuture ?: return
-        preparedSegmentFuture = null
-        preparedSegmentIndex = -1
-        preparedSegmentWallClockMs = 0L
-        releaseExecutor.execute {
-            runCatching {
-                future.get().releaseBlocking(generateThumbnail = false)
-            }.onFailure { V2AppLog.w("V2CompositeRecorder", "release prepared segment failed", it) }
-        }
-    }
-
-    private fun scheduleRecordingTick(tickGeneration: Long, delayMs: Long) {
-        renderHandler.postDelayed({ drawTick(tickGeneration) }, delayMs.coerceAtLeast(0L))
-    }
-
-    private fun drawTick(tickGeneration: Long) {
-        if (!recording || tickGeneration != generation || writer == null) return
+    private fun pollWorker(tickGeneration: Long) {
+        if (!recording || tickGeneration != generation || writer == null || !nativeWorkerActive) return
         try {
-            val renderStartedMs = SystemClock.elapsedRealtime()
-            metrics.requestedFrames += 1
-            val wallClockMs = System.currentTimeMillis()
-            timestampOverlay.updateIfNeeded(native, wallClockMs)
-            val tick = native.recordingTickAndRender(wallClockMs)
-            val renderMs = SystemClock.elapsedRealtime() - renderStartedMs
-            if (tick < 0L) throw java.lang.IllegalStateException(native.lastError())
-            val shouldRender = tick and TICK_SHOULD_RENDER != 0L
-            val segmentDue = tick and TICK_SEGMENT_DUE != 0L
-            val dropped = tick and TICK_DROPPED != 0L
-            if (dropped) metrics.droppedFrames += 1
-
-            if (shouldRender) {
-                metrics.renderedFrames += 1
-                drainCurrentWriterOrFallback(wallClockMs)
+            val pollStartedMs = SystemClock.elapsedRealtime()
+            val tick = native.pollWorker()
+            if (tick < 0L) {
+                val label = V2NativeRecordingTickEvent.errorLabel(tick)
+                throw java.lang.IllegalStateException("native worker error=$label native=${native.lastError()}")
             }
-            logRecordingFramePerfIfNeeded(renderMs, shouldRender, dropped)
-
-            if (segmentDue) {
-                val nextIndex = (tick ushr 32).toInt().coerceAtLeast(metrics.segmentIndex + 1)
-                val switchStartedMs = SystemClock.elapsedRealtime()
-                val segmentWallClockMs = native.beginNextSegment()
-                runCatching { startNewSegment(nextIndex, segmentWallClockMs) }
-                    .onSuccess { native.completeSegmentSwitch(true) }
-                    .onFailure {
-                        native.completeSegmentSwitch(false)
-                        throw it
-                    }
-                metrics.segmentSwitchMs = SystemClock.elapsedRealtime() - switchStartedMs
-            }
+            if (tick != 0L) handleTickResult(tick, pollStartedMs, countRequested = true)
         } catch (t: Throwable) {
-            metrics.lastError = t.javaClass.simpleName + ": " + (t.message ?: "渲染失败")
-            V2AppLog.e("V2CompositeRecorder", "render tick failed segment=${metrics.segmentIndex}", t)
+            metrics.lastError = t.javaClass.simpleName + ": " + (t.message ?: "native worker failed")
+            V2AppLog.e("V2CompositeRecorder", "native worker poll failed segment=${metrics.segmentIndex}", t)
             failStopOnRenderThread()
         } finally {
-            if (recording && tickGeneration == generation) {
-                val nextDelay = native.nextTickDelayMs().takeIf { it >= 0L } ?: (1000L / recordingFps.coerceAtLeast(1))
-                scheduleRecordingTick(tickGeneration, nextDelay)
+            if (recording && tickGeneration == generation && nativeWorkerActive) {
+                scheduleWorkerPoll(tickGeneration, WORKER_POLL_INTERVAL_MS)
             }
         }
     }
 
-    private class TimestampOverlayRenderer(
-        context: Context,
-        private val outputWidth: Int,
-        private val outputHeight: Int,
+    private fun handleTickResult(
+        tick: Long,
+        startedMs: Long,
+        elapsedMs: Long = SystemClock.elapsedRealtime() - startedMs,
+        countRequested: Boolean = true,
     ) {
-        companion object {
-            private const val PREVIEW_DESIGN_WIDTH = 1280f
-            private const val PREVIEW_DESIGN_HEIGHT = 800f
-            private const val PREVIEW_LEFT_PANEL_WIDTH = 240f
-            private const val PREVIEW_TIMESTAMP_SCREEN_X = 290f
-            private const val PREVIEW_TIMESTAMP_Y = 40f
-            private const val PREVIEW_TIMESTAMP_TEXT_SIZE = 28f
-        }
-
-        private val format = SimpleDateFormat("yyyy年MM月dd日 HH:mm:ss", Locale.CHINA)
-        private val widthScale = outputWidth / PREVIEW_DESIGN_WIDTH
-        private val heightScale = outputHeight / PREVIEW_DESIGN_HEIGHT
-        private val textScale = minOf(widthScale, heightScale)
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
-            color = Color.WHITE
-            typeface = Typeface.DEFAULT
-            textSize = PREVIEW_TIMESTAMP_TEXT_SIZE * textScale
-        }
-        private val x = (PREVIEW_TIMESTAMP_SCREEN_X - PREVIEW_LEFT_PANEL_WIDTH) * widthScale
-        private val y = PREVIEW_TIMESTAMP_Y * heightScale
-        private val bitmap: Bitmap
-        private val canvas: Canvas
-        private var lastSecond = Long.MIN_VALUE
-
-        init {
-            val sampleText = "8888年88月88日 88:88:88"
-            val fontMetrics = paint.fontMetrics
-            val bitmapHeight = kotlin.math.ceil((fontMetrics.descent - fontMetrics.ascent).toDouble()).toInt().coerceAtLeast(1)
-            val bitmapWidth = kotlin.math.ceil(paint.measureText(sampleText).toDouble()).toInt().coerceAtLeast(1)
-            bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
-            canvas = Canvas(bitmap)
-        }
-
-        fun updateIfNeeded(native: V2NativeRecordingBridge, wallClockMs: Long) {
-            val second = wallClockMs / 1000L
-            if (second == lastSecond) return
-            lastSecond = second
-            val text = format.format(Date(wallClockMs))
-            renderIntoBitmap(text)
-            if (!native.updateOverlayBitmap(bitmap, x, y)) {
-                V2AppLog.w("V2CompositeRecorder", "update overlay bitmap failed: ${native.lastError()}")
-            }
-        }
-
-        private fun renderIntoBitmap(text: String) {
-            val fontMetrics = paint.fontMetrics
-            bitmap.eraseColor(Color.TRANSPARENT)
-            canvas.drawText(text, 0f, -fontMetrics.ascent, paint)
-        }
-    }
-
-    private fun drainCurrentWriterOrFallback(wallClockMs: Long) {
         val currentWriter = writer ?: return
-        runCatching { currentWriter.requestDrain() }
-            .onSuccess { return }
-            .onFailure { drainError ->
-                if (currentWriter.backend != V2RecordingBackend.NativeExperimental || !recording) throw drainError
-                metrics.lastError = drainError.javaClass.simpleName + ": " + (drainError.message ?: "native drain failed")
-                V2AppLog.w(
-                    "V2CompositeRecorder",
-                    "native writer drain failed; switching current segment to AndroidMedia index=${metrics.segmentIndex} file=${currentWriter.currentFile()?.name}",
-                    drainError,
-                )
-                switchCurrentSegmentToAndroidMedia(currentWriter, wallClockMs)
+        val event = V2NativeRecordingTickEvent.parse(tick, metrics.segmentIndex)
+        if (countRequested) metrics.requestedFrames += 1
+        if (event.dropped) metrics.droppedFrames += 1
+        if (event.shouldRender) {
+            metrics.renderedFrames += 1
+            if (event.drainedSamples > 0L) {
+                metrics.encodedSamples += event.drainedSamples
+                if (metrics.firstSampleLatencyMs < 0L) {
+                    metrics.firstSampleLatencyMs = SystemClock.elapsedRealtime() - currentWriter.segmentStartedElapsedMs()
+                }
             }
+        }
+        logRecordingFramePerfIfNeeded(elapsedMs, event.shouldRender, event.dropped)
+
+        if (event.segmentDue) {
+            val switchStartedMs = SystemClock.elapsedRealtime()
+            if (nativeWorkerActive) {
+                V2AppLog.i("V2CompositeRecorder", "native worker segmentDue before switch next=${event.nextSegmentIndex} ${workerSnapshotSummary()}")
+            }
+            val segmentWallClockMs = native.beginNextSegment()
+            runCatching { startNewSegment(event.nextSegmentIndex, segmentWallClockMs) }
+                .onSuccess {
+                    native.completeSegmentSwitch(true)
+                    if (nativeWorkerActive) {
+                        val resumed = writer?.let { native.resumeWorker(it.nativeHandle) } ?: false
+                        V2AppLog.i("V2CompositeRecorder", "native worker segment resume=$resumed next=${event.nextSegmentIndex} ${workerSnapshotSummary()}")
+                    }
+                }
+                .onFailure {
+                    native.completeSegmentSwitch(false)
+                    throw it
+                }
+            metrics.segmentSwitchMs = SystemClock.elapsedRealtime() - switchStartedMs
+        }
     }
 
-    private fun switchCurrentSegmentToAndroidMedia(failedWriter: V2SegmentWriter, wallClockMs: Long) {
-        if (writer !== failedWriter) return
-        runCatching { native.detachEncoderSurface() }
-            .onFailure { V2AppLog.e("V2CompositeRecorder", "detach native writer after drain failure failed", it) }
-        releaseWriterAsync(failedWriter, finish = false, generateThumbnail = false)
-        val fallbackWriter = createStartedSegmentWriter(
-            metrics.segmentIndex,
-            failedWriter.segmentWallClockMs().takeIf { it > 0L } ?: wallClockMs,
-            V2RecordingBackend.AndroidMedia,
-        )
-        val fallbackSurface = fallbackWriter.surface ?: throw IllegalStateException("Fallback encoder surface unavailable after native drain failure")
-        if (!native.attachEncoderSurface(fallbackSurface)) {
-            releaseWriterAsync(fallbackWriter, finish = false, generateThumbnail = false)
-            throw IllegalStateException(native.lastError())
+    private fun applyFinalRenderAndDrain(writer: V2NativeSegmentWriter, tick: Long) {
+        if (tick < 0L) throw java.lang.IllegalStateException(native.lastError())
+        val event = V2NativeRecordingTickEvent.parse(tick, metrics.segmentIndex)
+        if (event.shouldRender) metrics.renderedFrames += 1
+        if (event.drainedSamples > 0L) {
+            metrics.encodedSamples += event.drainedSamples
+            if (metrics.firstSampleLatencyMs < 0L) {
+                metrics.firstSampleLatencyMs = SystemClock.elapsedRealtime() - writer.segmentStartedElapsedMs()
+            }
         }
-        fallbackWriter.markAttached(metrics.segmentIndex, wallClockMs)
-        writer = fallbackWriter
-        V2AppLog.perf(
-            "V2CompositeRecorder",
-            "nativeDrainFallback",
-            0L,
-            "index=${metrics.segmentIndex} fallbackFile=${fallbackWriter.currentFile()?.name}",
-        )
     }
 
     private fun logRecordingFramePerfIfNeeded(renderMs: Long, shouldRender: Boolean, dropped: Boolean) {
@@ -558,21 +383,34 @@ class V2CompositeRecorder(
 
     private fun rate(delta: Long, elapsedMs: Long): String = String.format(Locale.US, "%.1f", delta.coerceAtLeast(0L) * 1000f / elapsedMs.coerceAtLeast(1L))
 
+    private fun workerSnapshotSummary(): String {
+        val s = native.snapshotWorker()
+        if (s.size < 8) return "workerSnapshot=unavailable"
+        return "worker running=${s[0]} stop=${s[1]} paused=${s[2]} writer=${s[3]} event=${s[4]} gen=${s[5]} req=${s[6]} rendered=${s[7]}"
+    }
+
+    private fun stopNativeWorkerIfActive(reason: String, timeoutMs: Long) {
+        if (!nativeWorkerActive) return
+        val stopStartedMs = SystemClock.elapsedRealtime()
+        val event = native.stopWorker(timeoutMs)
+        V2AppLog.perf("V2CompositeRecorder", "nativeWorkerStop", SystemClock.elapsedRealtime() - stopStartedMs, "reason=$reason event=$event ${workerSnapshotSummary()}")
+    }
+
     private fun failStopOnRenderThread() {
         if (!recording) return
         val failureMessage = metrics.lastError
         recording = false
+        stopNativeWorkerIfActive("failure", STOP_RENDER_TIMEOUT_MS)
+        nativeWorkerActive = false
         generation += 1
         runCatching { native.stopSession() }
             .onFailure { V2AppLog.e("V2CompositeRecorder", "stop native after render failure failed", it) }
         runCatching { native.detachEncoderSurface() }
             .onFailure { V2AppLog.e("V2CompositeRecorder", "detach encoder after render failure failed", it) }
-        writer?.let { releaseWriterAsync(it, finish = false, generateThumbnail = false) }
-        releasePreparedSegmentAsync()
+        writer?.let { releaseWriterAsync(it, finish = false) }
         cleanupFuture?.cancel(false)
         cleanupFuture = null
         cleanupExecutor.shutdown()
-        segmentPrepareExecutor.shutdown()
         writer = null
         mainHandler.post { onFailure(failureMessage) }
     }
@@ -607,18 +445,18 @@ class V2CompositeRecorder(
         emergencyClips.onSegmentFinalized(file, startWallClockMs, endWallClockMs)
     }
 
+    private fun nativeThumbnailFile(video: File): File = File(video.parentFile, video.nameWithoutExtension + ".bmp")
+
     private fun releaseWriterAsync(
-        writer: V2SegmentWriter,
+        writer: V2NativeSegmentWriter,
         finish: Boolean,
-        generateThumbnail: Boolean,
         segmentEndWallClockMs: Long? = null,
     ) {
         releaseExecutor.execute {
             val startedMs = SystemClock.elapsedRealtime()
-            V2AppLog.d("V2CompositeRecorder", "release writer finish=$finish thumbnail=$generateThumbnail file=${writer.currentFile()?.name}")
-            val finished = if (finish) writer.finishAndReleaseBlocking(generateThumbnail = generateThumbnail)
-            else writer.releaseBlocking(generateThumbnail = generateThumbnail)
-            V2AppLog.perf("V2CompositeRecorder", "releaseWriter", SystemClock.elapsedRealtime() - startedMs, "finish=$finish thumbnail=$generateThumbnail file=${finished?.name ?: writer.currentFile()?.name}")
+            V2AppLog.d("V2CompositeRecorder", "release writer finish=$finish file=${writer.currentFile()?.name}")
+            val finished = if (finish) writer.finishAndReleaseBlocking() else writer.releaseBlocking()
+            V2AppLog.perf("V2CompositeRecorder", "releaseWriter", SystemClock.elapsedRealtime() - startedMs, "finish=$finish file=${finished?.name ?: writer.currentFile()?.name}")
             if (finish && finished != null && fileSuffix.isEmpty() && segmentEndWallClockMs != null) {
                 onSegmentFinalized(finished, writer.mediaStartWallClockMs(), segmentEndWallClockMs)
             }

@@ -43,8 +43,8 @@ class V2NativeCompositor private constructor(val handle: Long) {
         isAvailable && GlesNative.attachPreviewSurfaceWithMode(handle, index, surface, applyFisheye, applyNativeTransform)
     fun detachPreview(index: Int): Boolean = isAvailable && GlesNative.detachPreviewSurface(handle, index)
     fun setPreviewMaxFps(fps: Int): Boolean = isAvailable && GlesNative.setPreviewMaxFps(handle, fps)
-    fun signalPreviewFrame(index: Int): Long = if (isAvailable) GlesNative.signalPreviewFrame(handle, index) else -1L
-    fun renderScheduledPreview(index: Int): Boolean = isAvailable && GlesNative.renderScheduledPreview(handle, index)
+    fun startPreviewWorker(fps: Int): Boolean = isAvailable && GlesNative.startPreviewWorker(handle, fps)
+    fun stopPreviewWorker(timeoutMs: Long = 1_000L): Boolean = isAvailable && GlesNative.stopPreviewWorker(handle, timeoutMs)
     fun createOesTexture(index: Int): Int = if (isAvailable) GlesNative.createOesTexture(handle, index) else 0
     fun createOesInput(index: Int, surfaceTexture: SurfaceTexture): Boolean = isAvailable && GlesNative.createOesInput(handle, index, surfaceTexture)
     fun destroyOesInput(index: Int): Boolean = isAvailable && GlesNative.destroyOesInput(handle, index)

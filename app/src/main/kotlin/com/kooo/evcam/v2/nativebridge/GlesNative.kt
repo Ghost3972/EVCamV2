@@ -1,6 +1,5 @@
 package com.kooo.evcam.v2.nativebridge
 
-import android.graphics.Bitmap
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 
@@ -26,8 +25,6 @@ object GlesNative {
         }
     }
 
-    external fun getNativeVersion(): String
-    external fun isGlesAvailable(): Boolean
     external fun getGlesSummary(): String
     external fun createCompositor(width: Int, height: Int): Long
     external fun createOesTexture(handle: Long, index: Int): Int
@@ -50,31 +47,39 @@ object GlesNative {
         centerY: FloatArray
     ): Boolean
     external fun setPreviewMaxFps(handle: Long, fps: Int): Boolean
+    external fun startPreviewWorker(handle: Long, fps: Int): Boolean
+    external fun stopPreviewWorker(handle: Long, timeoutMs: Long): Boolean
     external fun startRecordingSession(handle: Long, fps: Int, segmentDurationMs: Long, wallClockMs: Long): Long
     external fun stopRecordingSession(handle: Long): Boolean
-    external fun recordingTickAndRender(handle: Long, wallClockMs: Long): Long
-    external fun updateRecordingOverlayBitmap(handle: Long, bitmap: Bitmap, x: Float, y: Float): Boolean
-    external fun getRecordingNextTickDelayMs(handle: Long): Long
+    external fun setRecordingThumbnailPath(handle: Long, path: String): Boolean
+    external fun startRecordingWorker(handle: Long, writerHandle: Long, fps: Int): Boolean
+    external fun pollRecordingWorker(handle: Long): Long
+    external fun resumeRecordingWorker(handle: Long, writerHandle: Long): Boolean
+    external fun stopRecordingWorker(handle: Long, timeoutMs: Long): Long
+    external fun snapshotRecordingWorker(handle: Long): LongArray
+    external fun finalRenderAndDrain(handle: Long, writerHandle: Long, timeoutUs: Long): Long
     external fun beginNextRecordingSegment(handle: Long): Long
     external fun completeRecordingSegmentSwitch(handle: Long, success: Boolean): Boolean
     external fun createNativeSegmentWriter(width: Int, height: Int, fps: Int, bitrate: Int, mimeType: String): Long
     external fun nativeSegmentWriterInputSurface(writerHandle: Long): Surface?
     external fun nativeSegmentWriterStartSegment(writerHandle: Long, path: String, segmentIndex: Int, wallClockMs: Long): Boolean
-    external fun nativeSegmentWriterDrain(writerHandle: Long, timeoutUs: Long): Long
-    external fun nativeSegmentWriterStop(writerHandle: Long): Boolean
+    external fun nativeSegmentWriterFinish(writerHandle: Long, finalPath: String): Boolean
     external fun nativeSegmentWriterRelease(writerHandle: Long): Boolean
     external fun createNativeCameraPreview(cameraId: String, surface: Surface): Long
     external fun releaseNativeCameraPreview(cameraHandle: Long): Boolean
+    external fun nativeExtractEmergencyClip(
+        outputPath: String,
+        finalOutputPath: String,
+        clipStartWallClockMs: Long,
+        clipEndWallClockMs: Long,
+        sourcePaths: Array<String>,
+        sourceStartWallClockMs: LongArray,
+        sourceEndWallClockMs: LongArray,
+    ): Long
     external fun createOesInput(handle: Long, index: Int, surfaceTexture: android.graphics.SurfaceTexture): Boolean
-    external fun attachPreviewSurface(handle: Long, index: Int, surface: Surface): Boolean
     external fun attachPreviewSurfaceWithMode(handle: Long, index: Int, surface: Surface, applyFisheye: Boolean, applyNativeTransform: Boolean): Boolean
     external fun detachPreviewSurface(handle: Long, index: Int): Boolean
-    external fun setFisheyeCorrection(handle: Long, enabled: Boolean, k1: Float, k2: Float, zoom: Float, centerX: Float, centerY: Float): Boolean
-    external fun setFisheyeCorrectionForCamera(handle: Long, index: Int, enabled: Boolean, k1: Float, k2: Float, zoom: Float, centerX: Float, centerY: Float): Boolean
     external fun detachEncoderSurface(handle: Long): Boolean
-    external fun signalPreviewFrame(handle: Long, index: Int): Long
-    external fun renderScheduledPreview(handle: Long, index: Int): Boolean
-    external fun renderCompositor(handle: Long): Boolean
     external fun releaseCompositor(handle: Long)
     external fun getMetricsSnapshot(handle: Long): LongArray
     external fun getLastError(): String

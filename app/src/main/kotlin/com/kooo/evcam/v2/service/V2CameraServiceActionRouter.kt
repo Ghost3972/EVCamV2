@@ -12,10 +12,6 @@ internal class V2CameraServiceActionRouter(
     private val hideBlindSpotPreview: () -> Unit,
     private val toggleRecordingFromPlugin: () -> Unit,
     private val startEmergencyFromPlugin: () -> Unit,
-    private val startEncoderStressTest: (Intent) -> Unit,
-    private val stopEncoderStressTest: () -> Unit,
-    private val startNativeWriterSmokeTest: (Intent) -> Unit,
-    private val stopNativeWriterSmokeTest: () -> Unit,
     private val displayOff: (String?) -> Unit,
     private val displayOn: (String?) -> Unit,
 ) {
@@ -34,10 +30,6 @@ internal class V2CameraServiceActionRouter(
             action == V2CameraForegroundService.ACTION_HIDE_BLIND_SPOT_PREVIEW -> hideBlindSpotPreview()
             action == V2CameraForegroundService.ACTION_TOGGLE_RECORDING_FROM_PLUGIN -> toggleRecordingFromPlugin()
             action == V2CameraForegroundService.ACTION_START_EMERGENCY_FROM_PLUGIN -> startEmergencyFromPlugin()
-            action == V2CameraForegroundService.ACTION_START_ENCODER_STRESS_TEST -> startEncoderStressTest(intent)
-            action == V2CameraForegroundService.ACTION_STOP_ENCODER_STRESS_TEST -> stopEncoderStressTest()
-            action == V2CameraForegroundService.ACTION_START_NATIVE_WRITER_SMOKE_TEST -> startNativeWriterSmokeTest(intent)
-            action == V2CameraForegroundService.ACTION_STOP_NATIVE_WRITER_SMOKE_TEST -> stopNativeWriterSmokeTest()
             V2DisplayPowerActions.isDisplayOff(action) -> displayOff(action)
             V2DisplayPowerActions.isDisplayOn(action) -> displayOn(action)
         }

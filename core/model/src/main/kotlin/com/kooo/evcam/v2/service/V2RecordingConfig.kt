@@ -7,6 +7,4 @@ data class V2RecordingConfig(
     val fps: Int,
     val segmentDurationMs: Long,
     val bitrate: Int,
-    val segmentPrecreateEnabled: Boolean,
-    val h265Enabled: Boolean,
 )

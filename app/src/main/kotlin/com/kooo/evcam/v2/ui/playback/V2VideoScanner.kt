@@ -3,13 +3,11 @@ package com.kooo.evcam.v2.ui.playback
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
 import android.os.SystemClock
 import com.kooo.evcam.v2.storage.V2PlaybackListEntry
 import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import java.io.File
-import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -219,41 +217,7 @@ object V2VideoScanner {
         return cached ?: cachedThumbnail(context, file)
     }
 
-    fun videoFrameThumbnail(context: Context, file: File): Bitmap? = runCatching {
-        val out = defaultThumbnailFile(file)
-        if (out.isFile && out.canRead() && out.length() > 0L && out.lastModified() >= file.lastModified()) {
-            V2PlaybackListCache.updateThumbnail(context, file, out)
-            return cachedThumbnail(file)
-        }
-
-        val retriever = MediaMetadataRetriever()
-        val frame = try {
-            retriever.setDataSource(file.absolutePath)
-            retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                ?: retriever.frameAtTime
-        } finally {
-            retriever.release()
-        } ?: return null
-
-        val scaled = scaleThumbnail(frame)
-        if (scaled !== frame) frame.recycle()
-        out.parentFile?.mkdirs()
-        FileOutputStream(out).use { stream ->
-            scaled.compress(Bitmap.CompressFormat.JPEG, 78, stream)
-        }
-        out.setLastModified(file.lastModified())
-        V2PlaybackListCache.updateThumbnail(context, file, out)
-        scaled
-    }.getOrNull()
-
-    private fun scaleThumbnail(bitmap: Bitmap): Bitmap {
-        val targetW = 240
-        val targetH = 160
-        val scale = minOf(targetW.toFloat() / bitmap.width.coerceAtLeast(1), targetH.toFloat() / bitmap.height.coerceAtLeast(1), 1f)
-        return if (scale >= 1f) bitmap else Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1), (bitmap.height * scale).toInt().coerceAtLeast(1), true)
-    }
-
-    private fun defaultThumbnailFile(file: File): File = File(file.parentFile, file.nameWithoutExtension + ".jpg")
+    private fun defaultThumbnailFile(file: File): File = File(file.parentFile, file.nameWithoutExtension + ".bmp")
 
     private fun thumbnailCandidates(file: File): List<File> {
         val parent = file.parentFile ?: return emptyList()
@@ -261,6 +225,7 @@ object V2VideoScanner {
         val timestamp = fileNamePattern.matchEntire(file.name)?.groupValues?.getOrNull(1)
         val direct = listOf(
             defaultThumbnailFile(file),
+            File(parent, "$stem.jpg"),
             File(parent, "$stem.jpeg"),
             File(parent, "${stem}_thumb.jpg"),
             File(parent, "${stem}_thumbnail.jpg"),

@@ -102,7 +102,7 @@ object V2PlaybackCacheMaintainer {
     private fun existingThumbnail(video: File): File? = thumbnailFile(video)
         .takeIf { it.isFile && it.canRead() && it.length() > 0L && it.lastModified() >= video.lastModified() }
 
-    private fun thumbnailFile(video: File): File = File(video.parentFile, video.nameWithoutExtension + ".jpg")
+    private fun thumbnailFile(video: File): File = File(video.parentFile, video.nameWithoutExtension + ".bmp")
 
     private fun isPlayableVideoFile(file: File): Boolean =
         file.isFile && file.exists() && file.canRead() && file.length() > 0L &&
