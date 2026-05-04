@@ -66,6 +66,8 @@ extern fn close(fd: c_int) c_int;
 extern fn rename(oldpath: [*c]const u8, newpath: [*c]const u8) c_int;
 extern fn unlink(path: [*c]const u8) c_int;
 extern fn usleep(usec: c_uint) c_int;
+extern fn gettid() c_int;
+extern fn setpriority(which: c_int, who: c_int, prio: c_int) c_int;
 extern fn malloc(size: usize) ?*anyopaque;
 extern fn free(ptr: ?*anyopaque) void;
 
@@ -79,7 +81,9 @@ var g_pipes: [MAX_PIPES]Pipe = [_]Pipe{Pipe{}} ** MAX_PIPES;
 var g_used: [MAX_PIPES]bool = [_]bool{false} ** MAX_PIPES;
 var g_next_handle: c.jlong = 1;
 var g_metrics_cache_handles: [MAX_PIPES]c.jlong = [_]c.jlong{0} ** MAX_PIPES;
-const METRICS_SNAPSHOT_LEN: usize = 80;
+const METRICS_SNAPSHOT_LEN: usize = 112;
+const PRIO_PROCESS: c_int = 0;
+const ANDROID_PRIORITY_DISPLAY: c_int = -4;
 var g_metrics_cache_values: [MAX_PIPES][METRICS_SNAPSHOT_LEN]c.jlong = [_][METRICS_SNAPSHOT_LEN]c.jlong{[_]c.jlong{0} ** METRICS_SNAPSHOT_LEN} ** MAX_PIPES;
 var g_last_error: [256:0]u8 = initError("OK");
 var g_error_scratch: [128:0]u8 = [_:0]u8{0} ** 128;
@@ -252,9 +256,32 @@ fn releaseRenderCommandResources(cmd: *RenderCommand) void {
     cmd.* = RenderCommand{};
 }
 
+fn renderCommandCanReplaceQueued(cmd: *const RenderCommand) bool {
+    return switch (cmd.kind) {
+        .runtime_config, .set_preview_fps => true,
+        else => false,
+    };
+}
+
+fn replaceQueuedRenderCommandLocked(p: *Pipe, cmd: *RenderCommand) bool {
+    if (!renderCommandCanReplaceQueued(cmd)) return false;
+    var offset: usize = 0;
+    while (offset < p.render_command_count) : (offset += 1) {
+        const idx = (p.render_command_head + offset) % MAX_RENDER_COMMANDS;
+        if (p.render_commands[idx].kind == cmd.kind) {
+            releaseRenderCommandResources(&p.render_commands[idx]);
+            p.render_commands[idx] = cmd.*;
+            cmd.* = RenderCommand{};
+            return true;
+        }
+    }
+    return false;
+}
+
 fn enqueueRenderCommandLocked(p: *Pipe, cmd: *RenderCommand) bool {
     lockCommandQueue(p);
     defer unlockCommandQueue(p);
+    if (replaceQueuedRenderCommandLocked(p, cmd)) return true;
     if (p.render_command_count >= MAX_RENDER_COMMANDS) {
         p.render_command_drop_count += 1;
         return false;
@@ -316,6 +343,15 @@ fn attachWorkerEnv() ?[*c]c.JNIEnv {
     const rc = g_java_vm.*[0].AttachCurrentThread.?(g_java_vm, &env, null);
     if (rc != 0 or env == null) return null;
     return env;
+}
+
+fn boostRenderWorkerPriority() void {
+    const tid = gettid();
+    if (tid <= 0) return;
+    const rc = setpriority(PRIO_PROCESS, tid, ANDROID_PRIORITY_DISPLAY);
+    if (rc != 0) {
+        logd("render worker priority boost unavailable tid={} rc={}", .{ tid, rc });
+    }
 }
 
 fn detachWorkerEnv() void {
@@ -2531,6 +2567,7 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
         return;
     };
     defer detachWorkerEnv();
+    boostRenderWorkerPriority();
 
     const worker_pipe = lockPipeForHandle(handle) orelse return;
     unlockPipe(worker_pipe);
@@ -3440,6 +3477,16 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getMetricsSnapshot(env:
             values[base + 4] = p.input[i].update_count;
             values[base + 5] = p.input[i].preview_render_count;
             values[base + 6] = p.input[i].preview_drop_count;
+
+            const input_base = 80 + i * 8;
+            values[input_base] = p.input[i].frame_generation;
+            values[input_base + 1] = p.input[i].latched_generation;
+            values[input_base + 2] = p.input[i].preview_generation;
+            values[input_base + 3] = p.input[i].encoder_generation;
+            values[input_base + 4] = if (p.input[i].has_latched_frame) 1 else 0;
+            values[input_base + 5] = if (p.input[i].dirty) 1 else 0;
+            values[input_base + 6] = if (p.input[i].surface_texture_native != null and p.input[i].texture != 0) 1 else 0;
+            values[input_base + 7] = p.input[i].update_count;
         }
         values[48] = if (p.recording_worker_running) 1 else 0;
         values[49] = if (p.recording_worker_paused_for_segment) 1 else 0;
@@ -3610,15 +3657,15 @@ fn attachPreviewWindowLocked(p: *Pipe, index: c.jint, window: ?*c.ANativeWindow,
         return JNI_FALSE;
     }
     const i: usize = @intCast(index);
-    detachPreviewSurfaceIndexLocked(p, i);
-    p.preview_window[i] = window;
-    p.preview_surface[i] = c.eglCreateWindowSurface(p.display, p.config, p.preview_window[i], null);
-    if (p.preview_surface[i] == c.EGL_NO_SURFACE) {
+    const new_surface = c.eglCreateWindowSurface(p.display, p.config, window, null);
+    if (new_surface == c.EGL_NO_SURFACE) {
         setErrorSlice(eglError("eglCreateWindowSurface preview failed"));
-        c.ANativeWindow_release(p.preview_window[i].?);
-        p.preview_window[i] = null;
+        if (window) |w| c.ANativeWindow_release(w);
         return JNI_FALSE;
     }
+    detachPreviewSurfaceIndexLocked(p, i);
+    p.preview_window[i] = window;
+    p.preview_surface[i] = new_surface;
     p.preview_apply_fisheye[i] = apply_fisheye;
     p.preview_apply_native_transform[i] = apply_native_transform;
     const size = previewWindowSizeLocked(p, i, true);
@@ -3646,15 +3693,20 @@ fn attachCompositePreviewWindowLocked(p: *Pipe, window: ?*c.ANativeWindow) c.jbo
         if (window) |w| c.ANativeWindow_release(w);
         return JNI_FALSE;
     }
-    detachCompositePreviewSurfaceLocked(p);
-    p.composite_preview_window = window;
-    p.composite_preview_surface = c.eglCreateWindowSurface(p.display, p.config, p.composite_preview_window, null);
-    if (p.composite_preview_surface == c.EGL_NO_SURFACE) {
+    if (p.composite_preview_surface != c.EGL_NO_SURFACE and p.composite_preview_window == window) {
+        if (window) |w| c.ANativeWindow_release(w);
+        logd("attach composite preview skipped: same native window already attached", .{});
+        return JNI_TRUE;
+    }
+    const new_surface = c.eglCreateWindowSurface(p.display, p.config, window, null);
+    if (new_surface == c.EGL_NO_SURFACE) {
         setErrorSlice(eglError("eglCreateWindowSurface composite preview failed"));
-        if (p.composite_preview_window) |w| c.ANativeWindow_release(w);
-        p.composite_preview_window = null;
+        if (window) |w| c.ANativeWindow_release(w);
         return JNI_FALSE;
     }
+    detachCompositePreviewSurfaceLocked(p);
+    p.composite_preview_window = window;
+    p.composite_preview_surface = new_surface;
     const size = compositePreviewWindowSizeLocked(p, true);
     logd("attached composite preview surface size={d}x{d}", .{ size.width, size.height });
     return JNI_TRUE;

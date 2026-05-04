@@ -19,6 +19,14 @@ internal data class V2CameraSlotState(
     val renderFailures: Long,
     val lastRenderMs: Long,
     val lastPreviewError: String,
+    val nativeFrameGeneration: Long,
+    val nativeLatchedGeneration: Long,
+    val nativePreviewGeneration: Long,
+    val nativeEncoderGeneration: Long,
+    val nativeHasLatchedFrame: Boolean,
+    val nativeInputDirty: Boolean,
+    val nativeInputAttached: Boolean,
+    val nativeInputUpdates: Long,
 )
 
 internal object V2CameraEngineStateMapper {
@@ -37,6 +45,14 @@ internal object V2CameraEngineStateMapper {
         renderFailures: Long,
         lastRenderMs: Long,
         lastPreviewError: String,
+        nativeFrameGeneration: Long,
+        nativeLatchedGeneration: Long,
+        nativePreviewGeneration: Long,
+        nativeEncoderGeneration: Long,
+        nativeHasLatchedFrame: Boolean,
+        nativeInputDirty: Boolean,
+        nativeInputAttached: Boolean,
+        nativeInputUpdates: Long,
     ): V2CameraSlotState = V2CameraSlotState(
         index = index,
         label = label,
@@ -51,6 +67,14 @@ internal object V2CameraEngineStateMapper {
         renderFailures = renderFailures,
         lastRenderMs = lastRenderMs,
         lastPreviewError = lastPreviewError,
+        nativeFrameGeneration = nativeFrameGeneration,
+        nativeLatchedGeneration = nativeLatchedGeneration,
+        nativePreviewGeneration = nativePreviewGeneration,
+        nativeEncoderGeneration = nativeEncoderGeneration,
+        nativeHasLatchedFrame = nativeHasLatchedFrame,
+        nativeInputDirty = nativeInputDirty,
+        nativeInputAttached = nativeInputAttached,
+        nativeInputUpdates = nativeInputUpdates,
     )
 
     fun healthSnapshot(
@@ -95,6 +119,14 @@ internal object V2CameraEngineStateMapper {
         renderFailures = renderFailures,
         lastRenderMs = lastRenderMs,
         lastError = lastPreviewError,
+        nativeFrameGeneration = nativeFrameGeneration,
+        nativeLatchedGeneration = nativeLatchedGeneration,
+        nativePreviewGeneration = nativePreviewGeneration,
+        nativeEncoderGeneration = nativeEncoderGeneration,
+        nativeHasLatchedFrame = nativeHasLatchedFrame,
+        nativeInputDirty = nativeInputDirty,
+        nativeInputAttached = nativeInputAttached,
+        nativeInputUpdates = nativeInputUpdates,
     )
 
     private fun inputSizeLabel(inputSize: Size?, fallbackSize: Size): String {

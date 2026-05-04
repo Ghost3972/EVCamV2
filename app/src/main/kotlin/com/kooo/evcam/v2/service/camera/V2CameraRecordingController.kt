@@ -30,6 +30,7 @@ internal class V2CameraRecordingController(
     private val configureNativeRuntime: (logPrefix: String) -> Unit,
     private val restartAttachedPreviews: () -> Unit,
     private val startPreviewWorkerIfNeeded: () -> Unit,
+    private val requestCameraRecovery: (reason: String) -> Unit,
     private val publishStatus: () -> Unit,
 ) {
     private var pipeline: V2RecordingPipeline? = null
@@ -95,7 +96,9 @@ internal class V2CameraRecordingController(
         val openCount = openCameraCount()
         val expectedCount = expectedCameraCount()
         if (openCount < expectedCount) {
-            V2AppLog.e(TAG, "startRecording skipped: composite needs all cameras open open=$openCount expected=$expectedCount")
+            val reason = "recording_start_cameras_not_ready(open=$openCount,expected=$expectedCount)"
+            V2AppLog.e(TAG, "startRecording skipped: composite needs all cameras open open=$openCount expected=$expectedCount; requesting camera recovery")
+            requestCameraRecovery(reason)
             publishStatus()
             return
         }

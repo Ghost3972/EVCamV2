@@ -23,4 +23,12 @@ data class V2CameraSlotHealth(
     val renderFailures: Long,
     val lastRenderMs: Long,
     val lastError: String,
+    val nativeFrameGeneration: Long = 0L,
+    val nativeLatchedGeneration: Long = 0L,
+    val nativePreviewGeneration: Long = 0L,
+    val nativeEncoderGeneration: Long = 0L,
+    val nativeHasLatchedFrame: Boolean = false,
+    val nativeInputDirty: Boolean = false,
+    val nativeInputAttached: Boolean = false,
+    val nativeInputUpdates: Long = 0L,
 )

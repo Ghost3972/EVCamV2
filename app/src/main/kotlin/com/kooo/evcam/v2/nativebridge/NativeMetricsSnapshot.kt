@@ -39,5 +39,17 @@ internal object NativeMetricsSnapshot {
     const val RECORDING_QUEUE_FBO_RECREATE_COUNT = 78
     const val RECORDING_QUEUE_NEXT_CAPTURE_MS = 79
 
+    const val INPUT_BASE = 80
+    const val INPUT_STRIDE = 8
+    const val INPUT_FRAME_GENERATION = 0
+    const val INPUT_LATCHED_GENERATION = 1
+    const val INPUT_PREVIEW_GENERATION = 2
+    const val INPUT_ENCODER_GENERATION = 3
+    const val INPUT_HAS_LATCHED_FRAME = 4
+    const val INPUT_DIRTY = 5
+    const val INPUT_ATTACHED = 6
+    const val INPUT_UPDATE_COUNT = 7
+
     fun slotBase(index: Int): Int = SLOT_BASE + index * SLOT_STRIDE
+    fun inputBase(index: Int): Int = INPUT_BASE + index * INPUT_STRIDE
 }

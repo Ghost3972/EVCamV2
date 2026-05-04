@@ -73,12 +73,28 @@ object V2CameraDeviceCapabilities {
             ?.toList()
             .orEmpty()
         if (ranges.isEmpty()) return@runCatching null
-        ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }
-            .also { selected ->
-                if (selected == null) {
-                    V2AppLog.w(TAG, "fixed ${desiredFps}fps range unavailable camera=$cameraId ranges=${ranges.joinToString { "${it.lower}-${it.upper}" }}")
-                }
-            }
+        val fixed = ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }
+        if (fixed != null) return@runCatching fixed
+
+        // Do not fall back to ranges whose upper bound is below the requested FPS: that
+        // would silently lower the camera source frame rate. Prefer the narrowest range
+        // that can still reach desiredFps so AE has the least room to vary cadence.
+        val stableFallback = ranges
+            .filter { it.lower <= desiredFps && it.upper == desiredFps }
+            .maxWithOrNull(compareBy<Range<Int>> { it.lower }.thenBy { it.upper })
+            ?: ranges
+                .filter { it.lower <= desiredFps && it.upper >= desiredFps }
+                .minWithOrNull(compareBy<Range<Int>> { it.upper - it.lower }.thenBy { it.upper }.thenByDescending { it.lower })
+
+        if (stableFallback != null) {
+            V2AppLog.w(
+                TAG,
+                "fixed ${desiredFps}fps range unavailable camera=$cameraId; using non-lowering fallback=${stableFallback.lower}-${stableFallback.upper} ranges=${ranges.joinToString { "${it.lower}-${it.upper}" }}"
+            )
+        } else {
+            V2AppLog.w(TAG, "fixed/non-lowering ${desiredFps}fps range unavailable camera=$cameraId ranges=${ranges.joinToString { "${it.lower}-${it.upper}" }}")
+        }
+        stableFallback
     }.onFailure { V2AppLog.e(TAG, "chooseFixedFpsRange failed camera=$cameraId", it) }.getOrNull()
 
     fun cameraIds(cameraManager: CameraManager): List<String> = try {

@@ -68,6 +68,15 @@ internal class V2CameraEngineStatusController(
         val nativeSignals = nativeMetrics.getOrNull(nativeBase + NativeMetricsSnapshot.SLOT_FRAME_SIGNALS)?.coerceAtLeast(0L) ?: 0L
         val nativeRenders = nativeMetrics.getOrNull(nativeBase + NativeMetricsSnapshot.SLOT_PREVIEW_RENDERS)?.coerceAtLeast(0L) ?: 0L
         val nativeDrops = nativeMetrics.getOrNull(nativeBase + NativeMetricsSnapshot.SLOT_PREVIEW_DROPS)?.coerceAtLeast(0L) ?: 0L
+        val inputBase = NativeMetricsSnapshot.inputBase(index)
+        val nativeFrameGeneration = nativeMetrics.metric(inputBase + NativeMetricsSnapshot.INPUT_FRAME_GENERATION)
+        val nativeLatchedGeneration = nativeMetrics.metric(inputBase + NativeMetricsSnapshot.INPUT_LATCHED_GENERATION)
+        val nativePreviewGeneration = nativeMetrics.metric(inputBase + NativeMetricsSnapshot.INPUT_PREVIEW_GENERATION)
+        val nativeEncoderGeneration = nativeMetrics.metric(inputBase + NativeMetricsSnapshot.INPUT_ENCODER_GENERATION)
+        val nativeHasLatchedFrame = nativeMetrics.metric(inputBase + NativeMetricsSnapshot.INPUT_HAS_LATCHED_FRAME) > 0L
+        val nativeInputDirty = nativeMetrics.metric(inputBase + NativeMetricsSnapshot.INPUT_DIRTY) > 0L
+        val nativeInputAttached = nativeMetrics.metric(inputBase + NativeMetricsSnapshot.INPUT_ATTACHED) > 0L
+        val nativeInputUpdates = nativeMetrics.metric(inputBase + NativeMetricsSnapshot.INPUT_UPDATE_COUNT)
         return V2CameraEngineStateMapper.slotState(
             index = index,
             label = spec.label,
@@ -83,8 +92,18 @@ internal class V2CameraEngineStatusController(
             renderFailures = maxOf(renderFailures, nativeDrops),
             lastRenderMs = lastRenderMs,
             lastPreviewError = lastPreviewError,
+            nativeFrameGeneration = nativeFrameGeneration,
+            nativeLatchedGeneration = nativeLatchedGeneration,
+            nativePreviewGeneration = nativePreviewGeneration,
+            nativeEncoderGeneration = nativeEncoderGeneration,
+            nativeHasLatchedFrame = nativeHasLatchedFrame,
+            nativeInputDirty = nativeInputDirty,
+            nativeInputAttached = nativeInputAttached,
+            nativeInputUpdates = nativeInputUpdates,
         )
     }
+
+    private fun LongArray.metric(index: Int): Long = getOrNull(index)?.coerceAtLeast(0L) ?: 0L
 
     private fun nativeSlotMetric(index: Int, offset: Int): Long {
         if (index !in slots.indices || pipelineHandle == 0L || !GlesNative.isLoaded) return 0L

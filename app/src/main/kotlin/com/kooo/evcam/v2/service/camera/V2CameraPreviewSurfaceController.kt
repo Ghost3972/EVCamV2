@@ -19,6 +19,7 @@ internal class V2CameraPreviewSurfaceController(
 ) {
     private var previewRenderingEnabled = true
     private var compositePreviewAttached = false
+    private var compositePreviewSurface: Surface? = null
 
     fun attachCompositePreviewSurface(surface: Surface) {
         if (released() || pipelineHandle == 0L) return
@@ -26,22 +27,35 @@ internal class V2CameraPreviewSurfaceController(
             V2AppLog.w(TAG, "attach composite preview skipped: screen is off")
             return
         }
+        if (compositePreviewAttached && compositePreviewSurface === surface && surface.isValid) {
+            V2AppLog.d(TAG, "attach composite preview skipped: same surface already attached")
+            startPreviewWorkerIfNeeded()
+            publishStatusIfNeeded()
+            return
+        }
         V2AppLog.d(TAG, "attach composite preview")
         if (!nativeCompositor.attachCompositePreview(surface)) {
             compositePreviewAttached = false
+            compositePreviewSurface = null
             V2AppLog.e(TAG, "attach composite preview failed: ${nativeCompositor.lastError()}")
             startPreviewWorkerIfNeeded()
             publishStatus()
             return
         }
         compositePreviewAttached = true
+        compositePreviewSurface = surface
         startPreviewWorkerIfNeeded()
         publishStatus()
     }
 
     fun detachCompositePreviewSurface() {
         if (pipelineHandle == 0L) return
+        if (!compositePreviewAttached && compositePreviewSurface == null) {
+            V2AppLog.d(TAG, "detach composite preview skipped: already detached")
+            return
+        }
         compositePreviewAttached = false
+        compositePreviewSurface = null
         V2AppLog.d(TAG, "detach composite preview")
         nativeCompositor.detachCompositePreview()
         startPreviewWorkerIfNeeded()

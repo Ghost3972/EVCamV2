@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Size
 import android.view.Surface
@@ -26,7 +27,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
     private val specs = specSet.specs
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val renderThread = HandlerThread("V2GlesComposite").also { it.start() }
+    private val renderThread = HandlerThread("V2GlesComposite", Process.THREAD_PRIORITY_DISPLAY).also { it.start() }
     private val renderHandler = Handler(renderThread.looper)
     private val screenSize = V2CameraDeviceCapabilities.detectScreenSize(context)
     private val recordingConfig = V2RecordingConfigProvider.current(context, screenSize)
@@ -78,6 +79,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         configureNativeRuntime = { logPrefix -> nativeRuntimeController.configure(logPrefix = logPrefix) },
         restartAttachedPreviews = { restartAttachedPreviewsAfterRecordingStop() },
         startPreviewWorkerIfNeeded = { previewSurfaceController.startPreviewWorkerIfNeeded() },
+        requestCameraRecovery = { reason -> recoverCamerasForRecordingStart(reason) },
         publishStatus = { publishStatus() },
     )
     private val statusController = V2CameraEngineStatusController(
@@ -242,6 +244,16 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
 
     private fun restartAttachedPreviewsAfterRecordingStop() {
         slots.forEach { if (it.previewAttached) slotLifecycle.restartPreviewAfterRecordingStop(it) }
+    }
+
+    private fun recoverCamerasForRecordingStart(reason: String) {
+        if (!cameraAccessAllowed || released) return
+        V2AppLog.w("V2CameraEngine", "recording start requested camera recovery reason=$reason")
+        runCatching {
+            slotSetController.stopCameras()
+            slotSetController.startCameras()
+            previewSurfaceController.startPreviewWorkerIfNeeded()
+        }.onFailure { V2AppLog.e("V2CameraEngine", "recording start camera recovery failed reason=$reason", it) }
     }
 
     private fun publishStatusIfNeeded() { if (SystemClock.elapsedRealtime() - lastPreviewDebugUpdateMs < 1000L) return; lastPreviewDebugUpdateMs = SystemClock.elapsedRealtime(); publishStatus() }

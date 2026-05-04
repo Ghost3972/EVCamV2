@@ -20,6 +20,7 @@ internal class V2MainPreviewBinder(
     private val previewSizeLabels = Array(V2_CAMERA_SLOT_COUNT) { "--×--" }
     private val previewSurfaces = arrayOfNulls<Surface>(V2_CAMERA_SLOT_COUNT)
     private var compositePreviewSurfaceTexture: SurfaceTexture? = null
+    private var compositePreviewAttachState = CompositePreviewAttachState.DETACHED
 
     fun bindPreviews() {
         binding.textureFront.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
@@ -75,9 +76,22 @@ internal class V2MainPreviewBinder(
     }
 
     private fun attachCompositePreviewSurface(surfaceTexture: SurfaceTexture) {
-        if (compositePreviewSurfaceTexture === surfaceTexture && previewSurfaces[COMPOSITE_PREVIEW_INDEX]?.isValid == true) {
-            V2AppLog.d(TAG, "reattachCompositePreviewSurface existing valid=${previewSurfaces[COMPOSITE_PREVIEW_INDEX]?.isValid}")
-            service()?.attachCompositePreviewSurface(previewSurfaces[COMPOSITE_PREVIEW_INDEX]!!)
+        val existingSurface = previewSurfaces[COMPOSITE_PREVIEW_INDEX]
+        if (compositePreviewSurfaceTexture === surfaceTexture && existingSurface?.isValid == true) {
+            if (compositePreviewAttachState == CompositePreviewAttachState.ATTACHED) {
+                V2AppLog.d(TAG, "attachCompositePreviewSurface skipped: already attached valid=${existingSurface.isValid}")
+                updateCompositePreviewLabels()
+                return
+            }
+            V2AppLog.d(TAG, "attachCompositePreviewSurface reuse existing valid=${existingSurface.isValid} state=$compositePreviewAttachState")
+            val previewService = service()
+            if (previewService == null) {
+                V2AppLog.w(TAG, "attachCompositePreviewSurface deferred: service unavailable")
+                return
+            }
+            previewService.attachCompositePreviewSurface(existingSurface)
+            compositePreviewAttachState = CompositePreviewAttachState.ATTACHED
+            updateCompositePreviewLabels()
             return
         }
         detachCompositePreviewSurface(releaseSurface = true)
@@ -85,20 +99,38 @@ internal class V2MainPreviewBinder(
         compositePreviewSurfaceTexture = surfaceTexture
         previewSurfaces[COMPOSITE_PREVIEW_INDEX] = surface
         V2AppLog.d(TAG, "attachCompositePreviewSurface valid=${surface.isValid}")
-        service()?.attachCompositePreviewSurface(surface)
-        updatePreviewPlaceholders(service()?.isPreviewPausedByAvoidance() == true)
-        previewSizeLabels[COMPOSITE_PREVIEW_INDEX] = service()?.compositePreviewSizeLabel() ?: "--×--"
-        binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n-- fps"
+        val previewService = service()
+        if (previewService == null) {
+            V2AppLog.w(TAG, "attachCompositePreviewSurface deferred: service unavailable")
+            return
+        }
+        previewService.attachCompositePreviewSurface(surface)
+        compositePreviewAttachState = CompositePreviewAttachState.ATTACHED
+        updateCompositePreviewLabels()
     }
 
     private fun detachCompositePreviewSurface(releaseSurface: Boolean = true) {
-        V2AppLog.d(TAG, "detachCompositePreviewSurface hadSurface=${previewSurfaces[COMPOSITE_PREVIEW_INDEX] != null} release=$releaseSurface")
-        service()?.detachCompositePreviewSurface()
+        V2AppLog.d(TAG, "detachCompositePreviewSurface hadSurface=${previewSurfaces[COMPOSITE_PREVIEW_INDEX] != null} release=$releaseSurface state=$compositePreviewAttachState")
+        if (compositePreviewAttachState == CompositePreviewAttachState.ATTACHED) {
+            service()?.detachCompositePreviewSurface()
+            compositePreviewAttachState = CompositePreviewAttachState.DETACHED
+        }
         if (releaseSurface) {
             previewSurfaces[COMPOSITE_PREVIEW_INDEX]?.release()
             previewSurfaces[COMPOSITE_PREVIEW_INDEX] = null
             compositePreviewSurfaceTexture = null
         }
+    }
+
+    private fun updateCompositePreviewLabels() {
+        updatePreviewPlaceholders(service()?.isPreviewPausedByAvoidance() == true)
+        previewSizeLabels[COMPOSITE_PREVIEW_INDEX] = service()?.compositePreviewSizeLabel() ?: "--×--"
+        binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n-- fps"
+    }
+
+    private enum class CompositePreviewAttachState {
+        DETACHED,
+        ATTACHED,
     }
 
     private companion object {
