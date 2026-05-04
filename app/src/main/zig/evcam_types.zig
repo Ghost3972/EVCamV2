@@ -77,6 +77,15 @@ pub const NativeSegmentWriter = struct {
     drain_max_ms: i64 = 0,
     muxer_write_total_ms: i64 = 0,
     muxer_write_max_ms: i64 = 0,
+    async_drain_thread: ?std.Thread = null,
+    async_drain_running: bool = false,
+    async_drain_stop: bool = false,
+    async_drain_pending: bool = false,
+    async_drain_generation: c.jlong = 0,
+    async_drained_samples: i64 = 0,
+    async_drain_error_count: i64 = 0,
+    async_drain_request_count: i64 = 0,
+    async_drain_defer_count: i64 = 0,
 };
 
 pub const NativeCameraPreview = struct {
@@ -220,6 +229,54 @@ pub const ManagedSegmentFinalize = struct {
     config: ManagedSegmentConfig = .{},
 };
 
+pub const MAX_RENDER_COMMANDS: usize = 32;
+
+pub const RenderCommandKind = enum(u8) {
+    none,
+    runtime_config,
+    set_preview_fps,
+    attach_preview,
+    detach_preview,
+    detach_previews,
+    attach_composite_preview,
+    detach_composite_preview,
+    update_watermark,
+    clear_watermark,
+};
+
+pub const RenderRuntimeConfig = struct {
+    width: i32 = 0,
+    height: i32 = 0,
+    preview_fps: i32 = 0,
+    encoder_fps: i32 = 0,
+    side_left_rotation: i32 = 270,
+    side_right_rotation: i32 = 90,
+    layout_mode: i32 = 0,
+    fisheye_valid: bool = false,
+    fisheye_enabled: [4]bool = [_]bool{false} ** 4,
+    fisheye_k1: [4]f32 = [_]f32{0.35} ** 4,
+    fisheye_k2: [4]f32 = [_]f32{-0.18} ** 4,
+    fisheye_zoom: [4]f32 = [_]f32{1.0} ** 4,
+    fisheye_center_x: [4]f32 = [_]f32{0.5} ** 4,
+    fisheye_center_y: [4]f32 = [_]f32{0.5} ** 4,
+};
+
+pub const RenderCommand = struct {
+    kind: RenderCommandKind = .none,
+    runtime: RenderRuntimeConfig = .{},
+    index: c.jint = -1,
+    indexes_mask: u8 = 0,
+    window: ?*c.ANativeWindow = null,
+    apply_fisheye: bool = true,
+    apply_native_transform: bool = true,
+    watermark_pixels: ?*anyopaque = null,
+    watermark_bytes: usize = 0,
+    watermark_width: c.jint = 0,
+    watermark_height: c.jint = 0,
+    watermark_x: c.jint = 0,
+    watermark_y: c.jint = 0,
+};
+
 pub const FinalizeQueue = struct {
     lock: std.Io.Mutex = .init,
     group: std.Io.Group = .init,
@@ -235,6 +292,7 @@ pub const FinalizeQueue = struct {
 
 pub const Pipe = struct {
     lock: std.Io.Mutex = .init,
+    command_lock: std.Io.Mutex = .init,
     handle: c.jlong = 0,
     releasing: bool = false,
     display: c.EGLDisplay = c.EGL_NO_DISPLAY,
@@ -307,6 +365,10 @@ pub const Pipe = struct {
     recording_frame_queue_height: i32 = 0,
     recording_frame_queue_next_capture_ms: i64 = 0,
     recording_frame_queue_sequence: i64 = 0,
+    render_commands: [MAX_RENDER_COMMANDS]RenderCommand = [_]RenderCommand{RenderCommand{}} ** MAX_RENDER_COMMANDS,
+    render_command_head: usize = 0,
+    render_command_tail: usize = 0,
+    render_command_count: usize = 0,
     preview_render_enabled: bool = true,
     preview_worker_running: bool = false,
     preview_worker_stop: bool = false,
@@ -332,8 +394,8 @@ pub const Pipe = struct {
     pipe_lock_wait_max_ms: i64 = 0,
     pipe_try_lock_success_count: i64 = 0,
     pipe_try_lock_fail_count: i64 = 0,
-    recording_lock_defer_count: i64 = 0,
-    recording_preview_yield_count: i64 = 0,
+    render_command_drop_count: i64 = 0,
+    render_command_applied_count: i64 = 0,
     recording_frame_queue_produced_count: i64 = 0,
     recording_frame_queue_consumed_count: i64 = 0,
     recording_frame_queue_drop_count: i64 = 0,

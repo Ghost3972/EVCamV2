@@ -72,8 +72,8 @@ class V2CompositeRecorder(
             pipeLockWaitMaxMs = 0
             pipeTryLockSuccessCount = 0
             pipeTryLockFailCount = 0
-            recordingLockDeferCount = 0
-            recordingPreviewYieldCount = 0
+            renderCommandDropCount = 0
+            renderCommandAppliedCount = 0
             recordingQueueProducedCount = 0
             recordingQueueConsumedCount = 0
             recordingQueueDropCount = 0
@@ -188,14 +188,14 @@ class V2CompositeRecorder(
         if (s.size > NativeMetricsSnapshot.RECORDING_ENCODED_SAMPLES) {
             metrics.encodedSamples = maxOf(metrics.encodedSamples, s[NativeMetricsSnapshot.RECORDING_ENCODED_SAMPLES].coerceAtLeast(0L))
         }
-        if (s.size > NativeMetricsSnapshot.RECORDING_PREVIEW_YIELD_COUNT) {
+        if (s.size > NativeMetricsSnapshot.RENDER_COMMAND_APPLIED_COUNT) {
             metrics.pipeLockAcquireCount = maxOf(metrics.pipeLockAcquireCount, s[NativeMetricsSnapshot.PIPE_LOCK_ACQUIRE_COUNT].coerceAtLeast(0L))
             metrics.pipeLockWaitTotalMs = maxOf(metrics.pipeLockWaitTotalMs, s[NativeMetricsSnapshot.PIPE_LOCK_WAIT_TOTAL_MS].coerceAtLeast(0L))
             metrics.pipeLockWaitMaxMs = maxOf(metrics.pipeLockWaitMaxMs, s[NativeMetricsSnapshot.PIPE_LOCK_WAIT_MAX_MS].coerceAtLeast(0L))
             metrics.pipeTryLockSuccessCount = maxOf(metrics.pipeTryLockSuccessCount, s[NativeMetricsSnapshot.PIPE_TRY_LOCK_SUCCESS_COUNT].coerceAtLeast(0L))
             metrics.pipeTryLockFailCount = maxOf(metrics.pipeTryLockFailCount, s[NativeMetricsSnapshot.PIPE_TRY_LOCK_FAIL_COUNT].coerceAtLeast(0L))
-            metrics.recordingLockDeferCount = maxOf(metrics.recordingLockDeferCount, s[NativeMetricsSnapshot.RECORDING_LOCK_DEFER_COUNT].coerceAtLeast(0L))
-            metrics.recordingPreviewYieldCount = maxOf(metrics.recordingPreviewYieldCount, s[NativeMetricsSnapshot.RECORDING_PREVIEW_YIELD_COUNT].coerceAtLeast(0L))
+            metrics.renderCommandDropCount = maxOf(metrics.renderCommandDropCount, s[NativeMetricsSnapshot.RENDER_COMMAND_DROP_COUNT].coerceAtLeast(0L))
+            metrics.renderCommandAppliedCount = maxOf(metrics.renderCommandAppliedCount, s[NativeMetricsSnapshot.RENDER_COMMAND_APPLIED_COUNT].coerceAtLeast(0L))
         }
         if (s.size > NativeMetricsSnapshot.RECORDING_QUEUE_FBO_RECREATE_COUNT) {
             metrics.recordingQueueProducedCount = maxOf(metrics.recordingQueueProducedCount, s[NativeMetricsSnapshot.RECORDING_QUEUE_PRODUCED_COUNT].coerceAtLeast(0L))

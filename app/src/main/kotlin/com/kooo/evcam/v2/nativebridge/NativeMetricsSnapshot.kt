@@ -27,8 +27,8 @@ internal object NativeMetricsSnapshot {
     const val PIPE_LOCK_WAIT_MAX_MS = 66
     const val PIPE_TRY_LOCK_SUCCESS_COUNT = 67
     const val PIPE_TRY_LOCK_FAIL_COUNT = 68
-    const val RECORDING_LOCK_DEFER_COUNT = 69
-    const val RECORDING_PREVIEW_YIELD_COUNT = 70
+    const val RENDER_COMMAND_DROP_COUNT = 69
+    const val RENDER_COMMAND_APPLIED_COUNT = 70
     const val PREVIEW_WORKER_NEXT_DEADLINE_MS = 71
     const val RECORDING_QUEUE_PRODUCED_COUNT = 72
     const val RECORDING_QUEUE_CONSUMED_COUNT = 73

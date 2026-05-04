@@ -134,12 +134,11 @@ class V2CameraWatchdog(
             val encodeFps = ratePerSecond(metrics.encodedSamples - (prevMetrics?.encodedSamples ?: metrics.encodedSamples), deltaMs)
             val dropDelta = (metrics.droppedFrames - (prevMetrics?.droppedFrames ?: metrics.droppedFrames)).coerceAtLeast(0L)
             val lockFailDelta = (metrics.pipeTryLockFailCount - (prevMetrics?.pipeTryLockFailCount ?: metrics.pipeTryLockFailCount)).coerceAtLeast(0L)
-            val deferDelta = (metrics.recordingLockDeferCount - (prevMetrics?.recordingLockDeferCount ?: metrics.recordingLockDeferCount)).coerceAtLeast(0L)
-            val yieldDelta = (metrics.recordingPreviewYieldCount - (prevMetrics?.recordingPreviewYieldCount ?: metrics.recordingPreviewYieldCount)).coerceAtLeast(0L)
+            val commandDropDelta = (metrics.renderCommandDropCount - (prevMetrics?.renderCommandDropCount ?: metrics.renderCommandDropCount)).coerceAtLeast(0L)
             val queueProducedDelta = (metrics.recordingQueueProducedCount - (prevMetrics?.recordingQueueProducedCount ?: metrics.recordingQueueProducedCount)).coerceAtLeast(0L)
             val queueConsumedDelta = (metrics.recordingQueueConsumedCount - (prevMetrics?.recordingQueueConsumedCount ?: metrics.recordingQueueConsumedCount)).coerceAtLeast(0L)
             val queueDropDelta = (metrics.recordingQueueDropCount - (prevMetrics?.recordingQueueDropCount ?: metrics.recordingQueueDropCount)).coerceAtLeast(0L)
-            "rec=ON req=${formatRate(requestFps)} render=${formatRate(renderFps)} enc=${formatRate(encodeFps)} drop=$dropDelta totalDrop=${metrics.droppedFrames} seg=${metrics.segmentIndex} q=${metrics.recordingQueueDepth}/${metrics.recordingQueueMaxDepth} qProd=$queueProducedDelta qUse=$queueConsumedDelta qDrop=$queueDropDelta qFallback=${metrics.recordingQueueFallbackCount} lockMax=${metrics.pipeLockWaitMaxMs}ms lockFail=$lockFailDelta defer=$deferDelta yield=$yieldDelta switch=${metrics.segmentSwitchMs}ms first=${metrics.firstSampleLatencyMs}ms err=${metrics.lastError}"
+            "rec=ON req=${formatRate(requestFps)} render=${formatRate(renderFps)} enc=${formatRate(encodeFps)} drop=$dropDelta totalDrop=${metrics.droppedFrames} seg=${metrics.segmentIndex} q=${metrics.recordingQueueDepth}/${metrics.recordingQueueMaxDepth} qProd=$queueProducedDelta qUse=$queueConsumedDelta qDrop=$queueDropDelta qFallback=${metrics.recordingQueueFallbackCount} lockMax=${metrics.pipeLockWaitMaxMs}ms lockFail=$lockFailDelta cmdDrop=$commandDropDelta switch=${metrics.segmentSwitchMs}ms first=${metrics.firstSampleLatencyMs}ms err=${metrics.lastError}"
         } else {
             "rec=OFF"
         }

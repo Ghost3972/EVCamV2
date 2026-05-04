@@ -72,7 +72,7 @@ class V2CameraStatusFormatter(
 
     private fun lockDebug(recording: Boolean, metrics: RecordingMetrics?): String {
         if (!recording || metrics == null) return "lock=0ms/0"
-        return "lock=${metrics.pipeLockWaitMaxMs}ms/${metrics.pipeTryLockFailCount} q=${metrics.recordingQueueDepth}/${metrics.recordingQueueMaxDepth} qdrop=${metrics.recordingQueueDropCount} defer=${metrics.recordingLockDeferCount} yield=${metrics.recordingPreviewYieldCount}"
+        return "lock=${metrics.pipeLockWaitMaxMs}ms/${metrics.pipeTryLockFailCount} q=${metrics.recordingQueueDepth}/${metrics.recordingQueueMaxDepth} qdrop=${metrics.recordingQueueDropCount} cmd=${metrics.renderCommandAppliedCount}/${metrics.renderCommandDropCount}"
     }
 
     private fun slotFpsDebug(slots: List<SlotStatus>): String {

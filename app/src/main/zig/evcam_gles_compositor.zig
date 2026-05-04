@@ -50,10 +50,13 @@ const Quad = types.Quad;
 const OverlayBatch = types.OverlayBatch;
 const TexturedOverlayBatch = types.TexturedOverlayBatch;
 const RECORDING_FRAME_QUEUE_CAPACITY = types.RECORDING_FRAME_QUEUE_CAPACITY;
+const MAX_RENDER_COMMANDS = types.MAX_RENDER_COMMANDS;
 const RecordingFrameSlot = types.RecordingFrameSlot;
 const RecordingState = types.RecordingState;
 const ManagedSegmentConfig = types.ManagedSegmentConfig;
 const ManagedSegmentFinalize = types.ManagedSegmentFinalize;
+const RenderCommand = types.RenderCommand;
+const RenderRuntimeConfig = types.RenderRuntimeConfig;
 const Pipe = types.Pipe;
 const initZ = types.initZ;
 const EmergencyProtectionSnapshot = storage.EmergencyProtectionSnapshot;
@@ -217,13 +220,6 @@ fn unlockPipe(p: *Pipe) void {
     p.lock.unlock(nativeIo());
 }
 
-fn lockPipeForRecordingWorker(p: *Pipe) void {
-    while (!tryLockPipe(p)) {
-        _ = @atomicRmw(i64, &p.recording_lock_defer_count, .Add, 1, .monotonic);
-        sleepMs(1);
-    }
-}
-
 fn lockPipeForHandle(handle: c.jlong) ?*Pipe {
     lockGlobal();
     const p = getPipe(handle) orelse {
@@ -233,6 +229,71 @@ fn lockPipeForHandle(handle: c.jlong) ?*Pipe {
     lockPipe(p);
     unlockGlobal();
     return p;
+}
+
+fn lockCommandQueue(p: *Pipe) void {
+    p.command_lock.lockUncancelable(nativeIo());
+}
+
+fn unlockCommandQueue(p: *Pipe) void {
+    p.command_lock.unlock(nativeIo());
+}
+
+fn releaseRenderCommandResources(cmd: *RenderCommand) void {
+    if (cmd.window) |window| {
+        c.ANativeWindow_release(window);
+        cmd.window = null;
+    }
+    if (cmd.watermark_pixels) |pixels| {
+        free(pixels);
+        cmd.watermark_pixels = null;
+        cmd.watermark_bytes = 0;
+    }
+    cmd.* = RenderCommand{};
+}
+
+fn enqueueRenderCommandLocked(p: *Pipe, cmd: *RenderCommand) bool {
+    lockCommandQueue(p);
+    defer unlockCommandQueue(p);
+    if (p.render_command_count >= MAX_RENDER_COMMANDS) {
+        p.render_command_drop_count += 1;
+        return false;
+    }
+    p.render_commands[p.render_command_tail] = cmd.*;
+    p.render_command_tail = (p.render_command_tail + 1) % MAX_RENDER_COMMANDS;
+    p.render_command_count += 1;
+    cmd.* = RenderCommand{};
+    return true;
+}
+
+fn popRenderCommandLocked(p: *Pipe, out: *RenderCommand) bool {
+    lockCommandQueue(p);
+    defer unlockCommandQueue(p);
+    if (p.render_command_count == 0) return false;
+    out.* = p.render_commands[p.render_command_head];
+    p.render_commands[p.render_command_head] = RenderCommand{};
+    p.render_command_head = (p.render_command_head + 1) % MAX_RENDER_COMMANDS;
+    p.render_command_count -= 1;
+    return true;
+}
+
+fn dropPendingRenderCommandsLocked(p: *Pipe) void {
+    lockCommandQueue(p);
+    defer unlockCommandQueue(p);
+    while (p.render_command_count > 0) {
+        var cmd = p.render_commands[p.render_command_head];
+        p.render_commands[p.render_command_head] = RenderCommand{};
+        p.render_command_head = (p.render_command_head + 1) % MAX_RENDER_COMMANDS;
+        p.render_command_count -= 1;
+        releaseRenderCommandResources(&cmd);
+        p.render_command_drop_count += 1;
+    }
+    p.render_command_head = 0;
+    p.render_command_tail = 0;
+}
+
+fn renderWorkerAcceptsCommandsLocked(p: *const Pipe) bool {
+    return p.preview_worker_running and !p.preview_worker_stop and !p.releasing;
 }
 
 fn tryLockPipeForHandleBounded(handle: c.jlong, iterations: usize) ?*Pipe {
@@ -1198,7 +1259,7 @@ fn copyWatermarkRows(pixels: ?*anyopaque, width: usize, height: usize, stride: u
     return raw;
 }
 
-fn updateWatermarkBitmapLocked(env: [*c]c.JNIEnv, p: *Pipe, bitmap: c.jobject, x: c.jint, y: c.jint) bool {
+fn makeWatermarkCommandFromBitmap(env: [*c]c.JNIEnv, bitmap: c.jobject, x: c.jint, y: c.jint, out: *RenderCommand) bool {
     if (bitmap == null) {
         setErrorSlice("missing watermark bitmap");
         return false;
@@ -1232,14 +1293,28 @@ fn updateWatermarkBitmapLocked(env: [*c]c.JNIEnv, p: *Pipe, bitmap: c.jobject, x
         setError("invalid watermark bitmap stride {d} rowBytes={d}", .{ stride, row_bytes });
         return false;
     }
-    const copied = if (stride == row_bytes) null else copyWatermarkRows(pixels, width, height, stride);
-    if (stride != row_bytes and copied == null) {
+    const copied = copyWatermarkRows(pixels, width, height, stride);
+    if (copied == null) {
         setError("watermark row copy allocation failed bytes={d}", .{row_bytes * height});
         return false;
     }
-    defer if (copied) |raw| free(raw);
-    const upload_pixels = copied orelse pixels;
+    out.* = RenderCommand{
+        .kind = .update_watermark,
+        .watermark_pixels = copied,
+        .watermark_bytes = row_bytes * height,
+        .watermark_width = @intCast(info.width),
+        .watermark_height = @intCast(info.height),
+        .watermark_x = x,
+        .watermark_y = y,
+    };
+    return true;
+}
 
+fn uploadWatermarkPixelsLocked(p: *Pipe, pixels: ?*anyopaque, width: c.jint, height: c.jint, x: c.jint, y: c.jint) bool {
+    if (pixels == null or width <= 0 or height <= 0) {
+        setErrorSlice("missing watermark pixels");
+        return false;
+    }
     if (!makePbufferCurrent(p)) return false;
     if (p.watermark_texture == 0) {
         c.glGenTextures(1, &p.watermark_texture);
@@ -1257,17 +1332,28 @@ fn updateWatermarkBitmapLocked(env: [*c]c.JNIEnv, p: *Pipe, bitmap: c.jobject, x
         c.glBindTexture(c.GL_TEXTURE_2D, p.watermark_texture);
     }
     c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 4);
-    c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA, @intCast(info.width), @intCast(info.height), 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, upload_pixels);
+    c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA, width, height, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, pixels);
     if (glError("updateWatermarkBitmap")) |e| {
         setErrorSlice(e);
         clearCurrent(p);
         return false;
     }
-    p.watermark_width = @intCast(info.width);
-    p.watermark_height = @intCast(info.height);
+    p.watermark_width = width;
+    p.watermark_height = height;
     p.watermark_x = @floatFromInt(x);
     p.watermark_y = @floatFromInt(y);
     clearCurrent(p);
+    return true;
+}
+
+fn clearWatermarkBitmapLocked(p: *Pipe) bool {
+    if (p.display != c.EGL_NO_DISPLAY and p.watermark_texture != 0) {
+        if (!makePbufferCurrent(p)) return false;
+        releaseWatermarkTextureLocked(p);
+        clearCurrent(p);
+    } else {
+        releaseWatermarkTextureLocked(p);
+    }
     return true;
 }
 
@@ -2011,26 +2097,51 @@ fn resetInput(env: ?[*c]c.JNIEnv, p: *Pipe, index: usize, delete_texture: bool) 
     inp.encoder_generation = 0;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getGlesSummary(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring {
-    return newString(env, "GLES/OES Zig native compositor");
-}
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeConfig(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray) callconv(.c) c.jboolean {
-    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
-    defer unlockPipe(p);
-    p.width = width;
-    p.height = height;
-    p.side_left_rotation = side_left_rotation;
-    p.side_right_rotation = side_right_rotation;
-    p.layout_mode = layout_mode;
-    if (preview_fps <= 0) {
+fn applyPreviewFpsLocked(p: *Pipe, fps: c.jint) void {
+    if (fps <= 0) {
         p.preview_max_fps = 0;
         p.preview_min_interval_ms = 0;
     } else {
-        p.preview_max_fps = @min(@max(preview_fps, 1), 120);
+        p.preview_max_fps = @min(@max(fps, 1), 120);
         p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps);
     }
-    p.encoder_fps = @min(@max(encoder_fps, 1), 120);
+}
+
+fn applyRuntimeConfigLocked(p: *Pipe, runtime: *const RenderRuntimeConfig) void {
+    p.width = runtime.width;
+    p.height = runtime.height;
+    p.side_left_rotation = runtime.side_left_rotation;
+    p.side_right_rotation = runtime.side_right_rotation;
+    p.layout_mode = runtime.layout_mode;
+    applyPreviewFpsLocked(p, runtime.preview_fps);
+    p.encoder_fps = @min(@max(runtime.encoder_fps, 1), 120);
+    if (runtime.fisheye_valid) {
+        for (0..4) |i| {
+            p.fisheye_enabled[i] = runtime.fisheye_enabled[i];
+            p.fisheye_k1[i] = runtime.fisheye_k1[i];
+            p.fisheye_k2[i] = runtime.fisheye_k2[i];
+            p.fisheye_zoom[i] = if (runtime.fisheye_zoom[i] <= 0.01) 1.0 else runtime.fisheye_zoom[i];
+            p.fisheye_center_x[i] = runtime.fisheye_center_x[i];
+            p.fisheye_center_y[i] = runtime.fisheye_center_y[i];
+        }
+    }
+    updateEncoderLayout(p);
+    for (0..4) |i| if (p.preview_quad_width[i] > 0 and p.preview_quad_height[i] > 0) updatePreviewLayout(p, @intCast(i), p.preview_quad_width[i], p.preview_quad_height[i]);
+}
+
+fn fillRuntimeConfigCommand(env: [*c]c.JNIEnv, out: *RenderCommand, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray) void {
+    out.* = RenderCommand{
+        .kind = .runtime_config,
+        .runtime = .{
+            .width = width,
+            .height = height,
+            .preview_fps = preview_fps,
+            .encoder_fps = encoder_fps,
+            .side_left_rotation = side_left_rotation,
+            .side_right_rotation = side_right_rotation,
+            .layout_mode = layout_mode,
+        },
+    };
     if (fisheye_enabled != null and k1 != null and k2 != null and zoom != null and center_x != null and center_y != null and getArrayLen(env, fisheye_enabled) >= 4 and getArrayLen(env, k1) >= 4 and getArrayLen(env, k2) >= 4 and getArrayLen(env, zoom) >= 4 and getArrayLen(env, center_x) >= 4 and getArrayLen(env, center_y) >= 4) {
         const enabled = env.*[0].GetBooleanArrayElements.?(env, fisheye_enabled, null);
         const k1v = env.*[0].GetFloatArrayElements.?(env, k1, null);
@@ -2039,13 +2150,14 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeCon
         const cx = env.*[0].GetFloatArrayElements.?(env, center_x, null);
         const cy = env.*[0].GetFloatArrayElements.?(env, center_y, null);
         if (enabled != null and k1v != null and k2v != null and zoomv != null and cx != null and cy != null) {
+            out.runtime.fisheye_valid = true;
             for (0..4) |i| {
-                p.fisheye_enabled[i] = enabled[i] == JNI_TRUE;
-                p.fisheye_k1[i] = k1v[i];
-                p.fisheye_k2[i] = k2v[i];
-                p.fisheye_zoom[i] = if (zoomv[i] <= 0.01) 1.0 else zoomv[i];
-                p.fisheye_center_x[i] = cx[i];
-                p.fisheye_center_y[i] = cy[i];
+                out.runtime.fisheye_enabled[i] = enabled[i] == JNI_TRUE;
+                out.runtime.fisheye_k1[i] = k1v[i];
+                out.runtime.fisheye_k2[i] = k2v[i];
+                out.runtime.fisheye_zoom[i] = zoomv[i];
+                out.runtime.fisheye_center_x[i] = cx[i];
+                out.runtime.fisheye_center_y[i] = cy[i];
             }
         }
         if (enabled != null) env.*[0].ReleaseBooleanArrayElements.?(env, fisheye_enabled, enabled, c.JNI_ABORT);
@@ -2055,8 +2167,25 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeCon
         if (cx != null) env.*[0].ReleaseFloatArrayElements.?(env, center_x, cx, c.JNI_ABORT);
         if (cy != null) env.*[0].ReleaseFloatArrayElements.?(env, center_y, cy, c.JNI_ABORT);
     }
-    updateEncoderLayout(p);
-    for (0..4) |i| if (p.preview_quad_width[i] > 0 and p.preview_quad_height[i] > 0) updatePreviewLayout(p, @intCast(i), p.preview_quad_width[i], p.preview_quad_height[i]);
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getGlesSummary(env: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jstring {
+    return newString(env, "GLES/OES Zig native compositor");
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeConfig(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray) callconv(.c) c.jboolean {
+    var cmd = RenderCommand{};
+    fillRuntimeConfigCommand(env, &cmd, width, height, preview_fps, encoder_fps, side_left_rotation, side_right_rotation, layout_mode, fisheye_enabled, k1, k2, zoom, center_x, center_y);
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        if (!enqueueRenderCommandLocked(p, &cmd)) {
+            releaseRenderCommandResources(&cmd);
+            return JNI_FALSE;
+        }
+    } else {
+        applyRuntimeConfigLocked(p, &cmd.runtime);
+    }
     logd("runtime config size={d}x{d} previewFps={d} encoderFps={d} config={d}", .{ p.width, p.height, p.preview_max_fps, p.encoder_fps, p.config_version });
     return JNI_TRUE;
 }
@@ -2064,12 +2193,11 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeCon
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setPreviewMaxFps(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean {
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
-    if (fps <= 0) {
-        p.preview_max_fps = 0;
-        p.preview_min_interval_ms = 0;
+    var cmd = RenderCommand{ .kind = .set_preview_fps, .runtime = .{ .preview_fps = fps } };
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        if (!enqueueRenderCommandLocked(p, &cmd)) return JNI_FALSE;
     } else {
-        p.preview_max_fps = @min(@max(fps, 1), 120);
-        p.preview_min_interval_ms = @divTrunc(1000, p.preview_max_fps);
+        applyPreviewFpsLocked(p, fps);
     }
     logd("preview max fps={d} minIntervalMs={d}", .{ p.preview_max_fps, p.preview_min_interval_ms });
     return JNI_TRUE;
@@ -2220,22 +2348,31 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopManagedRecording(_:
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_updateWatermarkBitmap(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, bitmap: c.jobject, x: c.jint, y: c.jint) callconv(.c) c.jboolean {
+    var cmd = RenderCommand{};
+    if (!makeWatermarkCommandFromBitmap(env, bitmap, x, y, &cmd)) return JNI_FALSE;
+    defer releaseRenderCommandResources(&cmd);
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
-    return if (updateWatermarkBitmapLocked(env, p, bitmap, x, y)) JNI_TRUE else JNI_FALSE;
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        if (!enqueueRenderCommandLocked(p, &cmd)) {
+            releaseRenderCommandResources(&cmd);
+            return JNI_FALSE;
+        }
+        return JNI_TRUE;
+    }
+    return if (uploadWatermarkPixelsLocked(p, cmd.watermark_pixels, cmd.watermark_width, cmd.watermark_height, cmd.watermark_x, cmd.watermark_y)) JNI_TRUE else JNI_FALSE;
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_clearWatermarkBitmap(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean {
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
-    if (p.display != c.EGL_NO_DISPLAY and p.watermark_texture != 0) {
-        if (!makePbufferCurrent(p)) return JNI_FALSE;
-        releaseWatermarkTextureLocked(p);
-        clearCurrent(p);
+    var cmd = RenderCommand{ .kind = .clear_watermark };
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        if (!enqueueRenderCommandLocked(p, &cmd)) return JNI_FALSE;
+        return JNI_TRUE;
     } else {
-        releaseWatermarkTextureLocked(p);
+        return if (clearWatermarkBitmapLocked(p)) JNI_TRUE else JNI_FALSE;
     }
-    return JNI_TRUE;
 }
 
 fn recordingTickRenderLocked(env: [*c]c.JNIEnv, p: *Pipe, wall_clock_ms: c.jlong) c.jlong {
@@ -2357,7 +2494,9 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
             next_deadline_ms = nowMs();
             continue;
         }
+        applyPendingRenderCommandsLocked(worker_pipe);
         if (!worker_pipe.preview_worker_running or worker_pipe.preview_worker_generation != generation or worker_pipe.preview_worker_stop) {
+            dropPendingRenderCommandsLocked(worker_pipe);
             unlockPipe(worker_pipe);
             break;
         }
@@ -2421,19 +2560,22 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
         worker_pipe.preview_worker_next_deadline_ms = next_deadline_ms + interval_ms;
         unlockPipe(worker_pipe);
 
-        if (recording_event >= 0 and (recording_event & TICK_SHOULD_RENDER) != 0 and recording_writer_handle != 0) {
-            const drained = writer_mod.drainFast(recording_writer_handle, 0);
-            if (drained < 0) {
+        if (recording_writer_handle != 0) {
+            if (recording_event >= 0 and (recording_event & TICK_SHOULD_RENDER) != 0 and !writer_mod.requestAsyncDrain(recording_writer_handle)) {
                 recording_event = -1;
-            } else {
-                const drained_capped: c.jlong = @min(drained, TICK_DRAINED_MASK);
+            }
+            const drain_result = writer_mod.consumeAsyncDrainResult(recording_writer_handle);
+            if (drain_result.failed) {
+                recording_event = -1;
+            } else if (drain_result.drained_samples > 0 and recording_event >= 0) {
+                const drained_capped: c.jlong = @min(drain_result.drained_samples, TICK_DRAINED_MASK);
                 recording_event |= (drained_capped << TICK_DRAINED_SHIFT);
             }
         }
 
         var should_switch = false;
         if (recording_generation != 0 and recording_event != 0) {
-            lockPipeForRecordingWorker(worker_pipe);
+            lockPipe(worker_pipe);
             should_switch = applyRecordingWorkerEventLocked(worker_pipe, recording_generation, recording_event);
             unlockPipe(worker_pipe);
         }
@@ -2441,7 +2583,7 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
         if (should_switch) {
             const switched = managedSwitchSegment(handle);
             if (!switched) {
-                lockPipeForRecordingWorker(worker_pipe);
+                lockPipe(worker_pipe);
                 setRecordingWorkerTickErrorLocked(worker_pipe, recording_generation);
                 unlockPipe(worker_pipe);
             }
@@ -3010,6 +3152,10 @@ fn managedCreateStartSegment(config: ManagedSegmentConfig, wall_clock_ms: i64, o
         _ = releaseNativeSegmentWriterHandle(writer_handle);
         return 0;
     }
+    if (!writer_mod.startAsyncDrain(writer_handle)) {
+        _ = releaseNativeSegmentWriterHandle(writer_handle);
+        return 0;
+    }
     return writer_handle;
 }
 
@@ -3248,8 +3394,8 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getMetricsSnapshot(env:
         values[66] = p.pipe_lock_wait_max_ms;
         values[67] = p.pipe_try_lock_success_count;
         values[68] = @atomicLoad(i64, &p.pipe_try_lock_fail_count, .monotonic);
-        values[69] = @atomicLoad(i64, &p.recording_lock_defer_count, .monotonic);
-        values[70] = p.recording_preview_yield_count;
+        values[69] = p.render_command_drop_count;
+        values[70] = p.render_command_applied_count;
         values[71] = p.preview_worker_next_deadline_ms;
         values[72] = p.recording_frame_queue_produced_count;
         values[73] = p.recording_frame_queue_consumed_count;
@@ -3384,20 +3530,28 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createOesInput(env: [*c
     logd("created OES input index={d}", .{index});
     return JNI_TRUE;
 }
-fn attachPreviewSurfaceLocked(env: [*c]c.JNIEnv, p: *Pipe, index: c.jint, surface: c.jobject, apply_fisheye: bool, apply_native_transform: bool) c.jboolean {
-    if (p.releasing or index < 0 or index >= 4 or !initEgl(p)) return JNI_FALSE;
-    const i: usize = @intCast(index);
+fn detachPreviewSurfaceIndexLocked(p: *Pipe, i: usize) void {
+    if (i >= 4) return;
     if (p.preview_surface[i] != c.EGL_NO_SURFACE) {
         if (p.current_surface == p.preview_surface[i]) clearCurrent(p);
         _ = c.eglDestroySurface(p.display, p.preview_surface[i]);
         p.preview_surface[i] = c.EGL_NO_SURFACE;
     }
-    if (p.preview_window[i]) |w| c.ANativeWindow_release(w);
-    p.preview_window[i] = c.ANativeWindow_fromSurface(env, surface);
-    if (p.preview_window[i] == null) {
-        setError("preview window unavailable", .{});
+    if (p.preview_window[i]) |w| {
+        c.ANativeWindow_release(w);
+        p.preview_window[i] = null;
+    }
+    p.input[i].preview_pending = false;
+}
+
+fn attachPreviewWindowLocked(p: *Pipe, index: c.jint, window: ?*c.ANativeWindow, apply_fisheye: bool, apply_native_transform: bool) c.jboolean {
+    if (p.releasing or index < 0 or index >= 4 or window == null or !initEgl(p)) {
+        if (window) |w| c.ANativeWindow_release(w);
         return JNI_FALSE;
     }
+    const i: usize = @intCast(index);
+    detachPreviewSurfaceIndexLocked(p, i);
+    p.preview_window[i] = window;
     p.preview_surface[i] = c.eglCreateWindowSurface(p.display, p.config, p.preview_window[i], null);
     if (p.preview_surface[i] == c.EGL_NO_SURFACE) {
         setErrorSlice(eglError("eglCreateWindowSurface preview failed"));
@@ -3424,14 +3578,13 @@ fn detachCompositePreviewSurfaceLocked(p: *Pipe) void {
     }
 }
 
-fn attachCompositePreviewSurfaceLocked(env: [*c]c.JNIEnv, p: *Pipe, surface: c.jobject) c.jboolean {
-    if (p.releasing or surface == null or !initEgl(p)) return JNI_FALSE;
-    detachCompositePreviewSurfaceLocked(p);
-    p.composite_preview_window = c.ANativeWindow_fromSurface(env, surface);
-    if (p.composite_preview_window == null) {
-        setError("composite preview window unavailable", .{});
+fn attachCompositePreviewWindowLocked(p: *Pipe, window: ?*c.ANativeWindow) c.jboolean {
+    if (p.releasing or window == null or !initEgl(p)) {
+        if (window) |w| c.ANativeWindow_release(w);
         return JNI_FALSE;
     }
+    detachCompositePreviewSurfaceLocked(p);
+    p.composite_preview_window = window;
     p.composite_preview_surface = c.eglCreateWindowSurface(p.display, p.config, p.composite_preview_window, null);
     if (p.composite_preview_surface == c.EGL_NO_SURFACE) {
         setErrorSlice(eglError("eglCreateWindowSurface composite preview failed"));
@@ -3443,39 +3596,126 @@ fn attachCompositePreviewSurfaceLocked(env: [*c]c.JNIEnv, p: *Pipe, surface: c.j
     return JNI_TRUE;
 }
 
+fn applyRenderCommandLocked(p: *Pipe, cmd: *RenderCommand) bool {
+    const ok = switch (cmd.kind) {
+        .none => true,
+        .runtime_config => blk: {
+            applyRuntimeConfigLocked(p, &cmd.runtime);
+            break :blk true;
+        },
+        .set_preview_fps => blk: {
+            applyPreviewFpsLocked(p, cmd.runtime.preview_fps);
+            break :blk true;
+        },
+        .attach_preview => blk: {
+            const window = cmd.window;
+            cmd.window = null;
+            break :blk attachPreviewWindowLocked(p, cmd.index, window, cmd.apply_fisheye, cmd.apply_native_transform) == JNI_TRUE;
+        },
+        .detach_preview => blk: {
+            if (cmd.index >= 0 and cmd.index < 4) detachPreviewSurfaceIndexLocked(p, @intCast(cmd.index));
+            break :blk true;
+        },
+        .detach_previews => blk: {
+            for (0..4) |i| {
+                if ((cmd.indexes_mask & (@as(u8, 1) << @intCast(i))) != 0) detachPreviewSurfaceIndexLocked(p, i);
+            }
+            break :blk true;
+        },
+        .attach_composite_preview => blk: {
+            const window = cmd.window;
+            cmd.window = null;
+            break :blk attachCompositePreviewWindowLocked(p, window) == JNI_TRUE;
+        },
+        .detach_composite_preview => blk: {
+            detachCompositePreviewSurfaceLocked(p);
+            break :blk true;
+        },
+        .update_watermark => uploadWatermarkPixelsLocked(p, cmd.watermark_pixels, cmd.watermark_width, cmd.watermark_height, cmd.watermark_x, cmd.watermark_y),
+        .clear_watermark => clearWatermarkBitmapLocked(p),
+    };
+    releaseRenderCommandResources(cmd);
+    p.render_command_applied_count += 1;
+    return ok;
+}
+
+fn applyPendingRenderCommandsLocked(p: *Pipe) void {
+    var applied: usize = 0;
+    while (applied < MAX_RENDER_COMMANDS) : (applied += 1) {
+        var cmd = RenderCommand{};
+        if (!popRenderCommandLocked(p, &cmd)) return;
+        const kind = cmd.kind;
+        if (!applyRenderCommandLocked(p, &cmd)) {
+            p.render_command_drop_count += 1;
+            if (@mod(p.render_command_drop_count, 8) == 0) loge("render command failed kind={s}", .{@tagName(kind)});
+        }
+    }
+}
+
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachCompositePreviewSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, surface: c.jobject) callconv(.c) c.jboolean {
+    if (surface == null) return JNI_FALSE;
+    var cmd = RenderCommand{
+        .kind = .attach_composite_preview,
+        .window = c.ANativeWindow_fromSurface(env, surface),
+    };
+    if (cmd.window == null) {
+        setError("composite preview window unavailable", .{});
+        return JNI_FALSE;
+    }
+    defer releaseRenderCommandResources(&cmd);
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
-    return attachCompositePreviewSurfaceLocked(env, p, surface);
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        return if (enqueueRenderCommandLocked(p, &cmd)) JNI_TRUE else JNI_FALSE;
+    }
+    const window = cmd.window;
+    cmd.window = null;
+    return attachCompositePreviewWindowLocked(p, window);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachCompositePreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong) callconv(.c) c.jboolean {
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
+    var cmd = RenderCommand{ .kind = .detach_composite_preview };
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        return if (enqueueRenderCommandLocked(p, &cmd)) JNI_TRUE else JNI_FALSE;
+    }
     detachCompositePreviewSurfaceLocked(p);
     return JNI_TRUE;
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurfaceWithMode(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean) callconv(.c) c.jboolean {
+    if (surface == null) return JNI_FALSE;
+    var cmd = RenderCommand{
+        .kind = .attach_preview,
+        .index = index,
+        .window = c.ANativeWindow_fromSurface(env, surface),
+        .apply_fisheye = apply_fisheye == JNI_TRUE,
+        .apply_native_transform = apply_native_transform == JNI_TRUE,
+    };
+    if (cmd.window == null) {
+        setError("preview window unavailable", .{});
+        return JNI_FALSE;
+    }
+    defer releaseRenderCommandResources(&cmd);
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
-    return attachPreviewSurfaceLocked(env, p, index, surface, apply_fisheye == JNI_TRUE, apply_native_transform == JNI_TRUE);
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        return if (enqueueRenderCommandLocked(p, &cmd)) JNI_TRUE else JNI_FALSE;
+    }
+    const window = cmd.window;
+    cmd.window = null;
+    return attachPreviewWindowLocked(p, index, window, cmd.apply_fisheye, cmd.apply_native_transform);
 }
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean {
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
     if (index < 0 or index >= 4) return JNI_FALSE;
-    const i: usize = @intCast(index);
-    if (p.preview_surface[i] != c.EGL_NO_SURFACE) {
-        if (p.current_surface == p.preview_surface[i]) clearCurrent(p);
-        _ = c.eglDestroySurface(p.display, p.preview_surface[i]);
-        p.preview_surface[i] = c.EGL_NO_SURFACE;
+    var cmd = RenderCommand{ .kind = .detach_preview, .index = index };
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        return if (enqueueRenderCommandLocked(p, &cmd)) JNI_TRUE else JNI_FALSE;
     }
-    if (p.preview_window[i]) |w| {
-        c.ANativeWindow_release(w);
-        p.preview_window[i] = null;
-    }
-    p.input[i].preview_pending = false;
+    detachPreviewSurfaceIndexLocked(p, @intCast(index));
     return JNI_TRUE;
 }
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurfaces(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, indexes: c.jintArray) callconv(.c) c.jboolean {
@@ -3485,22 +3725,19 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurfaces(e
     const count = getArrayLen(env, indexes);
     const raw = env.*[0].GetIntArrayElements.?(env, indexes, null) orelse return JNI_FALSE;
     defer env.*[0].ReleaseIntArrayElements.?(env, indexes, raw, c.JNI_ABORT);
+    var mask: u8 = 0;
     var n: c.jsize = 0;
     while (n < count) : (n += 1) {
         const index = raw[@intCast(n)];
         if (index < 0 or index >= 4) continue;
-        const i: usize = @intCast(index);
-        if (p.preview_surface[i] != c.EGL_NO_SURFACE) {
-            if (p.current_surface == p.preview_surface[i]) clearCurrent(p);
-            _ = c.eglDestroySurface(p.display, p.preview_surface[i]);
-            p.preview_surface[i] = c.EGL_NO_SURFACE;
-        }
-        if (p.preview_window[i]) |w| {
-            c.ANativeWindow_release(w);
-            p.preview_window[i] = null;
-        }
-        p.input[i].preview_pending = false;
+        mask |= (@as(u8, 1) << @intCast(index));
     }
+    if (mask == 0) return JNI_TRUE;
+    var cmd = RenderCommand{ .kind = .detach_previews, .indexes_mask = mask };
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        return if (enqueueRenderCommandLocked(p, &cmd)) JNI_TRUE else JNI_FALSE;
+    }
+    for (0..4) |i| if ((mask & (@as(u8, 1) << @intCast(i))) != 0) detachPreviewSurfaceIndexLocked(p, i);
     return JNI_TRUE;
 }
 
@@ -3551,6 +3788,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseCompositor(env: 
     unlockGlobal();
 
     const p = pipe orelse return;
+    dropPendingRenderCommandsLocked(p);
     if (p.display != c.EGL_NO_DISPLAY) {
         _ = makePbufferCurrent(p);
         releaseRecordingFrameQueueLocked(p);

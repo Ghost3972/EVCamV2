@@ -11,6 +11,7 @@ const O_TRUNC_ANDROID = types.O_TRUNC_ANDROID;
 const NativeTm = types.NativeTm;
 const NativeSegmentWriter = types.NativeSegmentWriter;
 const WRITER_HANDLE_SLOT_BASE: c.jlong = 1000;
+const BITRATE_MODE_VBR: c_int = 1;
 
 pub const SegmentFinishResult = enum(c_int) {
     failed = -1,
@@ -22,7 +23,13 @@ extern fn open(path: [*c]const u8, flags: c_int, mode: c_int) c_int;
 extern fn close(fd: c_int) c_int;
 extern fn rename(oldpath: [*c]const u8, newpath: [*c]const u8) c_int;
 extern fn unlink(path: [*c]const u8) c_int;
+extern fn usleep(usec: c_uint) c_int;
 extern fn localtime_r(timep: *const c_long, result: *NativeTm) ?*NativeTm;
+
+pub const AsyncDrainResult = struct {
+    drained_samples: c.jlong = 0,
+    failed: bool = false,
+};
 
 pub const Callbacks = struct {
     nativeIo: *const fn () std.Io,
@@ -93,6 +100,10 @@ fn unlockWriter(w: *NativeSegmentWriter) void {
     w.lock.unlock(nativeIo());
 }
 
+fn tryLockWriter(w: *NativeSegmentWriter) bool {
+    return w.lock.tryLock();
+}
+
 fn lockForHandle(handle: c.jlong) ?*NativeSegmentWriter {
     lockGlobal();
     const w = lockForHandleNoGlobal(handle);
@@ -135,6 +146,28 @@ fn copyCStringToBuffer(dst: []u8, src: [*c]const u8) bool {
     @memset(dst, 0);
     @memcpy(dst[0..len], src[0..len]);
     return true;
+}
+
+fn sleepMs(ms: u64) void {
+    const capped_ms = @min(ms, 60_000);
+    const duration: std.Io.Clock.Duration = .{
+        .raw = .fromMilliseconds(@intCast(capped_ms)),
+        .clock = .awake,
+    };
+    duration.sleep(nativeIo()) catch {
+        _ = usleep(@intCast(capped_ms * 1000));
+    };
+}
+
+fn joinWorkerThread(thread: std.Thread, comptime name: []const u8, generation: c.jlong, timeout_ms: c.jlong) void {
+    const join_start_ms = nowMs();
+    thread.join();
+    const join_ms = nowMs() - join_start_ms;
+    if (timeout_ms > 0 and join_ms > timeout_ms) {
+        logInfo("{s} join exceeded timeout generation={d} joinMs={d} timeoutMs={d}", .{ name, generation, join_ms, timeout_ms });
+    } else {
+        logInfo("{s} joined generation={d} joinMs={d}", .{ name, generation, join_ms });
+    }
 }
 
 fn appendFixedDecimal(dst: []u8, offset: *usize, value: u64, width: usize) bool {
@@ -220,6 +253,14 @@ fn releaseResources(w: *NativeSegmentWriter) void {
     w.drain_max_ms = 0;
     w.muxer_write_total_ms = 0;
     w.muxer_write_max_ms = 0;
+    w.async_drain_thread = null;
+    w.async_drain_running = false;
+    w.async_drain_stop = true;
+    w.async_drain_pending = false;
+    w.async_drained_samples = 0;
+    w.async_drain_error_count = 0;
+    w.async_drain_request_count = 0;
+    w.async_drain_defer_count = 0;
 }
 
 fn drainLocked(w: *NativeSegmentWriter, timeout_us: c.jlong) c.jlong {
@@ -398,6 +439,153 @@ fn closeSegmentLocked(w: *NativeSegmentWriter, final_chars: [*c]const u8) Segmen
     return .finalized;
 }
 
+fn asyncDrainWorkerLoop(writer_handle: c.jlong, generation: c.jlong) void {
+    while (true) {
+        const w = lockForEncodedHandle(writer_handle) orelse return;
+        if (w.async_drain_generation != generation or w.async_drain_stop or w.handle != writer_handle) {
+            if (w.async_drain_generation == generation) {
+                w.async_drain_running = false;
+                w.async_drain_stop = true;
+                w.async_drain_pending = false;
+            }
+            unlockWriter(w);
+            break;
+        }
+        if (!w.async_drain_pending) {
+            unlockWriter(w);
+            sleepMs(2);
+            continue;
+        }
+        w.async_drain_pending = false;
+        const drained = drainLocked(w, 0);
+        if (drained < 0) {
+            w.async_drain_error_count += 1;
+            w.async_drain_running = false;
+            w.async_drain_stop = true;
+            unlockWriter(w);
+            break;
+        }
+        if (drained > 0) w.async_drained_samples += drained;
+        unlockWriter(w);
+    }
+}
+
+fn joinStaleAsyncDrainWorker(writer_handle: c.jlong) void {
+    var thread: ?std.Thread = null;
+    var generation: c.jlong = 0;
+    {
+        const w = lockForEncodedHandle(writer_handle) orelse return;
+        defer unlockWriter(w);
+        if (w.async_drain_running or w.async_drain_thread == null) return;
+        generation = w.async_drain_generation;
+        thread = w.async_drain_thread;
+        w.async_drain_thread = null;
+    }
+    if (thread) |t| joinWorkerThread(t, "writer drain stale", generation, 2000);
+}
+
+pub fn startAsyncDrain(writer_handle: c.jlong) bool {
+    if (callbacks() == null) return false;
+    joinStaleAsyncDrainWorker(writer_handle);
+    var generation: c.jlong = 0;
+    {
+        const w = lockForEncodedHandle(writer_handle) orelse return false;
+        defer unlockWriter(w);
+        if (w.async_drain_running and !w.async_drain_stop) return true;
+        if (w.async_drain_thread != null) {
+            setError("writer async drain join pending", .{});
+            return false;
+        }
+        w.async_drain_running = true;
+        w.async_drain_stop = false;
+        w.async_drain_pending = false;
+        w.async_drained_samples = 0;
+        w.async_drain_error_count = 0;
+        w.async_drain_generation += 1;
+        generation = w.async_drain_generation;
+    }
+    const thread = std.Thread.spawn(.{}, asyncDrainWorkerLoop, .{ writer_handle, generation }) catch |err| {
+        if (lockForEncodedHandle(writer_handle)) |w| {
+            defer unlockWriter(w);
+            if (w.async_drain_generation == generation) {
+                w.async_drain_running = false;
+                w.async_drain_stop = true;
+            }
+        }
+        setError("writer async drain spawn failed: {}", .{err});
+        return false;
+    };
+    var should_join = false;
+    if (lockForEncodedHandle(writer_handle)) |w| {
+        defer unlockWriter(w);
+        if (w.async_drain_generation == generation and w.async_drain_running and !w.async_drain_stop and w.handle == writer_handle) {
+            w.async_drain_thread = thread;
+        } else {
+            w.async_drain_running = false;
+            w.async_drain_stop = true;
+            should_join = true;
+        }
+    } else {
+        should_join = true;
+    }
+    if (should_join) {
+        thread.join();
+        return false;
+    }
+    logInfo("writer async drain started handle={d} generation={d}", .{ writer_handle, generation });
+    return true;
+}
+
+pub fn stopAsyncDrain(writer_handle: c.jlong, timeout_ms: c.jlong) bool {
+    var thread: ?std.Thread = null;
+    var generation: c.jlong = 0;
+    {
+        const w = lockForEncodedHandle(writer_handle) orelse return false;
+        defer unlockWriter(w);
+        generation = w.async_drain_generation;
+        w.async_drain_stop = true;
+        w.async_drain_running = false;
+        w.async_drain_pending = false;
+        thread = w.async_drain_thread;
+        w.async_drain_thread = null;
+    }
+    if (thread) |t| joinWorkerThread(t, "writer drain", generation, timeout_ms);
+    return true;
+}
+
+pub fn requestAsyncDrain(writer_handle: c.jlong) bool {
+    const index = writerIndexFromHandle(writer_handle) orelse return false;
+    const w = &g_writers[index];
+    if (!tryLockWriter(w)) {
+        _ = @atomicRmw(i64, &w.async_drain_defer_count, .Add, 1, .monotonic);
+        return true;
+    }
+    defer unlockWriter(w);
+    if (w.handle != writer_handle) {
+        setError("invalid native writer handle", .{});
+        return false;
+    }
+    if (!w.async_drain_running or w.async_drain_stop) return false;
+    w.async_drain_pending = true;
+    w.async_drain_request_count += 1;
+    return true;
+}
+
+pub fn consumeAsyncDrainResult(writer_handle: c.jlong) AsyncDrainResult {
+    const index = writerIndexFromHandle(writer_handle) orelse return .{ .failed = true };
+    const w = &g_writers[index];
+    if (!tryLockWriter(w)) return .{};
+    defer unlockWriter(w);
+    if (w.handle != writer_handle) return .{ .failed = true };
+    const result = AsyncDrainResult{
+        .drained_samples = w.async_drained_samples,
+        .failed = w.async_drain_error_count > 0,
+    };
+    w.async_drained_samples = 0;
+    w.async_drain_error_count = 0;
+    return result;
+}
+
 pub fn createForMime(width: c.jint, height: c.jint, fps: c.jint, bitrate: c.jint, mime_chars: [*c]const u8) c.jlong {
     if (callbacks() == null) return 0;
     if (mime_chars == null or width <= 0 or height <= 0 or fps <= 0 or bitrate <= 0) {
@@ -419,6 +607,7 @@ pub fn createForMime(width: c.jint, height: c.jint, fps: c.jint, bitrate: c.jint
     c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_HEIGHT, height);
     c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_FRAME_RATE, fps);
     c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_BIT_RATE, bitrate);
+    c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_BITRATE_MODE, BITRATE_MODE_VBR);
     c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_COLOR_FORMAT, COLOR_FORMAT_SURFACE);
     c.AMediaFormat_setInt32(format, c.AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 1);
     const configure_status = c.AMediaCodec_configure(codec, format, null, null, c.AMEDIACODEC_CONFIGURE_FLAG_ENCODE);
@@ -554,6 +743,7 @@ pub fn startSegment(writer_handle: c.jlong, dir_chars: [*c]const u8, suffix_char
 }
 
 pub fn finishSegment(writer_handle: c.jlong, final_chars: [*c]const u8) SegmentFinishResult {
+    _ = stopAsyncDrain(writer_handle, 2000);
     const w = lockForEncodedHandle(writer_handle) orelse return .failed;
     defer unlockWriter(w);
     return closeSegmentLocked(w, final_chars);
@@ -589,6 +779,7 @@ pub fn drainFast(writer_handle: c.jlong, timeout_us: c.jlong) c.jlong {
 }
 
 pub fn finishToPath(writer_handle: c.jlong, final_chars: [*c]const u8) bool {
+    _ = stopAsyncDrain(writer_handle, 2000);
     lockGlobal();
     var writer: ?*NativeSegmentWriter = null;
     var writer_index: ?usize = null;
@@ -634,6 +825,7 @@ pub fn finishToPath(writer_handle: c.jlong, final_chars: [*c]const u8) bool {
 }
 
 pub fn releaseHandle(writer_handle: c.jlong) bool {
+    _ = stopAsyncDrain(writer_handle, 2000);
     lockGlobal();
     var writer: ?*NativeSegmentWriter = null;
     var writer_index: ?usize = null;
