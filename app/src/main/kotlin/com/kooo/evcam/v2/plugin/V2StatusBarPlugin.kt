@@ -5,16 +5,11 @@ import android.app.Service
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.drawable.ClipDrawable
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.LayerDrawable
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.service.notification.StatusBarNotification
 import android.util.Log
-import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -24,6 +19,7 @@ import com.flyme.auto.plugin.systemui.StatusBarPlugin
 import com.flyme.plugin.annotations.Requires
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.service.V2CameraForegroundService
+import com.kooo.evcam.v2.ui.main.V2MainActivity
 
 @Requires(target = StatusBarPlugin::class, version = StatusBarPlugin.VERSION)
 class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
@@ -33,6 +29,7 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val contextResolver = V2StatusBarContextResolver(APP_PACKAGE, TAG)
     private val userActions = V2StatusBarUserActionDispatcher(TAG)
+    private val emergencyButtonRenderer = V2StatusBarEmergencyButtonRenderer()
     private var statusText: TextView? = null
     private var recordingLabel: TextView? = null
     private var recordingSwitch: CheckedTextView? = null
@@ -45,11 +42,6 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
     private var optimisticEmergencyUntilMs = 0L
     private var emergencyAutoCloseArmed = false
     private var emergencyAutoCloseAtMs = 0L
-    private var emergencyProgressBackground: LayerDrawable? = null
-    private var emergencyProgressClip: ClipDrawable? = null
-    private var lastEmergencyText: String? = null
-    private var lastEmergencyActive = false
-    private var lastEmergencyProgressSecond = -1
 
     override fun onCreate(sysuiContext: Context, pluginContext: Context) {
         this.sysuiContext = sysuiContext
@@ -144,7 +136,7 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
 
     private fun openMainActivity() {
         val intent = Intent()
-            .setComponent(ComponentName(APP_PACKAGE, "com.kooo.evcam.v2.ui.V2MainActivity"))
+            .setComponent(ComponentName(APP_PACKAGE, "com.kooo.evcam.v2.ui.main.V2MainActivity"))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         try {
             userActions.startActivity(hostContext(), intent)
@@ -175,7 +167,7 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         val text = statusText ?: return
         switch.isChecked = recording
         recordingLabel?.text = "行车记录仪"
-        renderEmergencyButton(emergency, emergencyEndsAtMs)
+        emergencyButtonRenderer.render(emergencyButton, emergency, emergencyEndsAtMs)
         text.text = statusLabel(serviceReady, recording, emergency)
     }
 
@@ -184,52 +176,6 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         notificationEmergencyEndsAtMs > now -> notificationEmergencyEndsAtMs
         optimisticEmergencyUntilMs > now -> optimisticEmergencyUntilMs
         else -> 0L
-    }
-
-    private fun renderEmergencyButton(emergency: Boolean, emergencyEndsAtMs: Long) {
-        val button = emergencyButton ?: return
-        button.isSelected = emergency
-        if (!emergency) {
-            setEmergencyButtonText(button, "紧急录制")
-            if (lastEmergencyActive) button.setBackgroundResource(R.drawable.v2_status_bar_button_bg)
-            lastEmergencyActive = false
-            lastEmergencyProgressSecond = -1
-            return
-        }
-        val now = System.currentTimeMillis()
-        val remainingMs = (emergencyEndsAtMs - now).coerceAtLeast(0L)
-        val remainingSeconds = ((remainingMs + 999L) / 1000L).toInt().coerceAtLeast(0)
-        setEmergencyButtonText(button, if (remainingSeconds > 0) "紧急录制中 ${remainingSeconds}s" else "紧急录制中")
-        if (!lastEmergencyActive || emergencyProgressBackground == null) {
-            button.background = createEmergencyProgressBackground(button.context)
-        }
-        if (remainingSeconds != lastEmergencyProgressSecond) {
-            val elapsedSeconds = (EMERGENCY_DURATION_SECONDS - remainingSeconds).coerceIn(0, EMERGENCY_DURATION_SECONDS)
-            emergencyProgressClip?.level = (elapsedSeconds * 10_000) / EMERGENCY_DURATION_SECONDS
-            lastEmergencyProgressSecond = remainingSeconds
-        }
-        lastEmergencyActive = true
-    }
-
-    private fun setEmergencyButtonText(button: TextView, text: String) {
-        if (lastEmergencyText == text) return
-        button.text = text
-        lastEmergencyText = text
-    }
-
-    private fun createEmergencyProgressBackground(context: Context): LayerDrawable {
-        val radius = 4f * context.resources.displayMetrics.density
-        val base = GradientDrawable().apply {
-            setColor(Color.parseColor("#D9FFFFFF"))
-            cornerRadius = radius
-        }
-        val progress = GradientDrawable().apply {
-            setColor(Color.parseColor("#B3D50000"))
-            cornerRadius = radius
-        }
-        val clip = ClipDrawable(progress, Gravity.START, ClipDrawable.HORIZONTAL)
-        emergencyProgressClip = clip
-        return LayerDrawable(arrayOf(base, clip)).also { emergencyProgressBackground = it }
     }
 
     private fun parseEmergencyEnd(status: String): Long {
@@ -285,7 +231,5 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         private const val PLUGIN_ID = 132
         private const val REFRESH_DELAY_MS = 1_000L
         private const val EMERGENCY_OPTIMISTIC_MS = 15_000L
-        private const val EMERGENCY_DURATION_MS = 15_000L
-        private const val EMERGENCY_DURATION_SECONDS = 15
     }
 }

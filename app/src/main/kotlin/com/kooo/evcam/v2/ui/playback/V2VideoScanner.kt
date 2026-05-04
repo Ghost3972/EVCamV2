@@ -2,11 +2,10 @@ package com.kooo.evcam.v2.ui.playback
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.SystemClock
 import com.kooo.evcam.v2.nativebridge.GlesNative
-import com.kooo.evcam.v2.storage.V2PlaybackListEntry
 import com.kooo.evcam.v2.storage.V2PlaybackListCache
+import com.kooo.evcam.v2.storage.V2PlaybackListEntry
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 import java.io.File
 import java.text.SimpleDateFormat
@@ -128,13 +127,15 @@ object V2VideoScanner {
     fun saveCachedGroups(context: Context, groups: List<V2VideoGroup>) {
         V2PlaybackListCache.save(context, groups.mapNotNull { group ->
             val file = group.composite ?: return@mapNotNull null
+            val thumbnailFile = V2PlaybackThumbnailLoader.defaultThumbnailFile(file)
+                .takeIf { it.isFile && it.length() > 0L }
             V2PlaybackListEntry(
                 key = group.timestamp,
                 path = file.absolutePath,
                 length = file.length(),
                 modified = file.lastModified(),
-                thumbnailPath = defaultThumbnailFile(file).takeIf { it.isFile && it.length() > 0L }?.absolutePath,
-                thumbnailModified = defaultThumbnailFile(file).takeIf { it.isFile && it.length() > 0L }?.lastModified() ?: 0L,
+                thumbnailPath = thumbnailFile?.absolutePath,
+                thumbnailModified = thumbnailFile?.lastModified() ?: 0L,
             )
         })
     }
@@ -162,123 +163,15 @@ object V2VideoScanner {
         file.isFile && file.exists() && file.canRead() && file.length() > 0L &&
             (file.extension.equals("jpg", ignoreCase = true) || file.extension.equals("jpeg", ignoreCase = true) || file.extension.equals("png", ignoreCase = true))
 
-    fun cachedThumbnail(file: File): Bitmap? {
-        val thumb = findThumbnailFile(file) ?: return null
-        return decodeThumbnailFile(thumb)
-    }
+    fun cachedThumbnail(file: File): Bitmap? = V2PlaybackThumbnailLoader.cachedThumbnail(file)
 
-    fun cachedThumbnailPath(path: String?): Bitmap? {
-        if (path.isNullOrBlank()) return null
-        val thumb = File(path)
-        if (!thumb.isFile || !thumb.canRead() || thumb.length() <= 0L) return null
-        return decodeThumbnailFile(thumb)
-    }
+    fun cachedThumbnailPath(path: String?): Bitmap? = V2PlaybackThumbnailLoader.cachedThumbnailPath(path)
 
-    fun imageThumbnail(file: File): Bitmap? = if (isImageFile(file)) decodeThumbnailFile(file) else null
+    fun imageThumbnail(file: File): Bitmap? = V2PlaybackThumbnailLoader.imageThumbnail(file)
 
-    fun cachedThumbnail(context: Context, file: File): Bitmap? {
-        val thumb = findThumbnailFile(file) ?: return null
-        val bitmap = decodeThumbnailFile(thumb) ?: return null
-        val cachedFile = thumb
-        V2PlaybackListCache.updateThumbnail(context, file, cachedFile)
-        return bitmap
-    }
+    fun cachedThumbnail(context: Context, file: File): Bitmap? =
+        V2PlaybackThumbnailLoader.cachedThumbnail(context, file)
 
-    fun cachedOrSidecarThumbnail(context: Context, file: File, cachedPath: String?): Bitmap? {
-        val cached = cachedThumbnailPath(cachedPath)
-        if (cached != null) return cached
-        return cachedThumbnail(context, file)
-    }
-
-    private fun decodeThumbnailFile(thumb: File): Bitmap? {
-        if (thumb.extension.equals("bmp", ignoreCase = true) && !isCompleteBmpFile(thumb)) return null
-        return runCatching {
-            BitmapFactory.Options().run {
-                inJustDecodeBounds = true
-                BitmapFactory.decodeFile(thumb.absolutePath, this)
-                if (outWidth <= 0 || outHeight <= 0) return@run null
-                inSampleSize = thumbnailSampleSize(outWidth, outHeight, 240, 160)
-                inJustDecodeBounds = false
-                BitmapFactory.decodeFile(thumb.absolutePath, this)
-            }
-        }.getOrNull()
-    }
-
-    private fun cachedThumbnailFromEntry(context: Context, file: File, entry: V2PlaybackListEntry): Bitmap? {
-        val cached = entry.thumbnailPath?.let { path ->
-            val thumb = File(path)
-            if (thumb.isFile && thumb.canRead() && thumb.length() > 0L &&
-                (entry.thumbnailModified <= 0L || thumb.lastModified() == entry.thumbnailModified)
-            ) {
-                decodeThumbnailFile(thumb)?.also { V2PlaybackListCache.updateThumbnail(context, file, thumb) }
-            } else {
-                null
-            }
-        }
-        return cached ?: cachedThumbnail(context, file)
-    }
-
-    private fun defaultThumbnailFile(file: File): File = File(file.parentFile, file.nameWithoutExtension + ".jpg")
-
-    private fun thumbnailCandidates(file: File): List<File> {
-        val parent = file.parentFile ?: return emptyList()
-        val stem = file.nameWithoutExtension
-        return listOf(
-            defaultThumbnailFile(file),
-            File(parent, "$stem.jpeg"),
-            File(parent, "$stem.bmp"),
-            File(parent, "${stem}_thumb.jpg"),
-            File(parent, "${stem}_thumbnail.jpg"),
-            File(parent, "${stem.removeSuffix("_composite")}.jpg"),
-            File(parent, "${stem.removeSuffix("_composite")}.jpeg"),
-            File(parent, "${stem.removeSuffix("_composite")}.bmp")
-        ).distinctBy { it.absolutePath }
-    }
-
-    private fun isCompleteBmpFile(file: File): Boolean = runCatching {
-        if (file.length() < BMP_HEADER_BYTES) return false
-        val header = ByteArray(BMP_HEADER_BYTES)
-        file.inputStream().use { if (it.read(header) != BMP_HEADER_BYTES) return false }
-        if (header[0] != 'B'.code.toByte() || header[1] != 'M'.code.toByte()) return false
-        val width = readLe32(header, 18)
-        val height = readLe32(header, 22)
-        val bitsPerPixel = readLe16(header, 28)
-        val dataOffset = readLe32(header, 10)
-        if (width <= 0 || height <= 0 || dataOffset < BMP_HEADER_BYTES) return false
-        val bytesPerPixel = when (bitsPerPixel) {
-            24 -> 3
-            32 -> 4
-            else -> return false
-        }
-        val rowStride = ((width * bytesPerPixel + 3) / 4) * 4
-        val expected = dataOffset.toLong() + rowStride.toLong() * height.toLong()
-        file.length() >= expected
-    }.getOrDefault(false)
-
-    private fun readLe16(bytes: ByteArray, offset: Int): Int =
-        (bytes[offset].toInt() and 0xff) or
-            ((bytes[offset + 1].toInt() and 0xff) shl 8)
-
-    private fun readLe32(bytes: ByteArray, offset: Int): Int =
-        (bytes[offset].toInt() and 0xff) or
-            ((bytes[offset + 1].toInt() and 0xff) shl 8) or
-            ((bytes[offset + 2].toInt() and 0xff) shl 16) or
-            ((bytes[offset + 3].toInt() and 0xff) shl 24)
-
-    private const val BMP_HEADER_BYTES = 54
-
-    private fun findThumbnailFile(file: File): File? =
-        thumbnailCandidates(file).firstOrNull { it.isFile && it.canRead() && it.length() > 0L }
-
-    private fun thumbnailSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
-        var sample = 1
-        if (height > reqHeight || width > reqWidth) {
-            var halfHeight = height / 2
-            var halfWidth = width / 2
-            while (halfHeight / sample >= reqHeight && halfWidth / sample >= reqWidth) {
-                sample *= 2
-            }
-        }
-        return sample.coerceAtLeast(1)
-    }
+    fun cachedOrSidecarThumbnail(context: Context, file: File, cachedPath: String?): Bitmap? =
+        V2PlaybackThumbnailLoader.cachedOrSidecarThumbnail(context, file, cachedPath)
 }

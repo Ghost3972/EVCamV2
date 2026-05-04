@@ -11,7 +11,7 @@
         android:layout_marginStart="240dp"
         android:background="@color/home_preview_background">
 
-        <com.kooo.evcam.v2.ui.V2AutoFitTextureView
+        <com.kooo.evcam.v2.ui.widgets.V2AutoFitTextureView
             android:id="@+id/texture_front"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
@@ -112,7 +112,7 @@
                 android:focusable="true"
                 android:gravity="center" />
 
-            <com.kooo.evcam.v2.ui.V2CircularProgressView
+            <com.kooo.evcam.v2.ui.widgets.V2CircularProgressView
                 android:id="@+id/emergency_recording_progress"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"

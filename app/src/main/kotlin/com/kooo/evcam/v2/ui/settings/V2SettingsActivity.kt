@@ -11,7 +11,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraServiceCommands
+import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 
 class V2SettingsActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout

@@ -92,13 +92,13 @@
         </provider>
 
         <provider
-            android:name="com.kooo.evcam.v2.service.V2KeepAliveProvider"
+            android:name="com.kooo.evcam.v2.service.keepalive.V2KeepAliveProvider"
             android:authorities="${applicationId}.keepalive"
             android:exported="false"
             android:initOrder="2147483647" />
 
         <activity
-            android:name="com.kooo.evcam.v2.ui.V2MainActivity"
+            android:name="com.kooo.evcam.v2.ui.main.V2MainActivity"
             android:exported="true"
             android:launchMode="singleTask">
             <intent-filter>
@@ -108,7 +108,7 @@
         </activity>
 
         <activity
-            android:name="com.kooo.evcam.v2.ui.V2TransparentBootActivity"
+            android:name="com.kooo.evcam.v2.ui.main.V2TransparentBootActivity"
             android:excludeFromRecents="true"
             android:exported="false"
             android:noHistory="true"
@@ -146,7 +146,7 @@
         </receiver>
 
         <service
-            android:name="com.kooo.evcam.v2.service.V2KeepAliveAccessibilityService"
+            android:name="com.kooo.evcam.v2.service.keepalive.V2KeepAliveAccessibilityService"
             android:exported="true"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
@@ -158,7 +158,7 @@
         </service>
 
         <receiver
-            android:name="com.kooo.evcam.v2.service.V2BootReceiver"
+            android:name="com.kooo.evcam.v2.service.keepalive.V2BootReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
@@ -169,7 +169,7 @@
         </receiver>
 
         <receiver
-            android:name="com.kooo.evcam.v2.service.V2DisplayPowerReceiver"
+            android:name="com.kooo.evcam.v2.service.display.V2DisplayPowerReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
@@ -180,7 +180,7 @@
         </receiver>
 
         <receiver
-            android:name="com.kooo.evcam.v2.service.V2KeepAliveReceiver"
+            android:name="com.kooo.evcam.v2.service.keepalive.V2KeepAliveReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>

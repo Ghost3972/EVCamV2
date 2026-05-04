@@ -1,21 +1,14 @@
 package com.kooo.evcam.v2.recording
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.nativebridge.NativeMetricsSnapshot
 import com.kooo.evcam.v2.nativebridge.V2NativeRecordingBridge
 import com.kooo.evcam.v2.settings.V2StorageCleanupSettings
-import com.kooo.evcam.v2.storage.V2StorageCleanupResult
-import com.kooo.evcam.v2.storage.V2StorageCleaner
-import com.kooo.evcam.v2.ui.V2TimeWatermark
 import java.io.File
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
-import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -42,8 +35,14 @@ class V2CompositeRecorder(
     private val native = V2NativeRecordingBridge(nativeHandle)
     private val metrics = RecordingMetrics()
     private val stopRequested = AtomicBoolean(true)
-    private val watermarkHandler = Handler(Looper.getMainLooper())
-    private val cleanupExecutor = Executors.newSingleThreadExecutor()
+    private val watermarkController = V2RecordingWatermarkController(
+        context = context,
+        native = native,
+        renderHandler = renderHandler,
+        isRecording = { recording },
+        isStopRequested = { stopRequested.get() },
+    )
+    private val storageCleanupScheduler = V2RecordingStorageCleanupScheduler(context, outputDir, logTag = "V2CompositeRecorder")
     private val emergencyClips = V2EmergencyClipCoordinator(
         context = context,
         outputDir = outputDir,
@@ -54,15 +53,7 @@ class V2CompositeRecorder(
     private var recording = false
     private var generation = 0L
     private var nativeWorkerActive = false
-    @Volatile private var cleanupFuture: Future<V2StorageCleanupResult>? = null
     @Volatile private var stoppedWallClockMs = 0L
-    private val watermarkTicker = object : Runnable {
-        override fun run() {
-            if (!recording || stopRequested.get()) return
-            updateWatermarkAsync(System.currentTimeMillis())
-            watermarkHandler.postDelayed(this, V2TimeWatermark.nextSecondDelayMs())
-        }
-    }
 
     override fun start(): Boolean {
         val startedMs = SystemClock.elapsedRealtime()
@@ -93,14 +84,14 @@ class V2CompositeRecorder(
             lastError = "无"
         }
         val startWallClockMs = System.currentTimeMillis()
-        val initialWatermark = createWatermarkBitmap(startWallClockMs)
+        val initialWatermark = watermarkController.createBitmap(startWallClockMs)
         recording = true
         stopRequested.set(false)
         generation += 1
         val startGeneration = generation
         val reservedBytes = V2StorageCleanupSettings.reservedSpaceBytes(context)
         val startResult = runOnCaptureSync {
-            uploadInitialWatermark(initialWatermark)
+            watermarkController.uploadInitial(initialWatermark)
             check(native.startManagedRecording(
                 outputDir = outputDir.absolutePath,
                 suffix = fileSuffix,
@@ -125,8 +116,8 @@ class V2CompositeRecorder(
             return false
         }
         nativeWorkerActive = true
-        scheduleWatermarkUpdates()
-        scheduleStorageCleanup()
+        watermarkController.startUpdates()
+        storageCleanupScheduler.schedule()
         V2AppLog.i("V2CompositeRecorder", "native managed recording worker started generation=$startGeneration ${workerSnapshotSummary()}")
         V2AppLog.perf("V2CompositeRecorder", "start", SystemClock.elapsedRealtime() - startedMs)
         return true
@@ -166,7 +157,7 @@ class V2CompositeRecorder(
 
     private fun stopManagedRecording(timeoutMs: Long, stopWallClockMs: Long) {
         recording = false
-        stopWatermarkUpdates()
+        watermarkController.stopUpdates()
         stoppedWallClockMs = stopWallClockMs
         syncMetricsFromNative()
         runCatching { native.stopManagedRecording(timeoutMs, stopWallClockMs) }
@@ -174,13 +165,11 @@ class V2CompositeRecorder(
                 metrics.lastError = it.javaClass.simpleName + ": " + (it.message ?: "停止失败")
                 V2AppLog.e("V2CompositeRecorder", "native managed stop failed", it)
             }
-        runCatching { native.clearWatermarkBitmap() }
+        watermarkController.clearNativeWatermark()
         nativeWorkerActive = false
         generation += 1
         finishEmergencyClipExportsIfStopped()
-        cleanupFuture?.cancel(false)
-        cleanupFuture = null
-        cleanupExecutor.shutdown()
+        storageCleanupScheduler.cancelAndShutdown()
     }
 
     private fun workerSnapshotSummary(): String {
@@ -219,70 +208,8 @@ class V2CompositeRecorder(
         }
     }
 
-    private fun scheduleStorageCleanup() {
-        val future = cleanupFuture
-        if (future != null && !future.isDone) return
-        cleanupFuture = cleanupExecutor.submit<V2StorageCleanupResult> {
-            runCatching { V2StorageCleaner.cleanupForReservedSpace(context, outputDir) }
-                .onSuccess { logCleanupResult("background", it) }
-                .getOrElse {
-                    V2AppLog.w("V2CompositeRecorder", "storage cleanup background failed", it)
-                    V2StorageCleanupResult(0, 0L, outputDir.usableSpace, 0L)
-                }
-        }
-    }
-
-    private fun logCleanupResult(stage: String, result: V2StorageCleanupResult) {
-        if (result.deletedCount > 0) {
-            V2AppLog.w("V2CompositeRecorder", "storage cleanup $stage deleted=${result.deletedCount} freed=${V2StorageCleaner.formatBytes(result.deletedBytes)} available=${V2StorageCleaner.formatBytes(result.availableBytes)} reserve=${V2StorageCleaner.formatBytes(result.reservedBytes)}")
-        }
-    }
-
     private fun finishEmergencyClipExportsIfStopped() {
         emergencyClips.finishExportsIfStopped()
-    }
-
-    private fun scheduleWatermarkUpdates() {
-        watermarkHandler.removeCallbacks(watermarkTicker)
-        watermarkHandler.postDelayed(watermarkTicker, V2TimeWatermark.nextSecondDelayMs())
-    }
-
-    private fun stopWatermarkUpdates() {
-        watermarkHandler.removeCallbacks(watermarkTicker)
-    }
-
-    private fun updateWatermarkAsync(wallClockMs: Long) {
-        val bitmap = createWatermarkBitmap(wallClockMs) ?: return
-        renderHandler.post {
-            try {
-                if (recording && !stopRequested.get()) uploadWatermarkBitmap(bitmap)
-            } finally {
-                bitmap.recycle()
-            }
-        }
-    }
-
-    private fun createWatermarkBitmap(wallClockMs: Long): Bitmap? =
-        runCatching { V2TimeWatermark.renderBitmap(context, wallClockMs) }
-            .onFailure { V2AppLog.e("V2CompositeRecorder", "render watermark failed", it) }
-            .getOrNull()
-
-    private fun uploadWatermarkBitmap(bitmap: Bitmap?) {
-        if (bitmap == null) return
-        val uploaded = native.updateWatermarkBitmap(
-            bitmap,
-            V2TimeWatermark.overlayX(context),
-            V2TimeWatermark.overlayY(context),
-        )
-        if (!uploaded) V2AppLog.w("V2CompositeRecorder", "native watermark upload failed: ${native.lastError()}")
-    }
-
-    private fun uploadInitialWatermark(bitmap: Bitmap?) {
-        try {
-            uploadWatermarkBitmap(bitmap)
-        } finally {
-            bitmap?.recycle()
-        }
     }
 
     private fun runOnCaptureSync(block: () -> Unit): Result<Unit> {

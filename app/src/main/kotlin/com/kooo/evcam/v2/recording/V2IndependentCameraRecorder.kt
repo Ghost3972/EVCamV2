@@ -6,8 +6,6 @@ import android.os.SystemClock
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.nativebridge.V2NativeCameraRecordingBridge
 import com.kooo.evcam.v2.settings.V2StorageCleanupSettings
-import com.kooo.evcam.v2.storage.V2StorageCleanupResult
-import com.kooo.evcam.v2.storage.V2StorageCleaner
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -28,7 +26,7 @@ class V2IndependentCameraRecorder(
 ) : V2RecordingPipeline {
     private val metrics = RecordingMetrics()
     private val stopRequested = AtomicBoolean(true)
-    private val cleanupExecutor = Executors.newSingleThreadExecutor()
+    private val storageCleanupScheduler = V2RecordingStorageCleanupScheduler(context, outputDir, logTag = TAG)
     private val nativeStopExecutor = Executors.newFixedThreadPool(MAX_CAMERA_STOP_THREADS)
     private val emergencyClips = V2EmergencyClipCoordinator(
         context = context,
@@ -90,7 +88,7 @@ class V2IndependentCameraRecorder(
             onFailure(metrics.lastError)
             return false
         }
-        scheduleStorageCleanup()
+        storageCleanupScheduler.schedule()
         V2AppLog.i(TAG, "independent recording started cameras=${cameraTargets.joinToString { it.label }} size=${cameraTargets.first().width}x${cameraTargets.first().height} bitrateEach=$perCameraBitrate fps=$recordingFps segmentMs=$segmentDurationMs suffix=$fileSuffix")
         V2AppLog.perf(TAG, "start", SystemClock.elapsedRealtime() - startedMs)
         return true
@@ -143,7 +141,7 @@ class V2IndependentCameraRecorder(
         }
         recording = false
         finishEmergencyClipExportsIfStopped()
-        cleanupExecutor.shutdown()
+        storageCleanupScheduler.cancelAndShutdown()
         nativeStopExecutor.shutdown()
     }
 
@@ -161,19 +159,6 @@ class V2IndependentCameraRecorder(
         metrics.encodedSamples = maxOf(metrics.encodedSamples, samples)
         metrics.renderedFrames = maxOf(metrics.renderedFrames, samples)
         metrics.requestedFrames = maxOf(metrics.requestedFrames, samples)
-    }
-
-    private fun scheduleStorageCleanup() {
-        cleanupExecutor.submit<V2StorageCleanupResult> {
-            runCatching { V2StorageCleaner.cleanupForReservedSpace(context, outputDir) }
-                .onSuccess {
-                    if (it.deletedCount > 0) V2AppLog.w(TAG, "storage cleanup deleted=${it.deletedCount} freed=${V2StorageCleaner.formatBytes(it.deletedBytes)}")
-                }
-                .getOrElse {
-                    V2AppLog.w(TAG, "storage cleanup failed", it)
-                    V2StorageCleanupResult(0, 0L, outputDir.usableSpace, 0L)
-                }
-        }
     }
 
     private fun finishEmergencyClipExportsIfStopped() {

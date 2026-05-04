@@ -12,8 +12,8 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraServiceCommands
 import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
+import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 import com.kooo.evcam.v2.settings.V2FisheyeSettings
 import com.kooo.evcam.v2.settings.V2SettingsFormatter
 import java.util.Locale

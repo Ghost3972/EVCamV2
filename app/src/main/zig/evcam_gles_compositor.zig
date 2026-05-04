@@ -5,6 +5,9 @@ const storage = @import("evcam_storage.zig");
 const finalize_queue = @import("evcam_finalize.zig");
 const writer_mod = @import("evcam_writer.zig");
 const jpeg = @import("evcam_jpeg.zig");
+const files = @import("evcam_files.zig");
+const playback_cache = @import("evcam_playback_cache.zig");
+const emergency_clip = @import("evcam_emergency_clip.zig");
 
 // Use Zig 0.16's std.Io namespace for future file/stream I/O task coordination;
 // std.io was removed. NDK camera callbacks, EGL/GLES render ownership, and
@@ -33,16 +36,10 @@ const MAX_NATIVE_CAMERAS = types.MAX_NATIVE_CAMERAS;
 const MAX_EMERGENCY_SOURCES = types.MAX_EMERGENCY_SOURCES;
 const MAX_EMERGENCY_REQUESTS = types.MAX_EMERGENCY_REQUESTS;
 const O_RDWR_ANDROID = types.O_RDWR_ANDROID;
-const O_RDONLY_ANDROID = types.O_RDONLY_ANDROID;
 const O_CREAT_ANDROID = types.O_CREAT_ANDROID;
 const O_TRUNC_ANDROID = types.O_TRUNC_ANDROID;
-const SAMPLE_BUFFER_BYTES = types.SAMPLE_BUFFER_BYTES;
 const THUMBNAIL_WIDTH = types.THUMBNAIL_WIDTH;
 const THUMBNAIL_HEIGHT = types.THUMBNAIL_HEIGHT;
-const MAX_CLEANUP_FILES = types.MAX_CLEANUP_FILES;
-const PLAYBACK_CACHE_BUFFER_BYTES = types.PLAYBACK_CACHE_BUFFER_BYTES;
-const SEEK_SET_ANDROID = types.SEEK_SET_ANDROID;
-const SEEK_END_ANDROID = types.SEEK_END_ANDROID;
 const NativeTm = types.NativeTm;
 const EglPresentationTimeAndroidFn = types.EglPresentationTimeAndroidFn;
 const NativeCameraPreview = types.NativeCameraPreview;
@@ -60,21 +57,9 @@ const ManagedSegmentFinalize = types.ManagedSegmentFinalize;
 const Pipe = types.Pipe;
 const initZ = types.initZ;
 const EmergencyProtectionSnapshot = storage.EmergencyProtectionSnapshot;
-const PlaybackScanResult = storage.PlaybackScanResult;
-const PlaybackCacheEntry = storage.PlaybackCacheEntry;
-const PlaybackCacheBuildResult = storage.PlaybackCacheBuildResult;
-const scanPlaybackVideosNative = storage.scanPlaybackVideosNative;
-const scanPlaybackImagesNative = storage.scanPlaybackImagesNative;
-const buildPlaybackCacheNative = storage.buildPlaybackCacheNative;
-const appendJsonLiteral = storage.appendJsonLiteral;
-const appendPlaybackCacheEntryJson = storage.appendPlaybackCacheEntryJson;
-const playbackEntryFromVideoPath = storage.playbackEntryFromVideoPath;
 
 extern fn open(path: [*c]const u8, flags: c_int, mode: c_int) c_int;
 extern fn close(fd: c_int) c_int;
-extern fn read(fd: c_int, buf: ?*anyopaque, count: usize) isize;
-extern fn write(fd: c_int, buf: ?*const anyopaque, count: usize) isize;
-extern fn lseek64(fd: c_int, offset: i64, whence: c_int) i64;
 extern fn rename(oldpath: [*c]const u8, newpath: [*c]const u8) c_int;
 extern fn unlink(path: [*c]const u8) c_int;
 extern fn usleep(usec: c_uint) c_int;
@@ -124,6 +109,10 @@ export fn JNI_OnLoad(vm: [*c]c.JavaVM, _: ?*anyopaque) callconv(.c) c.jint {
     writer_mod.configure(.{
         .nativeIo = nativeIo,
         .nowMs = nowMs,
+        .setErrorText = setErrorFromModule,
+        .logInfoText = logInfoFromModule,
+    });
+    emergency_clip.configure(.{
         .setErrorText = setErrorFromModule,
         .logInfoText = logInfoFromModule,
     });
@@ -341,290 +330,6 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativePrepareSegmentCac
     return if (ensureSegmentCacheCallback(env)) JNI_TRUE else JNI_FALSE;
 }
 
-const PlaybackThumbnailJni = struct {
-    retriever_class: c.jclass,
-    bitmap_class: c.jclass,
-    compress_format_class: c.jclass,
-    output_stream_class: c.jclass,
-    retriever_ctor: c.jmethodID,
-    retriever_set_data_source: c.jmethodID,
-    retriever_get_frame: c.jmethodID,
-    retriever_release: c.jmethodID,
-    bitmap_get_width: c.jmethodID,
-    bitmap_get_height: c.jmethodID,
-    bitmap_compress: c.jmethodID,
-    bitmap_recycle: c.jmethodID,
-    bitmap_create_scaled: c.jmethodID,
-    output_stream_ctor: c.jmethodID,
-    output_stream_close: c.jmethodID,
-    jpeg_format: c.jobject,
-};
-
-fn loadPlaybackThumbnailJni(env: [*c]c.JNIEnv) ?PlaybackThumbnailJni {
-    const retriever_class = env.*[0].FindClass.?(env, "android/media/MediaMetadataRetriever") orelse {
-        _ = clearJniException(env, "FindClass MediaMetadataRetriever");
-        return null;
-    };
-    const bitmap_class = env.*[0].FindClass.?(env, "android/graphics/Bitmap") orelse {
-        _ = clearJniException(env, "FindClass Bitmap");
-        env.*[0].DeleteLocalRef.?(env, retriever_class);
-        return null;
-    };
-    const compress_format_class = env.*[0].FindClass.?(env, "android/graphics/Bitmap$CompressFormat") orelse {
-        _ = clearJniException(env, "FindClass Bitmap CompressFormat");
-        env.*[0].DeleteLocalRef.?(env, retriever_class);
-        env.*[0].DeleteLocalRef.?(env, bitmap_class);
-        return null;
-    };
-    const output_stream_class = env.*[0].FindClass.?(env, "java/io/FileOutputStream") orelse {
-        _ = clearJniException(env, "FindClass FileOutputStream");
-        env.*[0].DeleteLocalRef.?(env, retriever_class);
-        env.*[0].DeleteLocalRef.?(env, bitmap_class);
-        env.*[0].DeleteLocalRef.?(env, compress_format_class);
-        return null;
-    };
-
-    const retriever_ctor = env.*[0].GetMethodID.?(env, retriever_class, "<init>", "()V") orelse return null;
-    const retriever_set_data_source = env.*[0].GetMethodID.?(env, retriever_class, "setDataSource", "(Ljava/lang/String;)V") orelse return null;
-    const retriever_get_frame = env.*[0].GetMethodID.?(env, retriever_class, "getFrameAtTime", "(JI)Landroid/graphics/Bitmap;") orelse return null;
-    const retriever_release = env.*[0].GetMethodID.?(env, retriever_class, "release", "()V") orelse return null;
-    const bitmap_get_width = env.*[0].GetMethodID.?(env, bitmap_class, "getWidth", "()I") orelse return null;
-    const bitmap_get_height = env.*[0].GetMethodID.?(env, bitmap_class, "getHeight", "()I") orelse return null;
-    const bitmap_compress = env.*[0].GetMethodID.?(env, bitmap_class, "compress", "(Landroid/graphics/Bitmap$CompressFormat;ILjava/io/OutputStream;)Z") orelse return null;
-    const bitmap_recycle = env.*[0].GetMethodID.?(env, bitmap_class, "recycle", "()V") orelse return null;
-    const bitmap_create_scaled = env.*[0].GetStaticMethodID.?(env, bitmap_class, "createScaledBitmap", "(Landroid/graphics/Bitmap;IIZ)Landroid/graphics/Bitmap;") orelse return null;
-    const output_stream_ctor = env.*[0].GetMethodID.?(env, output_stream_class, "<init>", "(Ljava/lang/String;)V") orelse return null;
-    const output_stream_close = env.*[0].GetMethodID.?(env, output_stream_class, "close", "()V") orelse return null;
-    const jpeg_field = env.*[0].GetStaticFieldID.?(env, compress_format_class, "JPEG", "Landroid/graphics/Bitmap$CompressFormat;") orelse return null;
-    const jpeg_format = env.*[0].GetStaticObjectField.?(env, compress_format_class, jpeg_field) orelse return null;
-
-    const retriever_global = env.*[0].NewGlobalRef.?(env, retriever_class) orelse {
-        _ = clearJniException(env, "NewGlobalRef MediaMetadataRetriever");
-        return null;
-    };
-    const bitmap_global = env.*[0].NewGlobalRef.?(env, bitmap_class) orelse {
-        _ = clearJniException(env, "NewGlobalRef Bitmap");
-        env.*[0].DeleteGlobalRef.?(env, retriever_global);
-        return null;
-    };
-    const compress_format_global = env.*[0].NewGlobalRef.?(env, compress_format_class) orelse {
-        _ = clearJniException(env, "NewGlobalRef Bitmap CompressFormat");
-        env.*[0].DeleteGlobalRef.?(env, retriever_global);
-        env.*[0].DeleteGlobalRef.?(env, bitmap_global);
-        return null;
-    };
-    const output_stream_global = env.*[0].NewGlobalRef.?(env, output_stream_class) orelse {
-        _ = clearJniException(env, "NewGlobalRef FileOutputStream");
-        env.*[0].DeleteGlobalRef.?(env, retriever_global);
-        env.*[0].DeleteGlobalRef.?(env, bitmap_global);
-        env.*[0].DeleteGlobalRef.?(env, compress_format_global);
-        return null;
-    };
-    const jpeg_global = env.*[0].NewGlobalRef.?(env, jpeg_format) orelse {
-        _ = clearJniException(env, "NewGlobalRef JPEG CompressFormat");
-        env.*[0].DeleteGlobalRef.?(env, retriever_global);
-        env.*[0].DeleteGlobalRef.?(env, bitmap_global);
-        env.*[0].DeleteGlobalRef.?(env, compress_format_global);
-        env.*[0].DeleteGlobalRef.?(env, output_stream_global);
-        return null;
-    };
-    env.*[0].DeleteLocalRef.?(env, jpeg_format);
-    env.*[0].DeleteLocalRef.?(env, output_stream_class);
-    env.*[0].DeleteLocalRef.?(env, compress_format_class);
-    env.*[0].DeleteLocalRef.?(env, bitmap_class);
-    env.*[0].DeleteLocalRef.?(env, retriever_class);
-
-    return .{
-        .retriever_class = @ptrCast(retriever_global),
-        .bitmap_class = @ptrCast(bitmap_global),
-        .compress_format_class = @ptrCast(compress_format_global),
-        .output_stream_class = @ptrCast(output_stream_global),
-        .retriever_ctor = retriever_ctor,
-        .retriever_set_data_source = retriever_set_data_source,
-        .retriever_get_frame = retriever_get_frame,
-        .retriever_release = retriever_release,
-        .bitmap_get_width = bitmap_get_width,
-        .bitmap_get_height = bitmap_get_height,
-        .bitmap_compress = bitmap_compress,
-        .bitmap_recycle = bitmap_recycle,
-        .bitmap_create_scaled = bitmap_create_scaled,
-        .output_stream_ctor = output_stream_ctor,
-        .output_stream_close = output_stream_close,
-        .jpeg_format = jpeg_global,
-    };
-}
-
-fn releasePlaybackThumbnailJni(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni) void {
-    env.*[0].DeleteGlobalRef.?(env, jni.jpeg_format);
-    env.*[0].DeleteGlobalRef.?(env, jni.output_stream_class);
-    env.*[0].DeleteGlobalRef.?(env, jni.compress_format_class);
-    env.*[0].DeleteGlobalRef.?(env, jni.bitmap_class);
-    env.*[0].DeleteGlobalRef.?(env, jni.retriever_class);
-}
-
-fn recycleBitmap(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, bitmap: c.jobject) void {
-    if (bitmap == null) return;
-    env.*[0].CallVoidMethodA.?(env, bitmap, jni.bitmap_recycle, null);
-    _ = clearJniException(env, "Bitmap.recycle");
-}
-
-fn scalePlaybackThumbnailBitmap(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, bitmap: c.jobject) c.jobject {
-    const width = env.*[0].CallIntMethodA.?(env, bitmap, jni.bitmap_get_width, null);
-    if (clearJniException(env, "Bitmap.getWidth") or width <= 0) return bitmap;
-    const height = env.*[0].CallIntMethodA.?(env, bitmap, jni.bitmap_get_height, null);
-    if (clearJniException(env, "Bitmap.getHeight") or height <= 0) return bitmap;
-    var target_width = width;
-    var target_height = height;
-    if (width > 320 or height > 180) {
-        if (@as(i64, width) * 180 >= @as(i64, height) * 320) {
-            target_width = 320;
-            target_height = @max(1, @divTrunc(height * 320, width));
-        } else {
-            target_height = 180;
-            target_width = @max(1, @divTrunc(width * 180, height));
-        }
-    }
-    if (target_width == width and target_height == height) return bitmap;
-    var args = [_]c.jvalue{
-        .{ .l = bitmap },
-        .{ .i = target_width },
-        .{ .i = target_height },
-        .{ .z = JNI_TRUE },
-    };
-    const scaled = env.*[0].CallStaticObjectMethodA.?(env, jni.bitmap_class, jni.bitmap_create_scaled, &args);
-    if (clearJniException(env, "Bitmap.createScaledBitmap") or scaled == null) return bitmap;
-    return scaled;
-}
-
-fn extractPlaybackFrame(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, retriever: c.jobject) c.jobject {
-    const times = [_]c.jlong{ 0, 1_000_000, 3_000_000 };
-    for (times) |time_us| {
-        var args = [_]c.jvalue{
-            .{ .j = time_us },
-            .{ .i = 2 },
-        };
-        const frame = env.*[0].CallObjectMethodA.?(env, retriever, jni.retriever_get_frame, &args);
-        if (clearJniException(env, "MediaMetadataRetriever.getFrameAtTime")) continue;
-        if (frame != null) return frame;
-    }
-    return null;
-}
-
-fn generatePlaybackThumbnailWithJni(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, video_path: [*c]const u8) bool {
-    var target_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    if (!thumbnailPathForVideo(&target_path, video_path)) return false;
-    if (fileSizeNative(&target_path) > 0) return true;
-    var temp_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    if (!appendPathSuffix(&temp_path, &target_path, ".tmp")) return false;
-    _ = unlink(&temp_path);
-
-    const retriever = env.*[0].NewObjectA.?(env, jni.retriever_class, jni.retriever_ctor, null) orelse {
-        _ = clearJniException(env, "MediaMetadataRetriever.new");
-        return false;
-    };
-    defer env.*[0].DeleteLocalRef.?(env, retriever);
-    defer {
-        env.*[0].CallVoidMethodA.?(env, retriever, jni.retriever_release, null);
-        _ = clearJniException(env, "MediaMetadataRetriever.release");
-    }
-
-    const video_string = env.*[0].NewStringUTF.?(env, video_path) orelse {
-        _ = clearJniException(env, "NewStringUTF video path");
-        return false;
-    };
-    defer env.*[0].DeleteLocalRef.?(env, video_string);
-    var source_args = [_]c.jvalue{.{ .l = video_string }};
-    env.*[0].CallVoidMethodA.?(env, retriever, jni.retriever_set_data_source, &source_args);
-    if (clearJniException(env, "MediaMetadataRetriever.setDataSource")) return false;
-
-    const frame = extractPlaybackFrame(env, jni, retriever);
-    if (frame == null) return false;
-    defer env.*[0].DeleteLocalRef.?(env, frame);
-    defer recycleBitmap(env, jni, frame);
-
-    const bitmap = scalePlaybackThumbnailBitmap(env, jni, frame);
-    const bitmap_scaled = bitmap != frame;
-    if (bitmap_scaled) {
-        defer env.*[0].DeleteLocalRef.?(env, bitmap);
-        defer recycleBitmap(env, jni, bitmap);
-    }
-
-    const temp_string = env.*[0].NewStringUTF.?(env, &temp_path) orelse {
-        _ = clearJniException(env, "NewStringUTF thumbnail path");
-        return false;
-    };
-    defer env.*[0].DeleteLocalRef.?(env, temp_string);
-    var stream_args = [_]c.jvalue{.{ .l = temp_string }};
-    const stream = env.*[0].NewObjectA.?(env, jni.output_stream_class, jni.output_stream_ctor, &stream_args) orelse {
-        _ = clearJniException(env, "FileOutputStream.new");
-        _ = unlink(&temp_path);
-        return false;
-    };
-    defer env.*[0].DeleteLocalRef.?(env, stream);
-    var stream_closed = false;
-    defer {
-        if (!stream_closed) {
-            env.*[0].CallVoidMethodA.?(env, stream, jni.output_stream_close, null);
-            _ = clearJniException(env, "FileOutputStream.close");
-        }
-    }
-
-    var compress_args = [_]c.jvalue{
-        .{ .l = jni.jpeg_format },
-        .{ .i = 82 },
-        .{ .l = stream },
-    };
-    const compressed = env.*[0].CallBooleanMethodA.?(env, bitmap, jni.bitmap_compress, &compress_args);
-    if (clearJniException(env, "Bitmap.compress") or compressed != JNI_TRUE) {
-        _ = unlink(&temp_path);
-        return false;
-    }
-    env.*[0].CallVoidMethodA.?(env, stream, jni.output_stream_close, null);
-    stream_closed = true;
-    if (clearJniException(env, "FileOutputStream.close")) {
-        _ = unlink(&temp_path);
-        return false;
-    }
-    if (fileSizeNative(&temp_path) <= 0) {
-        _ = unlink(&temp_path);
-        return false;
-    }
-    _ = unlink(&target_path);
-    if (rename(&temp_path, &target_path) != 0) {
-        _ = unlink(&temp_path);
-        return false;
-    }
-    return fileSizeNative(&target_path) > 0;
-}
-
-fn generatePlaybackThumbnailWithBridge(env: [*c]c.JNIEnv, video_path: [*c]const u8) bool {
-    var target_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    if (!thumbnailPathForVideo(&target_path, video_path)) return false;
-    if (fileSizeNative(&target_path) > 0) return true;
-
-    const bridge_class = env.*[0].FindClass.?(env, "com/kooo/evcam/v2/storage/V2PlaybackThumbnailBridge") orelse {
-        _ = clearJniException(env, "FindClass V2PlaybackThumbnailBridge");
-        loge("playback thumbnail bridge class not found", .{});
-        return false;
-    };
-    defer env.*[0].DeleteLocalRef.?(env, bridge_class);
-    const method = env.*[0].GetStaticMethodID.?(env, bridge_class, "ensureThumbnail", "(Ljava/lang/String;)Ljava/lang/String;") orelse {
-        _ = clearJniException(env, "GetStaticMethodID ensureThumbnail");
-        loge("playback thumbnail bridge method not found", .{});
-        return false;
-    };
-    const video_string = env.*[0].NewStringUTF.?(env, video_path) orelse {
-        _ = clearJniException(env, "NewStringUTF bridge video path");
-        return false;
-    };
-    defer env.*[0].DeleteLocalRef.?(env, video_string);
-    var args = [_]c.jvalue{.{ .l = video_string }};
-    const generated = env.*[0].CallStaticObjectMethodA.?(env, bridge_class, method, &args);
-    if (clearJniException(env, "V2PlaybackThumbnailBridge.ensureThumbnail") or generated == null) return false;
-    defer env.*[0].DeleteLocalRef.?(env, generated);
-    return fileSizeNative(&target_path) > 0;
-}
-
 fn sleepMs(ms: u64) void {
     const capped_ms = @min(ms, 60_000);
     const duration: std.Io.Clock.Duration = .{
@@ -718,14 +423,6 @@ fn setErrorSlice(msg: [:0]const u8) void {
     loge("{s}", .{msg});
 }
 
-fn copyCStringToBuffer(dst: []u8, src: [*c]const u8) bool {
-    const value = std.mem.span(src);
-    if (value.len >= dst.len) return false;
-    @memset(dst, 0);
-    @memcpy(dst[0..value.len], value);
-    return true;
-}
-
 fn appendFixedDecimal(dst: []u8, offset: *usize, value: u64, width: usize) bool {
     if (offset.* + width >= dst.len) return false;
     var remaining = value;
@@ -767,19 +464,9 @@ fn formatIndexSuffix(dst: *[8:0]u8, index: usize) bool {
     return appendFixedDecimal(dst[0..], &offset, @intCast(index), 3);
 }
 
-fn writeAllFd(fd: c_int, data: []const u8) bool {
-    var written: usize = 0;
-    while (written < data.len) {
-        const rc = write(fd, data.ptr + written, data.len - written);
-        if (rc <= 0) return false;
-        written += @intCast(rc);
-    }
-    return true;
-}
-
 fn jpegWriteContext(context: ?*anyopaque, data: []const u8) bool {
     const fd_ptr: *c_int = @ptrCast(@alignCast(context orelse return false));
-    return writeAllFd(fd_ptr.*, data);
+    return files.writeAllFd(fd_ptr.*, data);
 }
 
 const ThumbnailCapture = struct {
@@ -789,98 +476,6 @@ const ThumbnailCapture = struct {
     height: usize = 0,
     bytes: usize = 0,
 };
-
-fn thumbnailPathForVideo(dst: *[1024:0]u8, video_path: [*c]const u8) bool {
-    const path = std.mem.span(video_path);
-    var base_len = path.len;
-    if (std.mem.endsWith(u8, path, ".mp4")) base_len = path.len - 4;
-    if (base_len + 4 >= dst.len) return false;
-    @memset(dst, 0);
-    @memcpy(dst[0..base_len], path[0..base_len]);
-    @memcpy(dst[base_len..][0..4], ".jpg");
-    return true;
-}
-
-fn appendPathSuffix(dst: *[1024:0]u8, path_z: [*c]const u8, suffix: []const u8) bool {
-    const path = std.mem.span(path_z);
-    if (path.len + suffix.len >= dst.len) return false;
-    @memset(dst, 0);
-    @memcpy(dst[0..path.len], path);
-    @memcpy(dst[path.len..][0..suffix.len], suffix);
-    return true;
-}
-
-fn copyFileNative(src_path: [*c]const u8, dst_path: [*c]const u8) bool {
-    const src_fd = open(src_path, O_RDONLY_ANDROID, 0);
-    if (src_fd < 0) return false;
-    defer _ = close(src_fd);
-
-    const dst_fd = open(dst_path, O_CREAT_ANDROID | O_TRUNC_ANDROID | O_RDWR_ANDROID, 0o644);
-    if (dst_fd < 0) return false;
-    defer _ = close(dst_fd);
-
-    var buffer: [16 * 1024]u8 = undefined;
-    while (true) {
-        const n = read(src_fd, &buffer, buffer.len);
-        if (n < 0) return false;
-        if (n == 0) break;
-        if (!writeAllFd(dst_fd, buffer[0..@intCast(n)])) return false;
-    }
-    return true;
-}
-
-fn pathJoin(dst: *[1024:0]u8, dir_path: [*c]const u8, name: []const u8) bool {
-    const dir = std.mem.span(dir_path);
-    const slash_len: usize = if (dir.len > 0 and dir[dir.len - 1] == '/') 0 else 1;
-    if (dir.len + slash_len + name.len >= dst.len) return false;
-    @memset(dst, 0);
-    @memcpy(dst[0..dir.len], dir);
-    var offset = dir.len;
-    if (slash_len == 1) {
-        dst[offset] = '/';
-        offset += 1;
-    }
-    @memcpy(dst[offset..][0..name.len], name);
-    return true;
-}
-
-fn fileSizeNative(path: [*c]const u8) i64 {
-    const fd = open(path, O_RDONLY_ANDROID, 0);
-    if (fd < 0) return 0;
-    defer _ = close(fd);
-    const size = lseek64(fd, 0, SEEK_END_ANDROID);
-    return @max(size, 0);
-}
-
-fn availableBytesNative(path: [*c]const u8) i64 {
-    var stats: c.struct_statvfs = undefined;
-    if (c.statvfs(path, &stats) != 0) return -1;
-    const block_size: u128 = if (stats.f_frsize > 0) @intCast(stats.f_frsize) else @intCast(stats.f_bsize);
-    const available_blocks: u128 = @intCast(stats.f_bavail);
-    const bytes = block_size * available_blocks;
-    return if (bytes > @as(u128, @intCast(std.math.maxInt(i64)))) std.math.maxInt(i64) else @intCast(bytes);
-}
-
-fn deleteNativeFile(path: [*c]const u8) i64 {
-    const size = fileSizeNative(path);
-    if (unlink(path) != 0) return 0;
-    return size;
-}
-
-fn deleteThumbnailSidecarsNative(video_path: [*c]const u8) i64 {
-    const video = std.mem.span(video_path);
-    const base_len = if (std.mem.endsWith(u8, video, ".mp4")) video.len - 4 else video.len;
-    var deleted: i64 = 0;
-    const exts = [_][]const u8{ ".bmp", ".jpg", ".jpeg" };
-    for (exts) |ext| {
-        var sidecar: [1024:0]u8 = [_:0]u8{0} ** 1024;
-        if (base_len + ext.len >= sidecar.len) continue;
-        @memcpy(sidecar[0..base_len], video[0..base_len]);
-        @memcpy(sidecar[base_len..][0..ext.len], ext);
-        deleted += deleteNativeFile(&sidecar);
-    }
-    return deleted;
-}
 
 fn pathNeededByPendingEmergency(path: [*c]const u8) bool {
     const candidate = std.mem.span(path);
@@ -1008,7 +603,7 @@ fn encodeThumbnailCapture(capture: *const ThumbnailCapture) bool {
     const rgb: [*]u8 = @ptrCast(rgb_raw);
 
     var temp_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    if (!appendPathSuffix(&temp_path, &capture.path, ".tmp")) {
+    if (!files.appendPathSuffix(&temp_path, &capture.path, ".tmp")) {
         loge("thumbnail temp path too long path={s}", .{std.mem.sliceTo(&capture.path, 0)});
         return false;
     }
@@ -1024,7 +619,7 @@ fn encodeThumbnailCapture(capture: *const ThumbnailCapture) bool {
     var sink = jpeg.Sink{ .context = @ptrCast(&fd_context), .writeFn = jpegWriteContext };
     const encoded = jpeg.writeRgbJpeg(&sink, capture.width, capture.height, rgb[0..capture.bytes], 82);
     const closed = close(fd) == 0;
-    if (!encoded or !closed or fileSizeNative(&temp_path) <= 0) {
+    if (!encoded or !closed or files.fileSize(&temp_path) <= 0) {
         _ = unlink(&temp_path);
         loge("thumbnail native jpg encode failed path={s}", .{std.mem.sliceTo(&capture.path, 0)});
         return false;
@@ -1035,7 +630,7 @@ fn encodeThumbnailCapture(capture: *const ThumbnailCapture) bool {
         loge("thumbnail rename failed path={s}", .{std.mem.sliceTo(&capture.path, 0)});
         return false;
     }
-    logi("thumbnail native jpg generated path={s} size={d}x{d} bytes={d}", .{ std.mem.sliceTo(&capture.path, 0), capture.width, capture.height, fileSizeNative(&capture.path) });
+    logi("thumbnail native jpg generated path={s} size={d}x{d} bytes={d}", .{ std.mem.sliceTo(&capture.path, 0), capture.width, capture.height, files.fileSize(&capture.path) });
     return true;
 }
 
@@ -2433,177 +2028,6 @@ var g_native_camera_capture_callbacks = c.ACameraCaptureSession_captureCallbacks
     .onCaptureBufferLost = onNativeCaptureBufferLost,
 };
 
-fn selectVideoTrackNative(extractor: *c.AMediaExtractor) ?usize {
-    const count = c.AMediaExtractor_getTrackCount(extractor);
-    var i: usize = 0;
-    while (i < count) : (i += 1) {
-        const format = c.AMediaExtractor_getTrackFormat(extractor, i) orelse continue;
-        defer _ = c.AMediaFormat_delete(format);
-        var mime_ptr: [*c]const u8 = null;
-        if (c.AMediaFormat_getString(format, c.AMEDIAFORMAT_KEY_MIME, &mime_ptr) and mime_ptr != null) {
-            const mime = std.mem.span(mime_ptr);
-            if (std.mem.startsWith(u8, mime, "video/")) return i;
-        }
-    }
-    return null;
-}
-
-fn frameDurationUsNative(format: *c.AMediaFormat) i64 {
-    var fps: i32 = 24;
-    if (!c.AMediaFormat_getInt32(format, c.AMEDIAFORMAT_KEY_FRAME_RATE, &fps) or fps <= 0) fps = 24;
-    return @divTrunc(1_000_000, @as(i64, fps));
-}
-
-fn closeMuxer(muxer: ?*c.AMediaMuxer, started: bool) bool {
-    if (muxer) |m| {
-        var ok = true;
-        if (started) {
-            const status = c.AMediaMuxer_stop(m);
-            if (status != c.AMEDIA_OK) {
-                setError("AMediaMuxer_stop failed status={d}", .{status});
-                ok = false;
-            }
-        }
-        _ = c.AMediaMuxer_delete(m);
-        return ok;
-    }
-    return false;
-}
-
-fn fileExistsNative(path: [*:0]const u8) bool {
-    const fd = open(path, O_RDONLY_ANDROID, 0);
-    if (fd < 0) return false;
-    _ = close(fd);
-    return true;
-}
-
-fn extractEmergencyClipNative(output_path: [*c]const u8, clip_start_ms: i64, clip_end_ms: i64, source_paths: [*]const [*c]const u8, source_start_ms: [*]const c.jlong, source_end_ms: [*]const c.jlong, count: usize) c.jlong {
-    if (clip_end_ms <= clip_start_ms or count == 0) {
-        setErrorSlice("invalid emergency clip window");
-        return -1;
-    }
-
-    const fd = open(output_path, O_CREAT_ANDROID | O_TRUNC_ANDROID | O_RDWR_ANDROID, 0o644);
-    if (fd < 0) {
-        setErrorSlice("open emergency output failed");
-        return -1;
-    }
-    defer _ = close(fd);
-
-    var muxer: ?*c.AMediaMuxer = c.AMediaMuxer_new(fd, c.AMEDIAMUXER_OUTPUT_FORMAT_MPEG_4);
-    if (muxer == null) {
-        setErrorSlice("AMediaMuxer_new emergency failed");
-        return -1;
-    }
-
-    const raw_buffer = malloc(SAMPLE_BUFFER_BYTES) orelse {
-        _ = closeMuxer(muxer, false);
-        setErrorSlice("malloc emergency sample buffer failed");
-        return -1;
-    };
-    defer free(raw_buffer);
-    const buffer: [*]u8 = @ptrCast(raw_buffer);
-
-    var muxer_started = false;
-    var muxer_track: isize = -1;
-    var next_presentation_us: i64 = 0;
-    var written_samples: c.jlong = 0;
-
-    var source_index: usize = 0;
-    while (source_index < count) : (source_index += 1) {
-        const source_start = source_start_ms[source_index];
-        const source_end = source_end_ms[source_index];
-        if (source_end <= clip_start_ms or source_start >= clip_end_ms) continue;
-
-        const extractor = c.AMediaExtractor_new() orelse continue;
-        defer _ = c.AMediaExtractor_delete(extractor);
-        const source_fd = open(source_paths[source_index], O_RDONLY_ANDROID, 0);
-        if (source_fd < 0) {
-            setError("open emergency source failed index={d}", .{source_index});
-            continue;
-        }
-        defer _ = close(source_fd);
-        const source_len = lseek64(source_fd, 0, SEEK_END_ANDROID);
-        _ = lseek64(source_fd, 0, SEEK_SET_ANDROID);
-        if (source_len <= 0) {
-            setError("emergency source invalid length={d} index={d}", .{ source_len, source_index });
-            continue;
-        }
-        const ds_status = c.AMediaExtractor_setDataSourceFd(extractor, source_fd, 0, source_len);
-        if (ds_status != c.AMEDIA_OK) {
-            setError("AMediaExtractor_setDataSourceFd failed status={d}", .{ds_status});
-            continue;
-        }
-        const track = selectVideoTrackNative(extractor) orelse continue;
-        const format = c.AMediaExtractor_getTrackFormat(extractor, track) orelse continue;
-        defer _ = c.AMediaFormat_delete(format);
-
-        if (!muxer_started) {
-            muxer_track = c.AMediaMuxer_addTrack(muxer.?, format);
-            if (muxer_track < 0) {
-                _ = closeMuxer(muxer, false);
-                setError("AMediaMuxer_addTrack emergency failed track={d}", .{muxer_track});
-                return -1;
-            }
-            const start_status = c.AMediaMuxer_start(muxer.?);
-            if (start_status != c.AMEDIA_OK) {
-                _ = closeMuxer(muxer, false);
-                setError("AMediaMuxer_start emergency failed status={d}", .{start_status});
-                return -1;
-            }
-            muxer_started = true;
-        }
-
-        const select_status = c.AMediaExtractor_selectTrack(extractor, track);
-        if (select_status != c.AMEDIA_OK) continue;
-        const source_clip_start_us = @max(clip_start_ms - source_start, 0) * 1000;
-        const source_clip_end_us = @min(clip_end_ms - source_start, source_end - source_start) * 1000;
-        if (source_clip_end_us <= 0 or source_clip_start_us >= source_clip_end_us) continue;
-        _ = c.AMediaExtractor_seekTo(extractor, source_clip_start_us, c.AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC);
-
-        var base_sample_time_us: i64 = std.math.minInt(i64);
-        var last_written_relative_us: i64 = std.math.minInt(i64);
-        const frame_duration_us = frameDurationUsNative(format);
-        while (true) {
-            const sample_track = c.AMediaExtractor_getSampleTrackIndex(extractor);
-            if (sample_track < 0) break;
-            if (@as(usize, @intCast(sample_track)) != track) {
-                if (!c.AMediaExtractor_advance(extractor)) break;
-                continue;
-            }
-            const sample_time_us = c.AMediaExtractor_getSampleTime(extractor);
-            if (sample_time_us < 0 or sample_time_us >= source_clip_end_us) break;
-            if (base_sample_time_us == std.math.minInt(i64)) base_sample_time_us = sample_time_us;
-            const relative_us = @max(sample_time_us - base_sample_time_us, 0);
-            const sample_size = c.AMediaExtractor_readSampleData(extractor, buffer, SAMPLE_BUFFER_BYTES);
-            if (sample_size > 0) {
-                var info = c.AMediaCodecBufferInfo{
-                    .offset = 0,
-                    .size = @intCast(sample_size),
-                    .presentationTimeUs = next_presentation_us + relative_us,
-                    .flags = @intCast(c.AMediaExtractor_getSampleFlags(extractor)),
-                };
-                const status = c.AMediaMuxer_writeSampleData(muxer.?, @intCast(muxer_track), buffer, &info);
-                if (status != c.AMEDIA_OK) {
-                    _ = closeMuxer(muxer, muxer_started);
-                    setError("AMediaMuxer_writeSampleData emergency failed status={d}", .{status});
-                    return -1;
-                }
-                written_samples += 1;
-                last_written_relative_us = relative_us;
-            }
-            if (!c.AMediaExtractor_advance(extractor)) break;
-        }
-        if (last_written_relative_us != std.math.minInt(i64)) next_presentation_us += last_written_relative_us + frame_duration_us;
-    }
-
-    const close_ok = closeMuxer(muxer, muxer_started);
-    muxer = null;
-    if (!close_ok or written_samples <= 0) return -1;
-    logi("native emergency clip extracted samples={d}", .{written_samples});
-    return written_samples;
-}
-
 fn resetInput(env: ?[*c]c.JNIEnv, p: *Pipe, index: usize, delete_texture: bool) void {
     if (index >= 4) return;
     const inp = &p.input[index];
@@ -2750,8 +2174,8 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startManagedRecording(e
         .reserved_bytes = reserved_bytes,
         .available_bytes = available_bytes,
     };
-    if (!copyCStringToBuffer(&config.output_dir, dir_chars)) return JNI_FALSE;
-    if (!copyCStringToBuffer(&config.suffix, suffix_chars)) return JNI_FALSE;
+    if (!files.copyCStringToBuffer(&config.output_dir, dir_chars)) return JNI_FALSE;
+    if (!files.copyCStringToBuffer(&config.suffix, suffix_chars)) return JNI_FALSE;
     const align_to_wall_clock_segment = std.mem.len(suffix_chars) == 0;
     const first = startRecordingSessionNative(handle, fps, segment_duration_ms, wall_clock_ms, align_to_wall_clock_segment);
     if (first <= 0) return JNI_FALSE;
@@ -3376,7 +2800,7 @@ fn nativeEmergencyExtractClipForDir(env: [*c]c.JNIEnv, output_dir: c.jstring, cl
             break :blk std.fmt.bufPrintZ(&final_path, "{s}/{s}_event{s}.mp4", .{ dir, timestamp_text, index_text }) catch continue;
         };
         const temp_name = std.fmt.bufPrintZ(&temp_path, "{s}.recording", .{final_name}) catch continue;
-        if (fileExistsNative(final_name) or fileExistsNative(temp_name)) continue;
+        if (emergency_clip.fileExists(final_name) or emergency_clip.fileExists(temp_name)) continue;
 
         var source_paths: [32][*c]const u8 = [_][*c]const u8{null} ** 32;
         var source_starts: [32]c.jlong = [_]c.jlong{0} ** 32;
@@ -3386,7 +2810,7 @@ fn nativeEmergencyExtractClipForDir(env: [*c]c.JNIEnv, output_dir: c.jstring, cl
             source_starts[i] = source.start_ms;
             source_ends[i] = source.end_ms;
         }
-        const written = extractEmergencyClipNative(temp_name, clip_start_ms, clip_end_ms, &source_paths, &source_starts, &source_ends, source_count);
+        const written = emergency_clip.extract(temp_name, clip_start_ms, clip_end_ms, &source_paths, &source_starts, &source_ends, source_count);
         if (written <= 0) {
             _ = unlink(temp_name);
             return null;
@@ -3398,13 +2822,13 @@ fn nativeEmergencyExtractClipForDir(env: [*c]c.JNIEnv, output_dir: c.jstring, cl
             return null;
         }
         var event_thumb: [1024:0]u8 = [_:0]u8{0} ** 1024;
-        if (thumbnailPathForVideo(&event_thumb, final_name)) {
+        if (files.thumbnailPathForVideo(&event_thumb, final_name)) {
             var copied_thumb = false;
             for (sources[0..source_count]) |source| {
                 var source_thumb: [1024:0]u8 = [_:0]u8{0} ** 1024;
-                if (!thumbnailPathForVideo(&source_thumb, &source.path)) continue;
+                if (!files.thumbnailPathForVideo(&source_thumb, &source.path)) continue;
                 _ = unlink(&event_thumb);
-                copied_thumb = copyFileNative(&source_thumb, &event_thumb);
+                copied_thumb = files.copyFile(&source_thumb, &event_thumb);
                 if (copied_thumb) break;
             }
             if (copied_thumb) {
@@ -3486,191 +2910,35 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeCleanupStorage(en
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeListPlaybackVideos(env: [*c]c.JNIEnv, _: c.jobject, scan_dirs: c.jobjectArray) callconv(.c) c.jobjectArray {
-    const string_class = env.*[0].FindClass.?(env, "java/lang/String") orelse return null;
-    if (scan_dirs == null) return env.*[0].NewObjectArray.?(env, 0, string_class, null);
-    const dir_count_jsize = getArrayLen(env, scan_dirs);
-    const result_raw = malloc(@sizeOf(PlaybackScanResult)) orelse return env.*[0].NewObjectArray.?(env, 0, string_class, null);
-    defer free(result_raw);
-    const result: *PlaybackScanResult = @ptrCast(@alignCast(result_raw));
-    result.* = PlaybackScanResult{};
-    var i: c.jsize = 0;
-    while (i < dir_count_jsize and result.count < result.paths.len) : (i += 1) {
-        const obj = env.*[0].GetObjectArrayElement.?(env, scan_dirs, i);
-        if (obj == null) continue;
-        defer env.*[0].DeleteLocalRef.?(env, obj);
-        const chars = env.*[0].GetStringUTFChars.?(env, obj, null) orelse continue;
-        defer env.*[0].ReleaseStringUTFChars.?(env, obj, chars);
-        scanPlaybackVideosNative(result, chars);
-    }
-    const arr = env.*[0].NewObjectArray.?(env, @intCast(result.count), string_class, null) orelse return null;
-    var out_i: usize = 0;
-    while (out_i < result.count) : (out_i += 1) {
-        const s = env.*[0].NewStringUTF.?(env, &result.paths[out_i]);
-        if (s != null) {
-            env.*[0].SetObjectArrayElement.?(env, arr, @intCast(out_i), s);
-            env.*[0].DeleteLocalRef.?(env, s);
-        }
-    }
-    return arr;
+    return playback_cache.listVideos(env, scan_dirs);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeListPlaybackImages(env: [*c]c.JNIEnv, _: c.jobject, scan_dirs: c.jobjectArray) callconv(.c) c.jobjectArray {
-    const string_class = env.*[0].FindClass.?(env, "java/lang/String") orelse return null;
-    if (scan_dirs == null) return env.*[0].NewObjectArray.?(env, 0, string_class, null);
-    const dir_count_jsize = getArrayLen(env, scan_dirs);
-    const result_raw = malloc(@sizeOf(PlaybackScanResult)) orelse return env.*[0].NewObjectArray.?(env, 0, string_class, null);
-    defer free(result_raw);
-    const result: *PlaybackScanResult = @ptrCast(@alignCast(result_raw));
-    result.* = PlaybackScanResult{};
-    var i: c.jsize = 0;
-    while (i < dir_count_jsize and result.count < result.paths.len) : (i += 1) {
-        const obj = env.*[0].GetObjectArrayElement.?(env, scan_dirs, i);
-        if (obj == null) continue;
-        defer env.*[0].DeleteLocalRef.?(env, obj);
-        const chars = env.*[0].GetStringUTFChars.?(env, obj, null) orelse continue;
-        defer env.*[0].ReleaseStringUTFChars.?(env, obj, chars);
-        scanPlaybackImagesNative(result, chars);
-    }
-    const arr = env.*[0].NewObjectArray.?(env, @intCast(result.count), string_class, null) orelse return null;
-    var out_i: usize = 0;
-    while (out_i < result.count) : (out_i += 1) {
-        const s = env.*[0].NewStringUTF.?(env, &result.paths[out_i]);
-        if (s != null) {
-            env.*[0].SetObjectArrayElement.?(env, arr, @intCast(out_i), s);
-            env.*[0].DeleteLocalRef.?(env, s);
-        }
-    }
-    return arr;
-}
-
-fn playbackCacheEntryNewerFirst(a: *const PlaybackCacheEntry, b: *const PlaybackCacheEntry) bool {
-    return std.mem.order(u8, std.mem.sliceTo(&a.name, 0), std.mem.sliceTo(&b.name, 0)) == .gt;
-}
-
-fn sortPlaybackCacheEntries(entries: []PlaybackCacheEntry) void {
-    if (entries.len < 2) return;
-    var i: usize = 0;
-    while (i + 1 < entries.len) : (i += 1) {
-        var best = i;
-        var j = i + 1;
-        while (j < entries.len) : (j += 1) {
-            if (playbackCacheEntryNewerFirst(&entries[j], &entries[best])) best = j;
-        }
-        if (best != i) std.mem.swap(PlaybackCacheEntry, &entries[i], &entries[best]);
-    }
-}
-
-fn ensurePlaybackCacheThumbnails(env: [*c]c.JNIEnv, result: *PlaybackCacheBuildResult) void {
-    var generated: i64 = 0;
-    for (result.entries[0..result.count]) |*entry| {
-        if (entry.thumbnail_size > 0) continue;
-        if (!generatePlaybackThumbnailWithBridge(env, &entry.path)) {
-            logd("native playback thumbnail skipped path={s}", .{std.mem.sliceTo(&entry.path, 0)});
-            continue;
-        }
-        var refreshed = PlaybackCacheEntry{};
-        if (!playbackEntryFromVideoPath(&refreshed, &entry.path) or refreshed.thumbnail_size <= 0) continue;
-        entry.* = refreshed;
-        generated += 1;
-    }
-    if (generated > 0) logi("native playback thumbnails generated={d}", .{generated});
-}
-
-fn nativeBuildPlaybackCacheJson(env: [*c]c.JNIEnv, scan_dirs: c.jobjectArray, ensure_thumbnails: bool) c.jstring {
-    if (scan_dirs == null) return env.*[0].NewStringUTF.?(env, "[]");
-    const dir_count_jsize = getArrayLen(env, scan_dirs);
-    const result_raw = malloc(@sizeOf(PlaybackCacheBuildResult)) orelse return null;
-    defer free(result_raw);
-    const result: *PlaybackCacheBuildResult = @ptrCast(@alignCast(result_raw));
-    result.* = PlaybackCacheBuildResult{};
-    var i: c.jsize = 0;
-    while (i < dir_count_jsize and result.count < result.entries.len) : (i += 1) {
-        const obj = env.*[0].GetObjectArrayElement.?(env, scan_dirs, i);
-        if (obj == null) continue;
-        defer env.*[0].DeleteLocalRef.?(env, obj);
-        const chars = env.*[0].GetStringUTFChars.?(env, obj, null) orelse continue;
-        defer env.*[0].ReleaseStringUTFChars.?(env, obj, chars);
-        buildPlaybackCacheNative(result, chars);
-    }
-    if (ensure_thumbnails) ensurePlaybackCacheThumbnails(env, result);
-    sortPlaybackCacheEntries(result.entries[0..result.count]);
-
-    const raw = malloc(PLAYBACK_CACHE_BUFFER_BYTES) orelse return null;
-    defer free(raw);
-    const buffer: [*]u8 = @ptrCast(raw);
-    var offset: usize = 0;
-    if (!appendJsonLiteral(buffer[0..PLAYBACK_CACHE_BUFFER_BYTES], &offset, "[")) return null;
-    for (result.entries[0..result.count], 0..) |entry, idx| {
-        if (idx > 0 and !appendJsonLiteral(buffer[0..PLAYBACK_CACHE_BUFFER_BYTES], &offset, ",")) return null;
-        if (!appendPlaybackCacheEntryJson(buffer[0..PLAYBACK_CACHE_BUFFER_BYTES], &offset, &entry)) return null;
-    }
-    if (!appendJsonLiteral(buffer[0..PLAYBACK_CACHE_BUFFER_BYTES], &offset, "]")) return null;
-    if (offset >= PLAYBACK_CACHE_BUFFER_BYTES) return null;
-    buffer[offset] = 0;
-    return env.*[0].NewStringUTF.?(env, @ptrCast(buffer));
+    return playback_cache.listImages(env, scan_dirs);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeBuildPlaybackCache(env: [*c]c.JNIEnv, _: c.jobject, scan_dirs: c.jobjectArray) callconv(.c) c.jstring {
-    return nativeBuildPlaybackCacheJson(env, scan_dirs, false);
+    return playback_cache.buildCacheJson(env, scan_dirs, false);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeBuildPlaybackCacheWithThumbnails(env: [*c]c.JNIEnv, _: c.jobject, scan_dirs: c.jobjectArray) callconv(.c) c.jstring {
-    return nativeBuildPlaybackCacheJson(env, scan_dirs, true);
+    return playback_cache.buildCacheJson(env, scan_dirs, true);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeBuildPlaybackEntry(env: [*c]c.JNIEnv, _: c.jobject, video_path: c.jstring) callconv(.c) c.jstring {
-    if (video_path == null) return null;
-    const chars = env.*[0].GetStringUTFChars.?(env, video_path, null) orelse return null;
-    defer env.*[0].ReleaseStringUTFChars.?(env, video_path, chars);
-    var entry = PlaybackCacheEntry{};
-    if (!playbackEntryFromVideoPath(&entry, chars)) return null;
-    var buffer: [2048:0]u8 = [_:0]u8{0} ** 2048;
-    var offset: usize = 0;
-    if (!appendPlaybackCacheEntryJson(buffer[0..], &offset, &entry)) return null;
-    if (offset >= buffer.len) return null;
-    buffer[offset] = 0;
-    return env.*[0].NewStringUTF.?(env, &buffer);
+    return playback_cache.buildEntry(env, video_path);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeEnsurePlaybackThumbnail(env: [*c]c.JNIEnv, _: c.jobject, video_path: c.jstring) callconv(.c) c.jstring {
-    if (video_path == null) return null;
-    const chars = env.*[0].GetStringUTFChars.?(env, video_path, null) orelse return null;
-    defer env.*[0].ReleaseStringUTFChars.?(env, video_path, chars);
-
-    var target_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    if (!thumbnailPathForVideo(&target_path, chars)) return null;
-    if (fileSizeNative(&target_path) <= 0 and !generatePlaybackThumbnailWithBridge(env, chars)) {
-        logd("native playback thumbnail ensure failed path={s}", .{std.mem.span(chars)});
-        return null;
-    }
-    if (fileSizeNative(&target_path) <= 0) return null;
-    return env.*[0].NewStringUTF.?(env, &target_path);
+    return playback_cache.ensureThumbnail(env, video_path);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeDeleteVideoAndSidecars(env: [*c]c.JNIEnv, _: c.jobject, video_path: c.jstring) callconv(.c) c.jboolean {
-    if (video_path == null) return JNI_FALSE;
-    const chars = env.*[0].GetStringUTFChars.?(env, video_path, null) orelse return JNI_FALSE;
-    defer env.*[0].ReleaseStringUTFChars.?(env, video_path, chars);
-    const deleted_video = deleteNativeFile(chars);
-    _ = deleteThumbnailSidecarsNative(chars);
-    return if (deleted_video > 0) JNI_TRUE else JNI_FALSE;
+    return playback_cache.deleteVideoAndSidecars(env, video_path);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeDeleteVideosAndBuildPlaybackCache(env: [*c]c.JNIEnv, _: c.jobject, video_paths: c.jobjectArray, scan_dirs: c.jobjectArray) callconv(.c) c.jstring {
-    if (video_paths != null) {
-        const path_count = getArrayLen(env, video_paths);
-        var i: c.jsize = 0;
-        while (i < path_count) : (i += 1) {
-            const obj = env.*[0].GetObjectArrayElement.?(env, video_paths, i);
-            if (obj == null) continue;
-            defer env.*[0].DeleteLocalRef.?(env, obj);
-            const chars = env.*[0].GetStringUTFChars.?(env, obj, null) orelse continue;
-            defer env.*[0].ReleaseStringUTFChars.?(env, obj, chars);
-            _ = deleteNativeFile(chars);
-            _ = deleteThumbnailSidecarsNative(chars);
-        }
-    }
-    return Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeBuildPlaybackCache(env, null, scan_dirs);
+    return playback_cache.deleteVideosAndBuildCache(env, video_paths, scan_dirs);
 }
 fn createNativeSegmentWriterForMime(width: c.jint, height: c.jint, fps: c.jint, bitrate: c.jint, mime_chars: [*c]const u8) c.jlong {
     return writer_mod.createForMime(width, height, fps, bitrate, mime_chars);
@@ -3681,7 +2949,7 @@ fn startNativeSegmentWriter(writer_handle: c.jlong, dir_chars: [*c]const u8, suf
 }
 
 fn setRecordingThumbnailPathForVideo(p: *Pipe, final_path: [*c]const u8) bool {
-    if (!thumbnailPathForVideo(&p.recording.thumbnail_path, final_path)) {
+    if (!files.thumbnailPathForVideo(&p.recording.thumbnail_path, final_path)) {
         setError("thumbnail path too long", .{});
         return false;
     }
@@ -3769,7 +3037,7 @@ fn addEmergencySourceNative(video_path: [*c]const u8, start_ms: i64, end_ms: i64
         g_emergency_source_count = g_emergency_sources.len - 1;
     }
     var next = EmergencySourceSegment{ .start_ms = start_ms, .end_ms = end_ms };
-    if (!copyCStringToBuffer(&next.path, video_path)) return;
+    if (!files.copyCStringToBuffer(&next.path, video_path)) return;
     g_emergency_sources[g_emergency_source_count] = next;
     g_emergency_source_count += 1;
 }
@@ -4290,7 +3558,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startNativeCameraRecord
         .reserved_bytes = reserved_bytes,
         .available_bytes = available_bytes,
     };
-    if (!copyCStringToBuffer(&config.output_dir, dir_chars)) return JNI_FALSE;
+    if (!files.copyCStringToBuffer(&config.output_dir, dir_chars)) return JNI_FALSE;
     if (!cameraBuildRecordingSuffix(&config.suffix, label_chars, suffix_chars)) return JNI_FALSE;
 
     const align_to_wall_clock_segment = std.mem.len(suffix_chars) == 0;

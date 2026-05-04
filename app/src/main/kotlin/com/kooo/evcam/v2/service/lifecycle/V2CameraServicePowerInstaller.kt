@@ -1,0 +1,66 @@
+package com.kooo.evcam.v2.service.lifecycle
+
+import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.service.camera.V2CameraWatchdog
+import com.kooo.evcam.v2.service.camera.V2WatchdogRestartOrchestrator
+import com.kooo.evcam.v2.service.display.V2DisplayPowerOrchestrator
+
+internal object V2CameraServicePowerInstaller {
+    fun install(graph: V2CameraServiceRuntimeGraph) {
+        graph.cameraWatchdog = V2CameraWatchdog(
+            handler = graph.mainHandler,
+            engine = graph.engine,
+            isDisplayPowerOn = { graph.isDisplayPowerOn() },
+            shouldExpectPreviewRendering = { recording -> graph.readinessOrchestrator.shouldExpectPreviewRendering(recording) },
+            onRestartRequired = { reason ->
+                graph.commandQueue.dispatch("watchdogRestart:$reason") {
+                    graph.watchdogRestartOrchestrator.restartCameras(reason)
+                }
+            }
+        )
+        graph.watchdogRestartOrchestrator = V2WatchdogRestartOrchestrator(
+            engine = graph.engine,
+            isDisplayPowerOn = { graph.isDisplayPowerOn() },
+            isAvoidanceActive = { graph.avoidanceController.isActive },
+            restoreMainPreviews = { graph.previewFacade.restorePreviewSurfaces() },
+            publishSnapshot = { reason -> graph.statusReporter.publishSnapshot(reason) },
+            dispatchDelayed = { name, delayMs, block ->
+                graph.commandQueue.dispatchDelayed(
+                    name,
+                    delayMs,
+                    V2WatchdogRestartOrchestrator.RECORDING_RESTART_TOKEN,
+                    block
+                )
+            },
+        )
+        graph.displayPowerOrchestrator = V2DisplayPowerOrchestrator(
+            displayPowerController = graph.displayPowerController,
+            isDisplayPowerOn = { graph.isDisplayPowerOn() },
+            isAutoRecordingEnabled = { graph.startupPolicy().autoStartRecording },
+            isRecording = { graph.engine.isRecording() },
+            isAvoidanceActive = { graph.avoidanceController.isActive },
+            avoidanceTarget = { graph.avoidanceController.activeTarget },
+            stopRecordingAndReleaseCameras = { reason -> graph.engine.stopRecordingAndReleaseCameras(reason) },
+            setCameraAccessAllowed = { allowed -> graph.engine.setCameraAccessAllowed(allowed) },
+            startRecording = { graph.engine.startRecording() },
+            publishSnapshot = { reason -> graph.statusReporter.publishSnapshot(reason) },
+            dispatchDelayed = { name, delayMs, block ->
+                graph.commandQueue.dispatchDelayed(
+                    name,
+                    delayMs,
+                    V2DisplayPowerOrchestrator.DISPLAY_ON_RECORDING_RESTORE_TOKEN,
+                    block
+                )
+            },
+            resetWatchdog = { reason -> graph.cameraWatchdog.reset(reason) },
+            startWatchdog = { graph.cameraWatchdog.start() },
+            cancelAutoRecording = { graph.autoRecordingController.cancelPending() },
+            scheduleAutoRecording = { graph.autoRecordingController.scheduleIfEnabled() },
+            clearAvoidance = { reason -> graph.avoidanceController.clear(reason) },
+            hideBlindSpot = { graph.blindSpotController.hide() },
+            hideFisheye = { graph.fisheyePreviewController.hide() },
+            restoreMainPreviews = { graph.previewFacade.restorePreviewSurfaces() },
+            saveLog = { V2AppLog.saveToPersistentLog(graph.service) },
+        )
+    }
+}
