@@ -10,6 +10,14 @@ import com.kooo.evcam.v2.log.V2AppLog
 
 object V2CameraCapabilityResolver {
     fun commonSupportedSurfaceTextureSizes(context: Context): List<Size> {
+        return supportedSurfaceTextureSizes(context, commonOnly = true)
+    }
+
+    fun allSupportedSurfaceTextureSizes(context: Context): List<Size> {
+        return supportedSurfaceTextureSizes(context, commonOnly = false)
+    }
+
+    private fun supportedSurfaceTextureSizes(context: Context, commonOnly: Boolean): List<Size> {
         val app = context.applicationContext
         val manager = app.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val ids = V2VehicleModelSettings.getModel(app).mapping.run { listOf(front, back, left, right) }.distinct()
@@ -19,7 +27,7 @@ object V2CameraCapabilityResolver {
         }
         val perCamera = ids.filter { it in availableIds }.mapNotNull { id -> supportedSizesForCamera(manager, id) }
         val common = perCamera.reduceOrNull { acc, sizes -> acc.intersect(sizes).toSet() }.orEmpty()
-        val source = if (common.isNotEmpty()) common else perCamera.flatten().toSet()
+        val source = if (commonOnly && common.isNotEmpty()) common else perCamera.flatten().toSet()
         return source
             .filter { it.width > 0 && it.height > 0 }
             .map { normalizeLandscape(it) }

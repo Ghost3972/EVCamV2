@@ -36,7 +36,7 @@ class V2RecordingSettingsSection(
             setPadding(0, cards.dp(12), 0, 0)
         }
         controls.addView(spinnerCell(
-            label = "分辨率",
+            label = "摄像头分辨率",
             labels = resolutionOptions.map { it.label },
             selectedIndex = resolutionOptions.indexOfFirst { it.value == V2RecordingSettings.resolution(activity) }.coerceAtLeast(0),
             onSelected = { index -> V2RecordingSettings.setResolution(activity, resolutionOptions[index].value); restartNotice(summaryText) }

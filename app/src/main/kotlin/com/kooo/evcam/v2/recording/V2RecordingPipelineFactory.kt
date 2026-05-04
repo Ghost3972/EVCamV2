@@ -5,13 +5,6 @@ import android.os.Handler
 import java.io.File
 
 object V2RecordingPipelineFactory {
-    data class CameraTarget(
-        val cameraHandle: Long,
-        val label: String,
-        val width: Int,
-        val height: Int,
-    )
-
     data class Config(
         val outputDir: File,
         val nativeHandle: Long,
@@ -22,7 +15,6 @@ object V2RecordingPipelineFactory {
         val recordingFps: Int,
         val segmentDurationMs: Long,
         val fileSuffix: String = "",
-        val cameraTargets: List<CameraTarget> = emptyList(),
     )
 
     fun create(

@@ -1,8 +1,12 @@
 package com.kooo.evcam.v2.settings
 
 import android.content.Context
+import android.graphics.Point
+import android.os.Build
 import android.util.Size
+import android.view.WindowManager
 import com.kooo.evcam.v2.log.V2AppLog
+import kotlin.math.min
 
 object V2RecordingSettings {
     private const val PREFS = "evcam_v2_recording_settings"
@@ -12,11 +16,14 @@ object V2RecordingSettings {
     private const val KEY_SEGMENT_MINUTES = "segment_minutes"
 
     private const val FALLBACK_RESOLUTION = "1280x720"
-    private const val MAX_PLAYBACK_COMPOSITE_WIDTH = 2560
-    private const val MAX_PLAYBACK_COMPOSITE_HEIGHT = 1440
     private const val COMPOSITE_COLUMNS = 2
     private const val COMPOSITE_ROWS = 2
+    private const val COMPOSITE_CAMERA_COUNT = COMPOSITE_COLUMNS * COMPOSITE_ROWS
     private const val DEFAULT_FPS = 15
+    private const val BASE_SINGLE_CAMERA_BITRATE_720P = 4_000_000L
+    private const val MIN_SINGLE_CAMERA_BITRATE = 2_000_000L
+    private const val MAX_SINGLE_CAMERA_BITRATE = 20_000_000L
+    private const val MAX_COMPOSITE_BITRATE = MAX_SINGLE_CAMERA_BITRATE * COMPOSITE_CAMERA_COUNT
     const val BITRATE_LOW = "low"
     const val BITRATE_MEDIUM = "medium"
     const val BITRATE_HIGH = "high"
@@ -26,7 +33,7 @@ object V2RecordingSettings {
         Option(BITRATE_MEDIUM, "标准"),
         Option(BITRATE_HIGH, "高")
     )
-    val fpsOptions = listOf(15)
+    val fpsOptions = listOf(15, 25)
     val segmentMinuteOptions = listOf(1, 3, 5, 10)
 
     fun resolution(context: Context): String {
@@ -72,15 +79,12 @@ object V2RecordingSettings {
     }
 
     fun supportedResolutionOptions(context: Context): List<Option> {
-        val supported = V2CameraCapabilityResolver.commonSupportedSurfaceTextureSizes(context)
-        val safeSupported = supported.filter { isPlaybackSafeCompositeSize(it) }
-        val options = safeSupported.map { Option(valueForSize(it), "${it.width}×${it.height}") }
+        val supported = V2CameraCapabilityResolver.allSupportedSurfaceTextureSizes(context)
+        val options = supported.map { Option(valueForSize(it), "${it.width}×${it.height}") }
         if (options.isNotEmpty()) return options
         val fallback = listOf(Size(1280, 720))
         return fallback.map { Option(valueForSize(it), "${it.width}×${it.height}") }
     }
-
-    private fun maxSupportedResolution(context: Context): String = supportedResolutionOptions(context).firstOrNull()?.value ?: FALLBACK_RESOLUTION
 
     fun recordingSize(context: Context, screenSize: Size): Size {
         val selected = parseSize(resolution(context))
@@ -96,24 +100,66 @@ object V2RecordingSettings {
     fun bitrate(context: Context, size: Size): Int = bitrateForLevel(size, bitrateLevel(context))
 
     fun bitrateOptionsWithMbps(context: Context): List<Option> {
-        val size = recordingSize(context, Size(1280, 720))
+        val screen = screenSize(context)
+        val size = recordingSize(context, screen)
         return bitrateOptions.map { option ->
-            Option(option.value, "${option.label}（${formatMbps(bitrateForLevel(size, option.value))}Mbps）")
+            val single = singleCameraBitrateForLevel(size, option.value)
+            val composite = compositeBitrateForLevel(size, option.value)
+            Option(option.value, "${option.label}（单路${formatMbps(single)}Mbps / 合成${formatMbps(composite)}Mbps）")
         }
     }
 
     fun summary(context: Context): String = V2SettingsFormatter.recordingSummary(context)
 
-    fun bitrateForLevel(size: Size, level: String): Int {
+    fun bitrateForLevel(size: Size, level: String): Int = singleCameraBitrateForLevel(size, level)
+
+    fun singleCameraBitrateForLevel(size: Size, level: String): Int {
         val basePixels = 1280L * 720L
         val pixels = size.width.toLong() * size.height.toLong()
-        val auto = ((2_500_000L * pixels) / basePixels).coerceAtLeast(2_500_000L).coerceAtMost(30_000_000L)
+        val auto = ((BASE_SINGLE_CAMERA_BITRATE_720P * pixels) / basePixels)
+            .coerceAtLeast(BASE_SINGLE_CAMERA_BITRATE_720P)
+            .coerceAtMost(MAX_SINGLE_CAMERA_BITRATE)
         val scaled = when (level) {
-            BITRATE_LOW -> (auto * 0.7).toLong()
+            BITRATE_LOW -> (auto * 0.75).toLong()
             BITRATE_HIGH -> (auto * 1.5).toLong()
             else -> auto
         }
-        return scaled.coerceAtLeast(1_500_000L).coerceAtMost(45_000_000L).toInt()
+        return scaled.coerceAtLeast(MIN_SINGLE_CAMERA_BITRATE).coerceAtMost(MAX_SINGLE_CAMERA_BITRATE).toInt()
+    }
+
+    fun compositeBitrateForLevel(cameraSize: Size, level: String): Int =
+        (singleCameraBitrateForLevel(cameraSize, level).toLong() * COMPOSITE_CAMERA_COUNT)
+            .coerceAtMost(MAX_COMPOSITE_BITRATE)
+            .toInt()
+
+    fun compositeOutputSize(cameraSize: Size, screenSize: Size): Size {
+        val ideal = evenSize(Size(cameraSize.width * COMPOSITE_COLUMNS, cameraSize.height * COMPOSITE_ROWS))
+        val max = evenSize(screenSize)
+        if (ideal.width <= max.width && ideal.height <= max.height) return ideal
+        val scale = min(max.width.toDouble() / ideal.width.toDouble(), max.height.toDouble() / ideal.height.toDouble())
+        return evenSize(Size(
+            (ideal.width * scale).toInt().coerceAtLeast(2),
+            (ideal.height * scale).toInt().coerceAtLeast(2),
+        ))
+    }
+
+    fun screenSize(context: Context): Size {
+        val fallback = Size(2560, 1600)
+        return runCatching {
+            val windowManager = context.applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = windowManager.currentWindowMetrics.bounds
+                Size(bounds.width(), bounds.height())
+            } else {
+                @Suppress("DEPRECATION")
+                val display = windowManager.defaultDisplay
+                val point = Point()
+                @Suppress("DEPRECATION")
+                display.getRealSize(point)
+                Size(point.x, point.y)
+            }
+            evenSize(raw)
+        }.getOrDefault(fallback)
     }
 
     private fun formatMbps(bitsPerSecond: Int): String {
@@ -131,10 +177,10 @@ object V2RecordingSettings {
         return if (width > 0 && height > 0) Size(width, height) else null
     }
     private fun valueForSize(size: Size) = "${size.width}x${size.height}"
-    private fun evenSize(size: Size) = Size(size.width - size.width % 2, size.height - size.height % 2)
-    private fun isPlaybackSafeCompositeSize(size: Size): Boolean =
-        size.width * COMPOSITE_COLUMNS <= MAX_PLAYBACK_COMPOSITE_WIDTH &&
-            size.height * COMPOSITE_ROWS <= MAX_PLAYBACK_COMPOSITE_HEIGHT
+    private fun evenSize(size: Size) = Size(
+        size.width.coerceAtLeast(2).let { it - it % 2 },
+        size.height.coerceAtLeast(2).let { it - it % 2 },
+    )
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     data class Option(val value: String, val label: String)

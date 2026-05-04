@@ -377,21 +377,6 @@ fn joinStalePreviewWorker(handle: c.jlong) void {
     if (thread) |t| joinWorkerThread(t, "preview stale", generation, 2000);
 }
 
-fn joinStaleRecordingWorker(handle: c.jlong) void {
-    var thread: ?std.Thread = null;
-    var generation: c.jlong = 0;
-    {
-        const p = lockPipeForHandle(handle) orelse return;
-        defer unlockPipe(p);
-        if (p.recording_worker_running or p.recording_worker_thread == null) return;
-        generation = p.recording_worker_generation;
-        thread = p.recording_worker_thread;
-        p.recording_worker_thread = null;
-        p.recording_worker_condition.broadcast(nativeIo());
-    }
-    if (thread) |t| joinWorkerThread(t, "recording stale", generation, 2000);
-}
-
 fn loge(comptime fmt: []const u8, args: anytype) void {
     var buf: [512:0]u8 = [_:0]u8{0} ** 512;
     const msg = std.fmt.bufPrintSentinel(&buf, fmt, args, 0) catch "log format error";
@@ -1544,7 +1529,6 @@ fn commitRecordingFrameSlotLocked(p: *Pipe, slot_index: usize, wall_clock_ms: i6
     p.recording_frame_queue_count += 1;
     p.recording_frame_queue_produced_count += 1;
     p.recording_frame_queue_max_depth = @max(p.recording_frame_queue_max_depth, @as(i64, @intCast(p.recording_frame_queue_count)));
-    p.recording_worker_condition.broadcast(nativeIo());
 }
 
 fn produceRecordingFrameToQueueLocked(p: *Pipe, wall_clock_ms: i64, steady_ms: i64) ?c.GLuint {
@@ -1568,10 +1552,6 @@ fn produceRecordingFrameToQueueLocked(p: *Pipe, wall_clock_ms: i64, steady_ms: i
     commitRecordingFrameSlotLocked(p, slot_index, wall_clock_ms);
     markRecordingFrameCaptureScheduledLocked(p, steady_ms);
     return slot.texture;
-}
-
-fn recordingFrameQueueProducerActiveLocked(p: *const Pipe) bool {
-    return p.preview_worker_running and !p.preview_worker_stop and p.composite_preview_surface != c.EGL_NO_SURFACE and p.composite_preview_window != null;
 }
 
 fn renderQueuedRecordingFrameLocked(p: *Pipe) c.jlong {
@@ -1731,7 +1711,7 @@ fn hasDirtyInput(p: *const Pipe) bool {
 fn updateDirtyInputsLocked(env: [*c]c.JNIEnv, p: *Pipe) bool {
     for (&p.input, 0..) |*inp, idx| {
         const force_recording_latch = p.recording.recording;
-        const preview_latches_input = p.preview_worker_running and p.preview_surface[idx] != c.EGL_NO_SURFACE and inp.has_latched_frame;
+        const preview_latches_input = p.preview_render_enabled and p.preview_worker_running and p.preview_surface[idx] != c.EGL_NO_SURFACE and inp.has_latched_frame;
         if (inp.surface_texture_native != null and preview_latches_input) {
             inp.encoder_generation = inp.frame_generation;
             continue;
@@ -1889,12 +1869,8 @@ fn releaseNativeCameraSessionLocked(cam: *NativeCameraPreview) void {
     cam.session = null;
     if (cam.request) |request| c.ACaptureRequest_free(request);
     cam.request = null;
-    if (cam.recording_target) |target| c.ACameraOutputTarget_free(target);
-    cam.recording_target = null;
     if (cam.target) |target| c.ACameraOutputTarget_free(target);
     cam.target = null;
-    if (cam.recording_output) |output| c.ACaptureSessionOutput_free(output);
-    cam.recording_output = null;
     if (cam.output) |output| c.ACaptureSessionOutput_free(output);
     cam.output = null;
     if (cam.outputs) |outputs| c.ACaptureSessionOutputContainer_free(outputs);
@@ -1902,25 +1878,8 @@ fn releaseNativeCameraSessionLocked(cam: *NativeCameraPreview) void {
     cam.sequence_id = -1;
 }
 
-fn detachNativeCameraRecordingWindowLocked(cam: *NativeCameraPreview) void {
-    const surface = cam.recording_egl_surface;
-    cam.recording_egl_surface = c.EGL_NO_SURFACE;
-    if (surface != c.EGL_NO_SURFACE and cam.pipe_handle != 0) {
-        if (lockPipeForHandle(cam.pipe_handle)) |p| {
-            if (p.current_surface == surface) clearCurrent(p);
-            if (p.display != c.EGL_NO_DISPLAY) _ = c.eglDestroySurface(p.display, surface);
-            unlockPipe(p);
-        }
-    }
-    if (cam.recording_window) |window| c.ANativeWindow_release(window);
-    cam.recording_window = null;
-    cam.recording_frame_index = 0;
-    cam.recording_last_presentation_time_ns = -1;
-}
-
-fn configureNativeCameraSessionLocked(cam: *NativeCameraPreview, record: bool) bool {
+fn configureNativeCameraSessionLocked(cam: *NativeCameraPreview) bool {
     if (cam.device == null or cam.window == null) return false;
-    _ = record;
     releaseNativeCameraSessionLocked(cam);
     var status = c.ACaptureSessionOutputContainer_create(&cam.outputs);
     if (status != c.ACAMERA_OK or cam.outputs == null) {
@@ -1968,7 +1927,6 @@ fn configureNativeCameraSessionLocked(cam: *NativeCameraPreview, record: bool) b
 }
 
 fn releaseNativeCameraResources(cam: *NativeCameraPreview) void {
-    detachNativeCameraRecordingWindowLocked(cam);
     releaseNativeCameraSessionLocked(cam);
     if (cam.device) |device| _ = c.ACameraDevice_close(device);
     cam.device = null;
@@ -2313,7 +2271,6 @@ fn applyRecordingWorkerEventLocked(p: *Pipe, generation: c.jlong, event: c.jlong
     if (event < 0) {
         p.recording_worker_last_event = WORKER_ERROR_TICK_RENDER_DRAIN;
         p.recording_worker_stop = true;
-        p.recording_worker_condition.broadcast(nativeIo());
         return false;
     }
     if (event == 0) return false;
@@ -2327,113 +2284,6 @@ fn setRecordingWorkerTickErrorLocked(p: *Pipe, generation: c.jlong) void {
     if (p.recording_worker_generation != generation or !p.recording_worker_running) return;
     p.recording_worker_last_event = WORKER_ERROR_TICK_RENDER_DRAIN;
     p.recording_worker_stop = true;
-    p.recording_worker_condition.broadcast(nativeIo());
-}
-
-fn recordingWorkerLoop(handle: c.jlong, generation: c.jlong) void {
-    const env = attachWorkerEnv() orelse {
-        setErrorSlice("recording worker failed to attach JNI env");
-        if (lockPipeForHandle(handle)) |p| {
-            defer unlockPipe(p);
-            if (p.recording_worker_generation == generation) {
-                p.recording_worker_running = false;
-                p.recording_worker_last_event = WORKER_ERROR_THREAD_ATTACH;
-                p.recording_worker_stop = true;
-                p.recording_worker_writer_handle = 0;
-                p.recording_worker_next_deadline_ms = 0;
-                p.recording_worker_condition.broadcast(nativeIo());
-            }
-        }
-        return;
-    };
-    defer detachWorkerEnv();
-
-    const worker_pipe = lockPipeForHandle(handle) orelse return;
-    unlockPipe(worker_pipe);
-
-    var next_deadline_ms = nowMs();
-    while (true) {
-        var writer_handle: c.jlong = 0;
-        var fps: i32 = 15;
-        var event: c.jlong = 0;
-        var used_queue_frame = false;
-        lockPipeForRecordingWorker(worker_pipe);
-        if (!worker_pipe.recording_worker_running or worker_pipe.recording_worker_generation != generation or worker_pipe.recording_worker_stop or !worker_pipe.recording.recording) {
-            unlockPipe(worker_pipe);
-            break;
-        }
-        writer_handle = worker_pipe.recording_worker_writer_handle;
-        fps = worker_pipe.recording.fps;
-        if (worker_pipe.recording_worker_paused_for_segment or writer_handle == 0) {
-            worker_pipe.recording_worker_condition.waitUncancelable(nativeIo(), &worker_pipe.lock);
-            unlockPipe(worker_pipe);
-            continue;
-        }
-        if (worker_pipe.recording_frame_queue_count > 0) {
-            if (recordingWouldCrowdCompositePreviewLocked(worker_pipe)) {
-                worker_pipe.recording_preview_yield_count += 1;
-                unlockPipe(worker_pipe);
-                sleepMs(1);
-                continue;
-            }
-            event = renderQueuedRecordingFrameLocked(worker_pipe);
-            used_queue_frame = event != 0;
-        } else if (recordingFrameQueueProducerActiveLocked(worker_pipe)) {
-            worker_pipe.recording_worker_condition.waitUncancelable(nativeIo(), &worker_pipe.lock);
-            unlockPipe(worker_pipe);
-            continue;
-        } else if (recordingWouldCrowdCompositePreviewLocked(worker_pipe)) {
-            worker_pipe.recording_preview_yield_count += 1;
-            unlockPipe(worker_pipe);
-            sleepMs(1);
-            continue;
-        } else {
-            worker_pipe.recording_frame_queue_fallback_count += 1;
-            event = recordingTickRenderLocked(env, worker_pipe, wallClockMs());
-        }
-        unlockPipe(worker_pipe);
-
-        if (event >= 0 and (event & TICK_SHOULD_RENDER) != 0 and writer_handle != 0) {
-            const drained = writer_mod.drainFast(writer_handle, 0);
-            if (drained < 0) {
-                event = -1;
-            } else {
-                const drained_capped: c.jlong = @min(drained, TICK_DRAINED_MASK);
-                event |= (drained_capped << TICK_DRAINED_SHIFT);
-            }
-        }
-
-        lockPipeForRecordingWorker(worker_pipe);
-        const should_switch = applyRecordingWorkerEventLocked(worker_pipe, generation, event);
-        const interval_ms_i64: i64 = @max(@divTrunc(1000, @max(fps, 1)), 1);
-        worker_pipe.recording_worker_next_deadline_ms = next_deadline_ms + interval_ms_i64;
-        unlockPipe(worker_pipe);
-
-        if (should_switch) {
-            const switched = managedSwitchSegment(handle);
-            if (!switched) {
-                lockPipeForRecordingWorker(worker_pipe);
-                setRecordingWorkerTickErrorLocked(worker_pipe, generation);
-                unlockPipe(worker_pipe);
-            }
-        }
-
-        if (used_queue_frame) {
-            next_deadline_ms = nowMs();
-        } else {
-            paceAfterTick(&next_deadline_ms, interval_ms_i64);
-        }
-    }
-
-    lockPipeForRecordingWorker(worker_pipe);
-    defer unlockPipe(worker_pipe);
-    if (worker_pipe.recording_worker_generation == generation) {
-        worker_pipe.recording_worker_running = false;
-        worker_pipe.recording_worker_stop = true;
-        worker_pipe.recording_worker_writer_handle = 0;
-        worker_pipe.recording_worker_next_deadline_ms = 0;
-        worker_pipe.recording_worker_condition.broadcast(nativeIo());
-    }
 }
 
 fn activePreviewCount(p: *const Pipe) usize {
@@ -2453,12 +2303,21 @@ fn nextPreviewIndex(p: *const Pipe, start_index: usize) ?usize {
     return null;
 }
 
-fn recordingWouldCrowdCompositePreviewLocked(p: *const Pipe) bool {
-    if (!p.preview_worker_running or p.composite_preview_surface == c.EGL_NO_SURFACE or p.composite_preview_window == null) return false;
-    if (p.preview_worker_next_deadline_ms <= 0) return false;
-    const remaining_ms = p.preview_worker_next_deadline_ms - nowMs();
-    if (remaining_ms <= 0) return true;
-    return remaining_ms <= 8;
+fn recordingSchedulerActiveLocked(p: *const Pipe) bool {
+    return p.recording_worker_running and
+        !p.recording_worker_stop and
+        !p.recording_worker_paused_for_segment and
+        p.recording.recording and
+        p.recording.managed_native and
+        p.recording_worker_writer_handle != 0;
+}
+
+fn renderRecordingDueLocked(env: [*c]c.JNIEnv, p: *Pipe, steady_ms: i64, wall_clock_ms: i64) c.jlong {
+    if (!recordingFrameCaptureDueLocked(p, steady_ms)) return 0;
+    p.recording_frame_queue_fallback_count += 1;
+    const event = recordingTickRenderLocked(env, p, wall_clock_ms);
+    markRecordingFrameCaptureScheduledLocked(p, steady_ms);
+    return event;
 }
 
 fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
@@ -2469,6 +2328,13 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
             if (p.preview_worker_generation == generation) {
                 p.preview_worker_running = false;
                 p.preview_worker_stop = true;
+            }
+            if (p.recording_worker_running) {
+                p.recording_worker_last_event = WORKER_ERROR_THREAD_ATTACH;
+                p.recording_worker_running = false;
+                p.recording_worker_stop = true;
+                p.recording_worker_writer_handle = 0;
+                p.recording_worker_next_deadline_ms = 0;
             }
         }
         return;
@@ -2483,6 +2349,9 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
     while (true) {
         var interval_ms: i64 = 33;
         var rendered_any = false;
+        var recording_event: c.jlong = 0;
+        var recording_writer_handle: c.jlong = 0;
+        var recording_generation: c.jlong = 0;
         if (!tryLockPipe(worker_pipe)) {
             sleepMs(2);
             next_deadline_ms = nowMs();
@@ -2492,8 +2361,16 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
             unlockPipe(worker_pipe);
             break;
         }
-        const has_composite_preview = worker_pipe.composite_preview_surface != c.EGL_NO_SURFACE and worker_pipe.composite_preview_window != null;
-        if (has_composite_preview) {
+        const preview_enabled = worker_pipe.preview_render_enabled;
+        const recording_active = recordingSchedulerActiveLocked(worker_pipe);
+        if (recording_active) {
+            recording_writer_handle = worker_pipe.recording_worker_writer_handle;
+            recording_generation = worker_pipe.recording_worker_generation;
+            interval_ms = recordingTickIntervalMs(&worker_pipe.recording);
+        }
+
+        const has_composite_preview = preview_enabled and worker_pipe.composite_preview_surface != c.EGL_NO_SURFACE and worker_pipe.composite_preview_window != null;
+        if (preview_enabled and has_composite_preview) {
             interval_ms = @max(worker_pipe.preview_min_interval_ms, 1);
             const active_count = activePreviewCount(worker_pipe);
             const latched_once = active_count > 0;
@@ -2515,7 +2392,7 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
             } else {
                 worker_pipe.dropped_count += 1;
             }
-        } else {
+        } else if (preview_enabled) {
             const active_count = activePreviewCount(worker_pipe);
             if (active_count > 0) {
                 const base_interval_ms = @max(worker_pipe.preview_min_interval_ms, 1);
@@ -2527,8 +2404,48 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
                 }
             }
         }
+
+        if (recording_active) {
+            const steady_ms = nowMs();
+            const wall_clock_ms = wallClockMs();
+            if (worker_pipe.recording_frame_queue_count > 0) {
+                recording_event = renderQueuedRecordingFrameLocked(worker_pipe);
+            } else {
+                recording_event = renderRecordingDueLocked(env, worker_pipe, steady_ms, wall_clock_ms);
+            }
+            if (recording_event != 0) rendered_any = true;
+            worker_pipe.recording_worker_next_deadline_ms = worker_pipe.recording_frame_queue_next_capture_ms;
+        } else {
+            worker_pipe.recording_worker_next_deadline_ms = 0;
+        }
         worker_pipe.preview_worker_next_deadline_ms = next_deadline_ms + interval_ms;
         unlockPipe(worker_pipe);
+
+        if (recording_event >= 0 and (recording_event & TICK_SHOULD_RENDER) != 0 and recording_writer_handle != 0) {
+            const drained = writer_mod.drainFast(recording_writer_handle, 0);
+            if (drained < 0) {
+                recording_event = -1;
+            } else {
+                const drained_capped: c.jlong = @min(drained, TICK_DRAINED_MASK);
+                recording_event |= (drained_capped << TICK_DRAINED_SHIFT);
+            }
+        }
+
+        var should_switch = false;
+        if (recording_generation != 0 and recording_event != 0) {
+            lockPipeForRecordingWorker(worker_pipe);
+            should_switch = applyRecordingWorkerEventLocked(worker_pipe, recording_generation, recording_event);
+            unlockPipe(worker_pipe);
+        }
+
+        if (should_switch) {
+            const switched = managedSwitchSegment(handle);
+            if (!switched) {
+                lockPipeForRecordingWorker(worker_pipe);
+                setRecordingWorkerTickErrorLocked(worker_pipe, recording_generation);
+                unlockPipe(worker_pipe);
+            }
+        }
 
         if (rendered_any) {
             paceAfterTick(&next_deadline_ms, interval_ms);
@@ -2544,12 +2461,11 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
             p.preview_worker_running = false;
             p.preview_worker_stop = true;
             p.preview_worker_next_deadline_ms = 0;
-            p.recording_worker_condition.broadcast(nativeIo());
         }
     }
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startPreviewWorker(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean {
+fn startRenderWorkerNative(handle: c.jlong, fps: c.jint, enable_preview: bool) c.jboolean {
     joinStalePreviewWorker(handle);
     var generation: c.jlong = 0;
     var should_join_preview_thread = false;
@@ -2557,6 +2473,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startPreviewWorker(_: [
         const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
         defer unlockPipe(p);
         if (p.releasing) return JNI_FALSE;
+        if (enable_preview) p.preview_render_enabled = true;
         if (p.preview_worker_running) {
             if (!p.preview_worker_stop) return JNI_TRUE;
             setErrorSlice("preview worker is stopping");
@@ -2602,8 +2519,12 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startPreviewWorker(_: [
         thread.join();
         return JNI_FALSE;
     }
-    logd("preview worker started fps={d} generation={d}", .{ fps, generation });
+    logd("render worker started fps={d} generation={d} preview={d}", .{ fps, generation, if (enable_preview) @as(i32, 1) else @as(i32, 0) });
     return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startPreviewWorker(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, fps: c.jint) callconv(.c) c.jboolean {
+    return startRenderWorkerNative(handle, fps, true);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopPreviewWorker(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, timeout_ms: c.jlong) callconv(.c) c.jboolean {
@@ -2612,27 +2533,28 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopPreviewWorker(_: [*
     {
         const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
         defer unlockPipe(p);
+        p.preview_render_enabled = false;
+        if (recordingSchedulerActiveLocked(p)) {
+            return JNI_TRUE;
+        }
         generation = p.preview_worker_generation;
         p.preview_worker_running = false;
         p.preview_worker_stop = true;
         thread = p.preview_worker_thread;
         p.preview_worker_thread = null;
-        p.recording_worker_condition.broadcast(nativeIo());
     }
     if (thread) |t| joinWorkerThread(t, "preview", generation, timeout_ms);
     return JNI_TRUE;
 }
 
 fn startRecordingWorkerNative(handle: c.jlong, writer_handle: c.jlong, fps: c.jint) c.jboolean {
-    joinStaleRecordingWorker(handle);
     var generation: c.jlong = 0;
-    var should_join_recording_thread = false;
     {
         const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
         defer unlockPipe(p);
         if (p.releasing) return JNI_FALSE;
-        if (!p.recording.recording or !p.recording.managed_native or writer_handle == 0 or p.recording_worker_running or p.recording_worker_thread != null) {
-            setErrorSlice("recording worker start requires managed recording, writer, and idle worker");
+        if (!p.recording.recording or !p.recording.managed_native or writer_handle == 0 or p.recording_worker_running) {
+            setErrorSlice("recording scheduler start requires managed recording, writer, and idle scheduler");
             return JNI_FALSE;
         }
         p.recording_worker_running = true;
@@ -2644,10 +2566,9 @@ fn startRecordingWorkerNative(handle: c.jlong, writer_handle: c.jlong, fps: c.ji
         p.recording_worker_generation += 1;
         p.recording.fps = @min(@max(fps, 1), 120);
         generation = p.recording_worker_generation;
-        p.recording_worker_condition.broadcast(nativeIo());
     }
-
-    const thread = std.Thread.spawn(.{}, recordingWorkerLoop, .{ handle, generation }) catch |err| {
+    const worker_started = startRenderWorkerNative(handle, fps, false);
+    if (worker_started != JNI_TRUE) {
         if (lockPipeForHandle(handle)) |p| {
             defer unlockPipe(p);
             if (p.recording_worker_generation == generation) {
@@ -2657,29 +2578,9 @@ fn startRecordingWorkerNative(handle: c.jlong, writer_handle: c.jlong, fps: c.ji
                 p.recording_worker_next_deadline_ms = 0;
             }
         }
-        setError("recording worker spawn failed: {}", .{err});
-        return JNI_FALSE;
-    };
-    if (lockPipeForHandle(handle)) |p| {
-        defer unlockPipe(p);
-        if (p.recording_worker_generation == generation and p.recording_worker_running and !p.recording_worker_stop and !p.releasing) {
-            p.recording_worker_thread = thread;
-        } else {
-            p.recording_worker_running = false;
-            p.recording_worker_stop = true;
-            p.recording_worker_writer_handle = 0;
-            p.recording_worker_next_deadline_ms = 0;
-            should_join_recording_thread = true;
-            p.recording_worker_condition.broadcast(nativeIo());
-        }
-    } else {
-        should_join_recording_thread = true;
-    }
-    if (should_join_recording_thread) {
-        thread.join();
         return JNI_FALSE;
     }
-    logd("recording worker started writer={d} fps={d} generation={d}", .{ writer_handle, fps, generation });
+    logd("recording scheduler attached writer={d} fps={d} generation={d}", .{ writer_handle, fps, generation });
     return JNI_TRUE;
 }
 
@@ -2697,15 +2598,19 @@ fn stopRecordingWorkerNative(handle: c.jlong, timeout_ms: c.jlong) c.jlong {
         p.recording_worker_paused_for_segment = false;
         p.recording_worker_writer_handle = 0;
         p.recording_worker_next_deadline_ms = 0;
-        thread = p.recording_worker_thread;
-        p.recording_worker_thread = null;
-        p.recording_worker_condition.broadcast(nativeIo());
+        if (!p.preview_render_enabled) {
+            thread = p.preview_worker_thread;
+            p.preview_worker_thread = null;
+            p.preview_worker_running = false;
+            p.preview_worker_stop = true;
+            generation = p.preview_worker_generation;
+        }
     }
     if (thread) |t| {
-        joinWorkerThread(t, "recording", generation, timeout_ms);
+        joinWorkerThread(t, "render", generation, timeout_ms);
         if (lockPipeForHandle(handle)) |p| {
             defer unlockPipe(p);
-            if (p.recording_worker_generation == generation and p.recording_worker_last_event != 0) {
+            if (p.recording_worker_last_event != 0) {
                 event = p.recording_worker_last_event;
                 p.recording_worker_last_event = 0;
             }
@@ -3057,7 +2962,6 @@ fn managedConfigFromRecording(p: *Pipe) ManagedSegmentConfig {
 }
 
 fn managedFinalizeSegment(finalize: ManagedSegmentFinalize) i64 {
-    if (finalize.finalize_mode == 1) return managedFinalizeCameraStopSegment(finalize);
     if (finalize.writer_handle == 0) return finalize.config.available_bytes;
     const final_path_ptr: [*c]const u8 = &finalize.final_path;
     const ok = finishNativeSegmentWriterToPath(finalize.writer_handle, final_path_ptr);
@@ -3124,273 +3028,6 @@ fn submitManagedFinalize(finalize: ManagedSegmentFinalize, drain_after_submit: b
         _ = managedFinalizeSegment(finalize);
     }
     if (drain_after_submit) _ = finalize_queue.drain();
-}
-
-fn managedFinalizeCameraStopSegment(finalize: ManagedSegmentFinalize) i64 {
-    if (finalize.writer_handle == 0) return finalize.config.available_bytes;
-    const final_path_ptr: [*c]const u8 = &finalize.final_path;
-    _ = writer_mod.drainFast(finalize.writer_handle, 10_000);
-    const result = finishNativeSegmentWriterSegmentOnly(finalize.writer_handle, final_path_ptr);
-    _ = releaseNativeSegmentWriterHandle(finalize.writer_handle);
-    switch (result) {
-        .finalized => {
-            addEmergencySourceNative(final_path_ptr, finalize.start_ms, finalize.end_ms, finalize.end_ms - finalize.config.segment_duration_ms * 3);
-            var deleted_count: i64 = 0;
-            var deleted_bytes: i64 = 0;
-            const available = cleanupStorageNative(&finalize.config.output_dir, finalize.config.reserved_bytes, finalize.config.available_bytes, final_path_ptr, &deleted_count, &deleted_bytes);
-            if (deleted_count > 0) logi("camera cleanup deleted={d} freed={d} available={d}", .{ deleted_count, deleted_bytes, available });
-            notifySegmentCacheFinalized(final_path_ptr);
-            return available;
-        },
-        .skipped_empty => {
-            logd("camera stop skipped empty segment writer={d} path={s}", .{ finalize.writer_handle, final_path_ptr });
-            return finalize.config.available_bytes;
-        },
-        .failed => {
-            loge("camera stop segment finalize failed writer={d} path={s}", .{ finalize.writer_handle, final_path_ptr });
-            return finalize.config.available_bytes;
-        },
-    }
-}
-
-fn cameraBuildRecordingSuffix(out: *[64:0]u8, label_chars: [*c]const u8, suffix_chars: [*c]const u8) bool {
-    const label = std.mem.span(label_chars);
-    const suffix = std.mem.span(suffix_chars);
-    @memset(out[0..], 0);
-    if (label.len == 0) {
-        if (suffix.len >= out.len) return false;
-        @memcpy(out[0..suffix.len], suffix);
-        return true;
-    }
-    const text = if (suffix.len == 0)
-        std.fmt.bufPrintZ(out[0..], "_{s}", .{label}) catch return false
-    else
-        std.fmt.bufPrintZ(out[0..], "_{s}{s}", .{ label, suffix }) catch return false;
-    return text.len > 0;
-}
-
-fn cameraRecordingFinalizeLocked(cam: *NativeCameraPreview, end_ms: i64) ManagedSegmentFinalize {
-    if (cam.recording_writer_handle == 0) return .{};
-    const finalize = ManagedSegmentFinalize{
-        .writer_handle = cam.recording_writer_handle,
-        .final_path = cam.recording_final_path,
-        .start_ms = cam.recording_segment_start_ms,
-        .end_ms = end_ms,
-        .config = cam.recording_config,
-    };
-    cam.recording_writer_handle = 0;
-    cam.recording_final_path = [_:0]u8{0} ** 1024;
-    cam.recording_segment_start_ms = 0;
-    cam.recording_next_segment_ms = 0;
-    return finalize;
-}
-
-fn cameraRenderRecordingFrame(pipe_handle: c.jlong, input_index: c_int, surface: c.EGLSurface, width: i32, height: i32, fps: i32, frame_index: *i64, last_presentation_time_ns: *i64) bool {
-    if (pipe_handle == 0 or input_index < 0 or input_index >= 4 or surface == c.EGL_NO_SURFACE or width <= 0 or height <= 0) return false;
-    const p = lockPipeForHandle(pipe_handle) orelse return false;
-    defer unlockPipe(p);
-    const i: usize = @intCast(input_index);
-    if (p.releasing or p.input[i].surface_texture_native == null or p.input[i].texture == 0) {
-        setError("camera recording input unavailable pipe={d} input={d}", .{ pipe_handle, input_index });
-        return false;
-    }
-    const start_ms = nowMs();
-    if (!makeCurrent(p, surface)) return false;
-    if (!latchInputTextureLocked(&p.input[i])) {
-        clearCurrent(p);
-        return false;
-    }
-    p.input[i].encoder_generation = p.input[i].frame_generation;
-
-    var q = Quad{};
-    buildQuadForCanvas(&q, 0, 0, @floatFromInt(width), @floatFromInt(height), 0, @floatFromInt(width), @floatFromInt(height));
-    c.glViewport(0, 0, width, height);
-    c.glClearColor(0, 0, 0, 1);
-    c.glClear(c.GL_COLOR_BUFFER_BIT);
-    beginDrawPass(p);
-    drawQuadWithFisheye(p, i, &q, true);
-    if (CHECK_RENDER_GL_ERROR) if (glError("cameraRenderRecordingFrame")) |e| {
-        setErrorSlice(e);
-        clearCurrent(p);
-        return false;
-    };
-
-    if (g_presentation_time_android) |fnptr| {
-        const safe_fps: i64 = @max(fps, 1);
-        const min_step_ns = @max(@divTrunc(1_000_000_000, safe_fps), 1000);
-        var pts = @divTrunc(frame_index.* * 1_000_000_000, safe_fps);
-        if (pts <= last_presentation_time_ns.*) pts = last_presentation_time_ns.* + min_step_ns;
-        last_presentation_time_ns.* = pts;
-        _ = fnptr(p.display, surface, pts);
-    }
-
-    const ok = c.eglSwapBuffers(p.display, surface) != c.EGL_FALSE;
-    clearCurrent(p);
-    if (!ok) {
-        setErrorSlice(eglError("eglSwapBuffers camera recording failed"));
-        return false;
-    }
-    frame_index.* += 1;
-    p.encoder_render_count += 1;
-    p.render_count += 1;
-    p.last_render_ms = nowMs() - start_ms;
-    if (p.last_render_ms >= 80 or @mod(frame_index.*, 120) == 0) logi("camera record perf input={d} totalMs={d} frame={d}", .{ input_index, p.last_render_ms, frame_index.* });
-    return true;
-}
-
-fn cameraAttachRecordingWindowLocked(cam: *NativeCameraPreview, input_window: *c.ANativeWindow) bool {
-    detachNativeCameraRecordingWindowLocked(cam);
-    if (cam.pipe_handle == 0 or cam.input_index < 0 or cam.input_index >= 4) {
-        setError("native camera recording missing pipe/input handle={d} input={d}", .{ cam.pipe_handle, cam.input_index });
-        return false;
-    }
-    const p = lockPipeForHandle(cam.pipe_handle) orelse return false;
-    defer unlockPipe(p);
-    const i: usize = @intCast(cam.input_index);
-    if (p.releasing or p.input[i].surface_texture_native == null or p.input[i].texture == 0) {
-        setError("native camera recording input unavailable pipe={d} input={d}", .{ cam.pipe_handle, cam.input_index });
-        return false;
-    }
-    if (!initEgl(p)) return false;
-    const surface = c.eglCreateWindowSurface(p.display, p.config, input_window, null);
-    if (surface == c.EGL_NO_SURFACE) {
-        setErrorSlice(eglError("eglCreateWindowSurface camera recording failed"));
-        return false;
-    }
-    cam.recording_window = input_window;
-    cam.recording_egl_surface = surface;
-    cam.recording_frame_index = 0;
-    cam.recording_last_presentation_time_ns = -1;
-    logi("native camera recording attached singleStream camera={d} pipe={d} input={d}", .{ cam.handle, cam.pipe_handle, cam.input_index });
-    return true;
-}
-
-fn cameraSwitchRecordingSegment(cam: *NativeCameraPreview) bool {
-    var config: ManagedSegmentConfig = .{};
-    var old_finalize: ManagedSegmentFinalize = .{};
-    var segment_wall: i64 = 0;
-    var writer_handle: c.jlong = 0;
-    lockNativeCamera(cam);
-    if (cam.recording_writer_handle == 0 or cam.recording_worker_stop) {
-        unlockNativeCamera(cam);
-        return false;
-    }
-    config = cam.recording_config;
-    writer_handle = cam.recording_writer_handle;
-    segment_wall = cam.recording_next_segment_ms;
-    old_finalize = .{
-        .writer_handle = writer_handle,
-        .final_path = cam.recording_final_path,
-        .start_ms = cam.recording_segment_start_ms,
-        .end_ms = segment_wall,
-        .config = config,
-    };
-    unlockNativeCamera(cam);
-
-    _ = writer_mod.drainFast(writer_handle, 0);
-    const available = managedFinalizeSegmentKeepWriter(old_finalize);
-    lockNativeCamera(cam);
-    if (cam.recording_worker_stop or cam.recording_writer_handle != writer_handle) {
-        cam.recording_config.available_bytes = available;
-        unlockNativeCamera(cam);
-        return true;
-    }
-    unlockNativeCamera(cam);
-
-    var new_final_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    if (!startNativeSegmentWriter(writer_handle, &config.output_dir, &config.suffix, segment_wall, &new_final_path)) return false;
-
-    lockNativeCamera(cam);
-    if (cam.recording_writer_handle == writer_handle) {
-        cam.recording_final_path = new_final_path;
-        cam.recording_segment_start_ms = segment_wall;
-        cam.recording_next_segment_ms = if (cam.recording_worker_stop) 0 else segment_wall + config.segment_duration_ms;
-        if (!cam.recording_worker_stop) cam.recording_segment_index += 1;
-        cam.recording_config.available_bytes = available;
-    }
-    unlockNativeCamera(cam);
-    return true;
-}
-
-fn cameraRecordingWorkerLoop(cam: *NativeCameraPreview) void {
-    var next_deadline_ms = nowMs();
-    while (true) {
-        var writer_handle: c.jlong = 0;
-        var pipe_handle: c.jlong = 0;
-        var input_index: c_int = -1;
-        var surface: c.EGLSurface = c.EGL_NO_SURFACE;
-        var width: i32 = 0;
-        var height: i32 = 0;
-        var fps: i32 = 15;
-        var frame_index: i64 = 0;
-        var last_presentation_time_ns: i64 = -1;
-        var should_stop = false;
-        var should_switch = false;
-        lockNativeCamera(cam);
-        should_stop = cam.recording_worker_stop or cam.recording_writer_handle == 0;
-        writer_handle = cam.recording_writer_handle;
-        pipe_handle = cam.pipe_handle;
-        input_index = cam.input_index;
-        surface = cam.recording_egl_surface;
-        width = cam.recording_config.width;
-        height = cam.recording_config.height;
-        fps = cam.recording_config.fps;
-        frame_index = cam.recording_frame_index;
-        last_presentation_time_ns = cam.recording_last_presentation_time_ns;
-        should_switch = !should_stop and cam.recording_next_segment_ms > 0 and wallClockMs() >= cam.recording_next_segment_ms;
-        unlockNativeCamera(cam);
-        if (should_stop) break;
-        if (should_switch) {
-            if (!cameraSwitchRecordingSegment(cam)) {
-                lockNativeCamera(cam);
-                cam.recording_next_segment_ms = wallClockMs() + @max(cam.recording_config.segment_duration_ms, 1000);
-                unlockNativeCamera(cam);
-            }
-        } else if (writer_handle != 0) {
-            const rendered = cameraRenderRecordingFrame(pipe_handle, input_index, surface, width, height, fps, &frame_index, &last_presentation_time_ns);
-            const drained = if (rendered) writer_mod.drainFast(writer_handle, 0) else @as(c.jlong, 0);
-            if (rendered or drained > 0) {
-                lockNativeCamera(cam);
-                if (cam.recording_writer_handle == writer_handle) {
-                    cam.recording_frame_index = frame_index;
-                    cam.recording_last_presentation_time_ns = last_presentation_time_ns;
-                    if (drained > 0) cam.recording_drained_samples += @intCast(drained);
-                }
-                unlockNativeCamera(cam);
-            }
-        }
-        paceAfterTick(&next_deadline_ms, @max(@divTrunc(1000, @max(fps, 1)), 1));
-    }
-    lockNativeCamera(cam);
-    cam.recording_worker_running = false;
-    unlockNativeCamera(cam);
-}
-
-fn stopNativeCameraRecordingByPointer(cam: *NativeCameraPreview, stop_wall_clock_ms: i64, drain_after_submit: bool) bool {
-    var thread: ?std.Thread = null;
-    lockNativeCamera(cam);
-    if (cam.recording_writer_handle == 0 and !cam.recording_worker_running) {
-        unlockNativeCamera(cam);
-        return true;
-    }
-    cam.recording_worker_stop = true;
-    thread = cam.recording_worker_thread;
-    cam.recording_worker_thread = null;
-    unlockNativeCamera(cam);
-
-    if (thread) |t| t.join();
-
-    var finalize: ManagedSegmentFinalize = .{};
-    lockNativeCamera(cam);
-    finalize = cameraRecordingFinalizeLocked(cam, stop_wall_clock_ms);
-    finalize.finalize_mode = 1;
-    detachNativeCameraRecordingWindowLocked(cam);
-    cam.recording_worker_running = false;
-    cam.recording_worker_stop = false;
-    unlockNativeCamera(cam);
-    _ = drain_after_submit;
-    submitManagedFinalize(finalize, false);
-    return true;
 }
 
 fn managedSwitchSegment(handle: c.jlong) bool {
@@ -3511,7 +3148,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPrevi
     }
     cam.device = device;
 
-    if (!configureNativeCameraSessionLocked(&cam, false)) {
+    if (!configureNativeCameraSessionLocked(&cam)) {
         releaseNativeCameraResources(&cam);
         return 0;
     }
@@ -3539,107 +3176,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createNativeCameraPrevi
     return handle;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_startNativeCameraRecording(env: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong, output_dir: c.jstring, suffix: c.jstring, label: c.jstring, width: c.jint, height: c.jint, bitrate: c.jint, fps: c.jint, segment_duration_ms: c.jlong, wall_clock_ms: c.jlong, reserved_bytes: c.jlong, available_bytes: c.jlong) callconv(.c) c.jboolean {
-    if (output_dir == null or suffix == null or label == null or width <= 0 or height <= 0 or bitrate <= 0 or fps <= 0) return JNI_FALSE;
-    const dir_chars = env.*[0].GetStringUTFChars.?(env, output_dir, null) orelse return JNI_FALSE;
-    defer env.*[0].ReleaseStringUTFChars.?(env, output_dir, dir_chars);
-    const suffix_chars = env.*[0].GetStringUTFChars.?(env, suffix, null) orelse return JNI_FALSE;
-    defer env.*[0].ReleaseStringUTFChars.?(env, suffix, suffix_chars);
-    const label_chars = env.*[0].GetStringUTFChars.?(env, label, null) orelse return JNI_FALSE;
-    defer env.*[0].ReleaseStringUTFChars.?(env, label, label_chars);
-    _ = ensureSegmentCacheCallback(env);
-
-    var config = ManagedSegmentConfig{
-        .width = width,
-        .height = height,
-        .bitrate = bitrate,
-        .fps = @min(@max(fps, 1), 120),
-        .segment_duration_ms = if (segment_duration_ms <= 0) 60000 else segment_duration_ms,
-        .reserved_bytes = reserved_bytes,
-        .available_bytes = available_bytes,
-    };
-    if (!files.copyCStringToBuffer(&config.output_dir, dir_chars)) return JNI_FALSE;
-    if (!cameraBuildRecordingSuffix(&config.suffix, label_chars, suffix_chars)) return JNI_FALSE;
-
-    const align_to_wall_clock_segment = std.mem.len(suffix_chars) == 0;
-    const first = if (align_to_wall_clock_segment) floorToSegment(wall_clock_ms, config.segment_duration_ms) else wall_clock_ms;
-    var final_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    const writer_handle = managedCreateStartSegment(config, first, &final_path);
-    if (writer_handle == 0) return JNI_FALSE;
-    const input_window = acquireWriterInputWindow(writer_handle) orelse {
-        _ = releaseNativeSegmentWriterHandle(writer_handle);
-        return JNI_FALSE;
-    };
-
-    const cam = lockNativeCameraForHandle(camera_handle) orelse {
-        c.ANativeWindow_release(input_window);
-        _ = releaseNativeSegmentWriterHandle(writer_handle);
-        return JNI_FALSE;
-    };
-    var attached = false;
-    if (cam.recording_writer_handle == 0 and !cam.recording_worker_running) {
-        attached = cameraAttachRecordingWindowLocked(cam, input_window);
-        if (attached) {
-            cam.recording_config = config;
-            cam.recording_writer_handle = writer_handle;
-            cam.recording_final_path = final_path;
-            cam.recording_segment_start_ms = first;
-            cam.recording_next_segment_ms = first + config.segment_duration_ms;
-            cam.recording_segment_index = 0;
-            cam.recording_drained_samples = 0;
-            cam.recording_worker_stop = false;
-            cam.recording_worker_running = true;
-        }
-    }
-    unlockNativeCamera(cam);
-
-    if (!attached) {
-        c.ANativeWindow_release(input_window);
-        _ = releaseNativeSegmentWriterHandle(writer_handle);
-        return JNI_FALSE;
-    }
-
-    const thread = std.Thread.spawn(.{}, cameraRecordingWorkerLoop, .{cam}) catch |err| {
-        loge("camera recording worker spawn failed: {s}", .{@errorName(err)});
-        _ = stopNativeCameraRecordingByPointer(cam, wall_clock_ms, true);
-        return JNI_FALSE;
-    };
-    lockNativeCamera(cam);
-    cam.recording_worker_thread = thread;
-    unlockNativeCamera(cam);
-    logi("native camera recording started camera={d} writer={d} suffix={s} size={d}x{d} fps={d}", .{ camera_handle, writer_handle, &config.suffix, width, height, fps });
-    return JNI_TRUE;
-}
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_stopNativeCameraRecording(_: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong, _: c.jlong, stop_wall_clock_ms: c.jlong) callconv(.c) c.jboolean {
-    const cam = lockNativeCameraForHandle(camera_handle) orelse return JNI_FALSE;
-    unlockNativeCamera(cam);
-    return if (stopNativeCameraRecordingByPointer(cam, stop_wall_clock_ms, true)) JNI_TRUE else JNI_FALSE;
-}
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_snapshotNativeCameraRecording(env: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong) callconv(.c) c.jlongArray {
-    var values: [8]c.jlong = [_]c.jlong{0} ** 8;
-    if (lockNativeCameraForHandle(camera_handle)) |cam| {
-        values[0] = if (cam.recording_worker_running) 1 else 0;
-        values[1] = if (cam.recording_worker_stop) 1 else 0;
-        values[2] = cam.recording_writer_handle;
-        values[3] = cam.recording_segment_index;
-        values[4] = cam.recording_drained_samples;
-        values[5] = cam.recording_next_segment_ms;
-        values[6] = @intCast(cam.recording_config.width);
-        values[7] = @intCast(cam.recording_config.height);
-        unlockNativeCamera(cam);
-    }
-    const arr = env.*[0].NewLongArray.?(env, values.len) orelse return null;
-    env.*[0].SetLongArrayRegion.?(env, arr, 0, values.len, &values);
-    return arr;
-}
-
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseNativeCameraPreview(_: [*c]c.JNIEnv, _: c.jobject, camera_handle: c.jlong) callconv(.c) c.jboolean {
-    if (lockNativeCameraForHandle(camera_handle)) |cam_for_stop| {
-        unlockNativeCamera(cam_for_stop);
-        _ = stopNativeCameraRecordingByPointer(cam_for_stop, wallClockMs(), true);
-    }
     lockGlobal();
     var camera: ?*NativeCameraPreview = null;
     var camera_index: usize = 0;
@@ -3885,7 +3422,6 @@ fn detachCompositePreviewSurfaceLocked(p: *Pipe) void {
         c.ANativeWindow_release(w);
         p.composite_preview_window = null;
     }
-    p.recording_worker_condition.broadcast(nativeIo());
 }
 
 fn attachCompositePreviewSurfaceLocked(env: [*c]c.JNIEnv, p: *Pipe, surface: c.jobject) c.jboolean {
@@ -3974,7 +3510,7 @@ fn stopCompositorWorkersForRelease(env: [*c]c.JNIEnv, obj: c.jobject, handle: c.
     var preview_worker = false;
     if (lockPipeForHandle(handle)) |p| {
         managed_recording = p.recording.managed_native or p.recording.managed_writer_handle != 0;
-        recording_worker = p.recording_worker_running or p.recording_worker_thread != null;
+        recording_worker = p.recording_worker_running;
         preview_worker = p.preview_worker_running or p.preview_worker_thread != null;
         unlockPipe(p);
     } else return;
@@ -4065,7 +3601,6 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_releaseCompositor(env: 
     p.recording_worker_paused_for_segment = false;
     p.recording_worker_writer_handle = 0;
     p.recording_worker_next_deadline_ms = 0;
-    p.recording_worker_thread = null;
     p.preview_worker_running = false;
     p.preview_worker_stop = true;
     p.preview_worker_next_deadline_ms = 0;

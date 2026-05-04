@@ -27,7 +27,6 @@ internal class V2CameraPreviewSurfaceController(
             return
         }
         V2AppLog.d(TAG, "attach composite preview")
-        stopPreviewWorkerForSurfaceMutation("attachCompositePreview")
         if (!nativeCompositor.attachCompositePreview(surface)) {
             compositePreviewAttached = false
             V2AppLog.e(TAG, "attach composite preview failed: ${nativeCompositor.lastError()}")
@@ -42,7 +41,6 @@ internal class V2CameraPreviewSurfaceController(
 
     fun detachCompositePreviewSurface() {
         if (pipelineHandle == 0L) return
-        stopPreviewWorkerForSurfaceMutation("detachCompositePreview")
         compositePreviewAttached = false
         V2AppLog.d(TAG, "detach composite preview")
         nativeCompositor.detachCompositePreview()
@@ -59,7 +57,6 @@ internal class V2CameraPreviewSurfaceController(
         }
 
         V2AppLog.d(TAG, "attach preview ${slot.spec.name}/${slot.spec.cameraId}")
-        stopPreviewWorkerForSurfaceMutation("attachPreview")
         if (!nativeCompositor.attachPreview(index, surface, applyFisheye, applyNativeTransform)) {
             slot.previewAttached = false
             V2AppLog.e(TAG, "attach preview failed ${slot.spec.name}/${slot.spec.cameraId}: ${nativeCompositor.lastError()}")
@@ -75,7 +72,6 @@ internal class V2CameraPreviewSurfaceController(
     fun detachPreviewSurface(index: Int) {
         val slot = slots.getOrNull(index) ?: return
         if (pipelineHandle == 0L) return
-        stopPreviewWorkerForSurfaceMutation("detachPreview")
         slot.previewAttached = false
         V2AppLog.d(TAG, "detach preview ${slot.spec.name}/${slot.spec.cameraId}")
         nativeCompositor.detachPreview(index)
@@ -86,9 +82,6 @@ internal class V2CameraPreviewSurfaceController(
 
     fun detachAttachedPreviewsForCameraStop() {
         val attachedPreviewIndexes = slots.filter { it.previewAttached }.map { it.index }.toIntArray()
-        if (attachedPreviewIndexes.isNotEmpty() || compositePreviewAttached) {
-            stopPreviewWorkerForSurfaceMutation("stopCameras")
-        }
         if (attachedPreviewIndexes.isNotEmpty()) {
             runCatching { nativeCompositor.detachPreviews(attachedPreviewIndexes) }
                 .onFailure { V2AppLog.e(TAG, "batch detach preview failed", it) }
@@ -130,12 +123,6 @@ internal class V2CameraPreviewSurfaceController(
 
     fun stopPreviewWorkerForRelease() {
         runCatching { nativeCompositor.stopPreviewWorker() }
-    }
-
-    private fun stopPreviewWorkerForSurfaceMutation(reason: String) {
-        if (pipelineHandle == 0L) return
-        runCatching { nativeCompositor.stopPreviewWorker(1_000L) }
-            .onFailure { V2AppLog.w(TAG, "stop preview worker before surface mutation failed reason=$reason", it) }
     }
 
     private companion object {

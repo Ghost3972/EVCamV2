@@ -114,7 +114,6 @@ internal class V2CameraRecordingController(
                 recordingFps = fps,
                 segmentDurationMs = activeSegmentDurationMs,
                 fileSuffix = fileSuffix,
-                cameraTargets = emptyList(),
             ),
             onFailure = { message -> handleRecorderFailure(message) },
         )
