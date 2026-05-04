@@ -11,6 +11,7 @@ internal class V2CameraSlotLifecycle(
     private val cameraAccessAllowed: () -> Boolean,
     private val released: () -> Boolean,
     private val cameraGeneration: () -> Int,
+    private val targetPreviewFps: Int,
     private val publishStatus: () -> Unit,
 ) {
     fun restartPreviewAfterRecordingStop(slot: V2CameraSlot) {
@@ -47,8 +48,18 @@ internal class V2CameraSlotLifecycle(
         if (slot.nativeCameraHandle != 0L) return true
         val inputSurface = slot.inputSurface ?: return false
         if (!GlesNative.isLoaded) return false
+        val fixedFpsRange = V2CameraDeviceCapabilities.chooseFixedFpsRange(cameraManager, cameraId, targetPreviewFps)
         val startedMs = SystemClock.elapsedRealtime()
-        val handle = runCatching { GlesNative.createNativeCameraPreview(cameraId, inputSurface, pipelineHandle, slot.index) }
+        val handle = runCatching {
+            GlesNative.createNativeCameraPreview(
+                cameraId,
+                inputSurface,
+                pipelineHandle,
+                slot.index,
+                fixedFpsRange?.lower ?: 0,
+                fixedFpsRange?.upper ?: 0,
+            )
+        }
             .onFailure { V2AppLog.e(TAG, "NDK openCamera crashed ${slot.spec.name}/$cameraId", it) }
             .getOrDefault(0L)
         if (released() || !cameraAccessAllowed() || generation != cameraGeneration() || slot.inputSurface == null) {
@@ -61,7 +72,8 @@ internal class V2CameraSlotLifecycle(
         }
         slot.nativeCameraHandle = handle
         slot.lastPreviewError = "无"
-        V2AppLog.perf(TAG, "openNativeCamera", SystemClock.elapsedRealtime() - startedMs, "slot=${slot.spec.name}/${slot.spec.cameraId}")
+        val fpsText = fixedFpsRange?.let { "${it.lower}-${it.upper}" } ?: "default"
+        V2AppLog.perf(TAG, "openNativeCamera", SystemClock.elapsedRealtime() - startedMs, "slot=${slot.spec.name}/${slot.spec.cameraId} fpsRange=$fpsText")
         publishStatus()
         return true
     }

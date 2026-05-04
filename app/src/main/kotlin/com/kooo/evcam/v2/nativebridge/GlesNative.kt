@@ -66,7 +66,14 @@ object GlesNative {
     external fun snapshotRecordingWorker(handle: Long): LongArray
     external fun updateWatermarkBitmap(handle: Long, bitmap: Bitmap, x: Int, y: Int): Boolean
     external fun clearWatermarkBitmap(handle: Long): Boolean
-    external fun createNativeCameraPreview(cameraId: String, surface: Surface, nativeHandle: Long, inputIndex: Int): Long
+    external fun createNativeCameraPreview(
+        cameraId: String,
+        surface: Surface,
+        nativeHandle: Long,
+        inputIndex: Int,
+        fpsRangeLower: Int,
+        fpsRangeUpper: Int,
+    ): Long
     external fun releaseNativeCameraPreview(cameraHandle: Long): Boolean
     external fun nativeEmergencyRequest(startWallClockMs: Long, endWallClockMs: Long): Boolean
     external fun nativeEmergencyExtractPending(outputDir: String, stoppedAtWallClockMs: Long): Array<String>

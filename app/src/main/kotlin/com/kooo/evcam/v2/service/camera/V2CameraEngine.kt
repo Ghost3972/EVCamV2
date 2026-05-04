@@ -100,6 +100,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         cameraAccessAllowed = { cameraAccessAllowed },
         released = { released },
         cameraGeneration = { cameraGeneration },
+        targetPreviewFps = PREVIEW_MAX_FPS,
         publishStatus = { publishStatus() },
     )
     private val slotSetController = V2CameraSlotSetController(
@@ -130,7 +131,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         V2AppLog.i("V2CameraEngine", "init model=${specSet.modelLabel} specs=${specs.joinToString { "${it.label}:${it.cameraId}/rot${it.rotation}" }} perCameraSize=${recordingSize.width}x${recordingSize.height} outputSize=${compositeOutputSize.width}x${compositeOutputSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$segmentDurationMs codec=H.264 pipelineHandle=$pipelineHandle nativeLoaded=${V2NativeCompositor.isNativeLoaded()}")
         if (!nativeCompositor.isAvailable) V2AppLog.e("V2CameraEngine", "create compositor failed: ${V2NativeCompositor.nativeSummary()} lastError=${V2NativeCompositor.lastError()}")
         nativeRuntimeController.configure(logPrefix = "init")
-        previewSurfaceController.startInitialPreviewWorkerIfEnabled()
+        previewSurfaceController.startPreviewWorkerIfNeeded()
     }
 
     fun applyFisheyeSettings(fisheye: V2SettingsSnapshot.Fisheye? = null) {

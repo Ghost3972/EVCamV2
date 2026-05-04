@@ -96,7 +96,7 @@ internal class V2CameraPreviewSurfaceController(
         previewRenderingEnabled = enabled
         V2AppLog.d(TAG, "previewRenderingEnabled=$enabled")
         if (enabled) {
-            runCatching { nativeCompositor.startPreviewWorker(previewMaxFps) }
+            startPreviewWorkerIfNeeded()
         } else {
             runCatching { nativeCompositor.stopPreviewWorker() }
             renderHandler.post {
@@ -110,13 +110,13 @@ internal class V2CameraPreviewSurfaceController(
         }
     }
 
-    fun startInitialPreviewWorkerIfEnabled() {
-        if (previewRenderingEnabled) runCatching { nativeCompositor.startPreviewWorker(previewMaxFps) }
-    }
-
     fun startPreviewWorkerIfNeeded() {
         if (!previewRenderingEnabled || released() || pipelineHandle == 0L) return
-        if (!compositePreviewAttached && slots.none { it.previewAttached }) return
+        if (!hasAttachedPreviewSurface()) {
+            runCatching { nativeCompositor.stopPreviewWorker() }
+                .onFailure { V2AppLog.w(TAG, "stop idle preview worker after surface mutation failed", it) }
+            return
+        }
         runCatching { nativeCompositor.startPreviewWorker(previewMaxFps) }
             .onFailure { V2AppLog.w(TAG, "restart preview worker after surface mutation failed", it) }
     }
@@ -124,6 +124,8 @@ internal class V2CameraPreviewSurfaceController(
     fun stopPreviewWorkerForRelease() {
         runCatching { nativeCompositor.stopPreviewWorker() }
     }
+
+    private fun hasAttachedPreviewSurface(): Boolean = compositePreviewAttached || slots.any { it.previewAttached }
 
     private companion object {
         private const val TAG = "V2CameraEngine"

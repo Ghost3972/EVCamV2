@@ -67,6 +67,20 @@ object V2CameraDeviceCapabilities {
             ?: ranges.minWithOrNull(compareBy<Range<Int>> { abs(it.upper - desiredFps) }.thenBy { abs(it.lower - desiredFps) })
     }.getOrNull()
 
+    fun chooseFixedFpsRange(cameraManager: CameraManager, cameraId: String, desiredFps: Int): Range<Int>? = runCatching {
+        val ranges = cameraManager.getCameraCharacteristics(cameraId)
+            .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.toList()
+            .orEmpty()
+        if (ranges.isEmpty()) return@runCatching null
+        ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }
+            .also { selected ->
+                if (selected == null) {
+                    V2AppLog.w(TAG, "fixed ${desiredFps}fps range unavailable camera=$cameraId ranges=${ranges.joinToString { "${it.lower}-${it.upper}" }}")
+                }
+            }
+    }.onFailure { V2AppLog.e(TAG, "chooseFixedFpsRange failed camera=$cameraId", it) }.getOrNull()
+
     fun cameraIds(cameraManager: CameraManager): List<String> = try {
         cameraManager.cameraIdList.toList()
     } catch (error: CameraAccessException) {
