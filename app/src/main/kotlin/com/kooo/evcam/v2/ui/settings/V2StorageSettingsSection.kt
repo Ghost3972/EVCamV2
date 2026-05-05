@@ -10,12 +10,8 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -88,12 +84,7 @@ class V2StorageSettingsSection(
             textSize = 16f
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(Button(activity).apply {
-            text = "检测"
-            textSize = 16f
-            minHeight = cards.dp(44)
-            setOnClickListener { debugDialogs.show(currentPathText) }
-        }, LinearLayout.LayoutParams(cards.dp(120), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(cards.actionButton("检测", { debugDialogs.show(currentPathText) }, minWidthDp = 140, minHeightDp = 72), LinearLayout.LayoutParams(cards.dp(140), ViewGroup.LayoutParams.WRAP_CONTENT))
         return row
     }
 
@@ -116,6 +107,8 @@ class V2StorageSettingsSection(
             textSize = 16f
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
             setHintTextColor(ContextCompat.getColor(activity, R.color.text_secondary))
+            setBackgroundResource(R.drawable.v2_settings_field_bg)
+            setPadding(cards.dp(14), cards.dp(12), cards.dp(14), cards.dp(12))
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
@@ -145,29 +138,15 @@ class V2StorageSettingsSection(
             textSize = 16f
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        var initialized = false
-        var suppressSelection = false
-        var currentIndex = selectedIndex
-        val spinner = Spinner(activity).apply {
-            adapter = spinnerAdapter(labels)
-            setSelection(selectedIndex)
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    if (!initialized) { initialized = true; return }
-                    if (suppressSelection) return
-                    if (onSelected(position)) {
-                        currentIndex = position
-                    } else {
-                        suppressSelection = true
-                        setSelection(currentIndex)
-                        suppressSelection = false
-                    }
-                }
-                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            }
-        }
-        row.setOnClickListener { spinner.performClick() }
-        row.addView(spinner, LinearLayout.LayoutParams(cards.dp(240), ViewGroup.LayoutParams.WRAP_CONTENT))
+        val dropdown = cards.dropdownField(
+            labels = labels,
+            selectedIndex = selectedIndex,
+            onSelected = { },
+            canSelect = { position -> onSelected(position) },
+            widthDp = 240,
+        )
+        row.addView(dropdown, LinearLayout.LayoutParams(cards.dp(240), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.setOnClickListener { dropdown.performClick() }
         return row
     }
 
@@ -177,15 +156,4 @@ class V2StorageSettingsSection(
         ContextCompat.checkSelfPermission(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun spinnerAdapter(labels: List<String>) = object : ArrayAdapter<String>(activity, android.R.layout.simple_spinner_item, labels) {
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = styledText(super.getView(position, convertView, parent) as TextView, false)
-        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View = styledText(super.getDropDownView(position, convertView, parent) as TextView, true)
-        private fun styledText(view: TextView, dropdown: Boolean) = view.apply {
-            textSize = 16f
-            gravity = Gravity.CENTER
-            setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
-            setBackgroundColor(ContextCompat.getColor(activity, if (dropdown) R.color.card_background else R.color.input_background))
-            setPadding(cards.dp(12), cards.dp(10), cards.dp(12), cards.dp(10))
-        }
-    }
 }

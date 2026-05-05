@@ -91,6 +91,7 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         recordingController = recordingController,
         cameraAccessAllowed = { cameraAccessAllowed },
         released = { released },
+        compositePreviewAttached = { previewSurfaceController.isCompositePreviewAttached() },
     )
     private var lastPreviewDebugUpdateMs = 0L
     @Volatile private var cameraAccessAllowed = true
@@ -164,6 +165,10 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
 
     fun detachCompositePreviewSurface() {
         previewSurfaceController.detachCompositePreviewSurface()
+    }
+
+    fun reattachCompositePreviewSurface() {
+        previewSurfaceController.reattachCompositePreviewSurface()
     }
 
     fun attachPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true) {

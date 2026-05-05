@@ -68,7 +68,9 @@ object V2VideoScanner {
             if (isCancelled()) return count
             val key = videoKey(file)
             if (emitted.add(file.absolutePath)) {
-                onGroup(V2VideoGroup(timestamp = key, composite = file))
+                val thumbnailFile = V2PlaybackThumbnailLoader.defaultThumbnailFile(file)
+                    .takeIf { it.isFile && it.length() > 0L }
+                onGroup(V2VideoGroup(timestamp = key, composite = file, thumbnailPath = thumbnailFile?.absolutePath))
                 count += 1
                 val now = SystemClock.uptimeMillis()
                 if (now - lastYieldMs >= 8L) {

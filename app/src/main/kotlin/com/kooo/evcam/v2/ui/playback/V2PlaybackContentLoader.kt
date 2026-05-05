@@ -3,8 +3,10 @@ package com.kooo.evcam.v2.ui.playback
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import com.kooo.evcam.v2.storage.V2PlaybackCacheMaintainer
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal class V2PlaybackContentLoader(
     context: Context,
@@ -17,12 +19,20 @@ internal class V2PlaybackContentLoader(
     private val appContext = context.applicationContext
     private val executor = Executors.newSingleThreadExecutor()
     private val thumbnailExecutor = Executors.newSingleThreadExecutor()
+    private val thumbnailRepairExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            runnable.run()
+        }.apply { name = "EVCamPlaybackThumbRepair" }
+    }
     private val uiHandler = Handler(Looper.getMainLooper())
     private val requestedThumbnailKeys = mutableSetOf<String>()
+    private val refreshRunning = AtomicBoolean(false)
 
     @Volatile private var loadGeneration = 0
 
     fun loadVideos(autoSelect: Boolean, preferCache: Boolean = true) {
+        refreshRunning.set(false)
         val generation = nextGeneration()
         clearThumbnailRequests()
         onLoadingStarted()
@@ -49,8 +59,56 @@ internal class V2PlaybackContentLoader(
         }
     }
 
+    fun refreshIncremental(onFinished: () -> Unit) {
+        if (!refreshRunning.compareAndSet(false, true)) return
+        val generation = nextGeneration()
+        clearThumbnailRequests()
+        val existingByKey = adapter.snapshot().associateBy { it.identityKey }
+        executor.execute {
+            if (playbackMode() == V2PlaybackMode.PHOTO) {
+                val groups = V2VideoScanner.scanPhotoGroups(appContext)
+                postIfCurrent(generation) {
+                    adapter.replaceAll(groups)
+                    onGroupsLoaded(groups)
+                    finishRefreshIfCurrent(generation, onFinished)
+                }
+                return@execute
+            }
+
+            val scanned = ArrayList<V2VideoGroup>()
+            val missingThumbnails = ArrayList<V2VideoGroup>()
+            val eventOnly = playbackMode() == V2PlaybackMode.EVENT
+            V2VideoScanner.scanGroupsIncremental(appContext, isCancelled = { generation != loadGeneration }) { group ->
+                scanned += group
+                if (group.composite?.name?.contains("_event", ignoreCase = true) != eventOnly) return@scanGroupsIncremental
+                val existing = existingByKey[group.identityKey]
+                val merged = if (existing == null) {
+                    group
+                } else {
+                    group.copy(
+                        thumbnail = existing.thumbnail,
+                        thumbnailPath = group.thumbnailPath ?: existing.thumbnailPath,
+                    )
+                }
+                if (merged.thumbnail == null && merged.thumbnailPath.isNullOrBlank()) {
+                    missingThumbnails += merged
+                }
+                postIfCurrent(generation) {
+                    adapter.addOrUpdate(merged)
+                    onGroupsLoaded(adapter.snapshot())
+                }
+            }
+            if (generation == loadGeneration) V2VideoScanner.saveCachedGroups(appContext, scanned)
+            postIfCurrent(generation) {
+                onGroupsLoaded(adapter.snapshot())
+            }
+            repairMissingThumbnails(generation, missingThumbnails, onFinished)
+        }
+    }
+
     fun reloadVideosFromCache() {
         if (playbackMode() == V2PlaybackMode.PHOTO) return
+        refreshRunning.set(false)
         val generation = nextGeneration()
         clearThumbnailRequests()
         executor.execute {
@@ -84,8 +142,10 @@ internal class V2PlaybackContentLoader(
 
     fun shutdown() {
         loadGeneration += 1
+        refreshRunning.set(false)
         executor.shutdownNow()
         thumbnailExecutor.shutdownNow()
+        thumbnailRepairExecutor.shutdownNow()
     }
 
     private fun nextGeneration(): Int {
@@ -99,9 +159,47 @@ internal class V2PlaybackContentLoader(
         }
     }
 
+    private fun repairMissingThumbnails(generation: Int, groups: List<V2VideoGroup>, onFinished: () -> Unit) {
+        if (groups.isEmpty()) {
+            postIfCurrent(generation) { finishRefreshIfCurrent(generation, onFinished) }
+            return
+        }
+        val unique = groups.distinctBy { it.identityKey }
+        thumbnailRepairExecutor.execute {
+            try {
+                for (group in unique) {
+                    if (generation != loadGeneration) return@execute
+                    val file = group.composite ?: continue
+                    val thumbnail = V2PlaybackThumbnailLoader.generateThumbnailFromVideo(appContext, file)
+                        ?: continue
+                    postIfCurrent(generation) {
+                        adapter.updateThumbnail(group.identityKey, thumbnail)
+                    }
+                    runCatching { Thread.sleep(THUMBNAIL_REPAIR_INTERVAL_MS) }
+                }
+            } finally {
+                if (generation == loadGeneration) {
+                    postIfCurrent(generation) { finishRefreshIfCurrent(generation, onFinished) }
+                } else {
+                    refreshRunning.set(false)
+                }
+            }
+        }
+    }
+
+    private fun finishRefreshIfCurrent(generation: Int, onFinished: () -> Unit) {
+        if (generation != loadGeneration) return
+        refreshRunning.set(false)
+        onFinished()
+    }
+
     private fun loadGroupsForCurrentMode(): List<V2VideoGroup> = when (playbackMode()) {
         V2PlaybackMode.NORMAL -> V2VideoScanner.loadCachedGroups(appContext, eventOnly = false)
         V2PlaybackMode.EVENT -> V2VideoScanner.loadCachedGroups(appContext, eventOnly = true)
         V2PlaybackMode.PHOTO -> V2VideoScanner.scanPhotoGroups(appContext)
+    }
+
+    private companion object {
+        const val THUMBNAIL_REPAIR_INTERVAL_MS = 500L
     }
 }

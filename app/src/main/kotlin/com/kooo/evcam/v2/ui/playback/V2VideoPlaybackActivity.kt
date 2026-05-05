@@ -127,7 +127,9 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         playerController.showListMode(stopPlayback = true)
         binding.swipeRefresh.isRefreshing = true
         playerController.clearSelection()
-        loadVideos(autoSelect = false, preferCache = false)
+        contentLoader.refreshIncremental {
+            binding.swipeRefresh.isRefreshing = false
+        }
     }
 
     private fun registerPlaybackCacheReceiver() {
@@ -163,7 +165,6 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         val empty = groups.isEmpty()
         binding.emptyText.visibility = if (empty) View.VISIBLE else View.GONE
         if (empty && !playerController.showingPlayer) playerController.stopCurrentPlaybackUi()
-        binding.swipeRefresh.isRefreshing = false
     }
 
     private fun confirmDeleteCurrentVideo() {

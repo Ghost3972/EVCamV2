@@ -3,6 +3,7 @@ package com.kooo.evcam.v2.ui.playback
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.kooo.evcam.v2.nativebridge.GlesNative
 import com.kooo.evcam.v2.storage.V2PlaybackListCache
 import java.io.File
 
@@ -32,6 +33,16 @@ internal object V2PlaybackThumbnailLoader {
         val cached = cachedThumbnailPath(cachedPath)
         if (cached != null) return cached
         return cachedThumbnail(context, file)
+    }
+
+    fun generateThumbnailFromVideo(context: Context, file: File): Bitmap? {
+        if (!GlesNative.isLoaded) return null
+        val path = runCatching { GlesNative.nativeEnsurePlaybackThumbnail(file.absolutePath) }.getOrNull()
+            ?: return null
+        val thumb = File(path)
+        val bitmap = decodeThumbnailFile(thumb) ?: return null
+        V2PlaybackListCache.updateThumbnail(context, file, thumb)
+        return bitmap
     }
 
     fun defaultThumbnailFile(file: File): File = File(file.parentFile, file.nameWithoutExtension + ".jpg")

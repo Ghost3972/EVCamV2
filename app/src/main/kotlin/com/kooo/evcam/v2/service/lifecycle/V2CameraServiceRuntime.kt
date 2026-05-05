@@ -83,6 +83,18 @@ internal class V2CameraServiceRuntime(
 
     fun canShowFisheyePreview(index: Int): Boolean = graph.previewFacade.canShowFisheyePreview(index)
 
+    fun attachBlindSpotPreviewSurface(index: Int, surface: Surface) {
+        graph.previewFacade.attachBlindSpotPreviewSurface(index, surface)
+    }
+
+    fun detachBlindSpotPreviewSurface(index: Int) {
+        graph.previewFacade.detachBlindSpotPreviewSurface(index)
+    }
+
+    fun previewIndexForPosition(position: String): Int? = graph.engine.previewIndexForPosition(position)
+
+    fun previewRenderedFrames(index: Int): Long = graph.engine.previewRenderedFrames(index)
+
     fun startRecording() {
         graph.recordingOrchestrator.startRecording()
     }

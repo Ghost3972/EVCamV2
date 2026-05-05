@@ -29,8 +29,8 @@ android {
         applicationId = "com.kooo.evcam.v2"
         minSdk = 28
         targetSdk = 36
-        versionCode = 75
-        versionName = "2.0.0-test-05021848"
+        versionCode = 78
+        versionName = "2.0.0-test-05051112"
 
         ndk {
             abiFilters += listOf("arm64-v8a")

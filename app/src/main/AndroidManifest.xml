@@ -100,7 +100,8 @@
         <activity
             android:name="com.kooo.evcam.v2.ui.main.V2MainActivity"
             android:exported="true"
-            android:launchMode="singleTask">
+            android:launchMode="singleTask"
+            android:resizeableActivity="false">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -112,7 +113,18 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:noHistory="true"
+            android:resizeableActivity="false"
             android:theme="@style/Theme.Cam.Transparent" />
+
+        <activity
+            android:name="com.kooo.evcam.v2.ui.blindspot.V2BlindSpotSmallWindowActivity"
+            android:configChanges="keyboardHidden|orientation|screenLayout|uiMode|screenSize"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity=":AVM.SMALL"
+            android:theme="@style/Theme.Cam.SmallWindow"
+            android:windowSoftInputMode="stateAlwaysHidden" />
 
         <activity
             android:name="com.kooo.evcam.v2.ui.playback.V2VideoPlaybackActivity"

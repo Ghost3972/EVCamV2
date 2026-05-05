@@ -32,7 +32,7 @@ internal class V2PermissionDialogViews(private val context: Context) {
 
     fun contentColumn(): LinearLayout = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(16), dp(16), dp(8))
+        setPadding(0, dp(4), 0, dp(8))
     }
 
     fun permissionRow(
@@ -78,17 +78,18 @@ internal class V2PermissionDialogViews(private val context: Context) {
 
     fun button(textValue: String, colorValue: Int): Button = Button(context).apply {
         text = textValue
-        textSize = 14f
-        minHeight = dp(40)
-        setTextColor(color(R.color.button_text))
-        backgroundTintList = android.content.res.ColorStateList.valueOf(colorValue)
+        textSize = 16f
+        minHeight = dp(72)
+        setTextColor(color(R.color.settings_button_text))
+        background = cardBackground()
+        setPadding(dp(18), dp(12), dp(18), dp(12))
     }
 
     fun title(textValue: String): TextView = TextView(context).apply {
         text = textValue
-        setTextColor(color(R.color.text_primary))
-        textSize = 24f
-        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(color(R.color.settings_title_primary))
+        textSize = 26f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         setPadding(0, 0, 0, dp(16))
     }
 
@@ -101,23 +102,23 @@ internal class V2PermissionDialogViews(private val context: Context) {
 
     fun sectionTitle(textValue: String): TextView = TextView(context).apply {
         text = textValue
-        setTextColor(color(R.color.text_primary))
-        textSize = 18f
-        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(color(R.color.settings_title_primary))
+        textSize = 22f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         setPadding(0, dp(8), 0, dp(12))
     }
 
     fun cardTitle(textValue: String): TextView = TextView(context).apply {
         text = textValue
-        setTextColor(color(R.color.text_primary))
-        textSize = 16f
-        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(color(R.color.settings_title_primary))
+        textSize = 22f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
 
     fun cardSubtitle(textValue: String): TextView = TextView(context).apply {
         text = textValue
-        setTextColor(color(R.color.text_secondary))
-        textSize = 14f
+        setTextColor(color(R.color.settings_title_secondary))
+        textSize = 20f
         setPadding(0, dp(3), 0, dp(8))
     }
 
@@ -140,8 +141,9 @@ internal class V2PermissionDialogViews(private val context: Context) {
     }
 
     fun cardBackground(): GradientDrawable = GradientDrawable().apply {
-        setColor(color(R.color.card_background))
+        setColor(color(R.color.settings_card_background))
         cornerRadius = dp(12).toFloat()
+        setStroke(dp(1), color(R.color.settings_card_stroke))
     }
 
     fun color(resId: Int): Int = ContextCompat.getColor(context, resId)

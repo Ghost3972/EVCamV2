@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.permissions.AdbPermissionHelper
 import com.kooo.evcam.v2.permissions.SystemWhitelistHelper
@@ -186,7 +187,12 @@ object V2PermissionSettingsDialog {
         })
         val check = CheckBox(context).apply {
             text = "我已知晓风险，确认继续"
-            setTextColor(views.color(R.color.text_primary))
+            textSize = 20f
+            includeFontPadding = false
+            minHeight = views.dp(48)
+            buttonDrawable = ContextCompat.getDrawable(context, R.drawable.v2_settings_checkbox_selector)
+            setPadding(views.dp(2), views.dp(10), views.dp(18), views.dp(10))
+            setTextColor(views.color(R.color.settings_title_primary))
         }
         box.addView(check)
         val buttons = LinearLayout(context).apply {

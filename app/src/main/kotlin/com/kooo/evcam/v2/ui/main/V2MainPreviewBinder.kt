@@ -55,7 +55,7 @@ internal class V2MainPreviewBinder(
     }
 
     fun unbindPreviews() {
-        detachCompositePreviewSurface(releaseSurface = false)
+        detachCompositePreviewSurface(releaseSurface = true)
     }
 
     fun releasePreviewSurfaces() {

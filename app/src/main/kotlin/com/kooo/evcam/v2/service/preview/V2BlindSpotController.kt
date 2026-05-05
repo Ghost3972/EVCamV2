@@ -1,16 +1,14 @@
 package com.kooo.evcam.v2.service.preview
 
 import android.content.Context
-import android.os.Build
 import android.os.Handler
-import android.provider.Settings
 import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.vhal.V2VhalTurnSignalObserver
 import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.settings.V2SettingsSnapshot
-import com.kooo.evcam.v2.ui.blindspot.V2BlindSpotOverlay
+import com.kooo.evcam.v2.ui.blindspot.V2BlindSpotSmallWindowActivity
 
 class V2BlindSpotController(
     private val context: Context,
@@ -32,9 +30,8 @@ class V2BlindSpotController(
     private val showToast: (String) -> Unit,
 ) {
     private var turnSignalObserver: V2VhalTurnSignalObserver? = null
-    private var overlay: V2BlindSpotOverlay? = null
     private var cameraIndex = -1
-    private var restoreUiAfterOverlay = false
+    private var activeSide: String? = null
     @Volatile private var signalIsOff = true
     @Volatile private var config: V2SettingsSnapshot.BlindSpot = V2SettingsRepository.blindSpotConfig(context)
 
@@ -86,11 +83,6 @@ class V2BlindSpotController(
             V2AppLog.w(TAG, "blind spot preview skipped: display off side=$normalizedSide")
             return
         }
-        if (!hasOverlayPermission()) {
-            V2AppLog.w(TAG, "blind spot preview skipped: overlay permission missing")
-            showToast("补盲预览需要悬浮窗权限")
-            return
-        }
         cancelPendingShowHide()
         V2AppLog.i(TAG, "blind spot correction preview side=$normalizedSide")
         showNow(normalizedSide)
@@ -99,16 +91,15 @@ class V2BlindSpotController(
     fun hide() {
         handler.removeCallbacksAndMessages(SHOW_TOKEN)
         val index = cameraIndex
-        overlay?.hide()
+        V2BlindSpotSmallWindowActivity.finishActiveFromService()
         cameraIndex = -1
+        activeSide = null
         if (index >= 0 && isDisplayPowerOn()) restoreMainPreview(index)
-        restoreUiAfterOverlayIfNeeded()
-        V2AppLog.i(TAG, "blind spot overlay hidden index=$index")
+        V2AppLog.i(TAG, "blind spot small window hidden index=$index")
     }
 
     fun cancelAndHideForAvoidance() {
         cancelPendingShowHide()
-        restoreUiAfterOverlay = false
         hide()
     }
 
@@ -121,13 +112,15 @@ class V2BlindSpotController(
                 show(side)
             } else {
                 signalIsOff = true
-                val hideDelayMs = config.hideDelayMs
-                V2AppLog.i(TAG, "blind spot signal off side=$side, hide after ${hideDelayMs}ms")
                 cancelPendingShowHide()
                 handler.postDelayed({
-                    if (signalIsOff) hide()
-                    else V2AppLog.i(TAG, "blind spot hide canceled: signal is active again")
-                }, HIDE_TOKEN, hideDelayMs)
+                    if (signalIsOff && activeSide == side) {
+                        hide()
+                        V2AppLog.i(TAG, "blind spot signal off side=$side, hide after debounce")
+                    } else {
+                        V2AppLog.i(TAG, "blind spot hide canceled: signal active again side=$side active=$activeSide")
+                    }
+                }, HIDE_TOKEN, OFF_HIDE_DEBOUNCE_MS)
             }
         }
     }
@@ -142,21 +135,14 @@ class V2BlindSpotController(
             V2AppLog.w(TAG, "blind spot show skipped: display off side=$side")
             return
         }
-        if (!hasOverlayPermission()) {
-            V2AppLog.w(TAG, "blind spot show skipped: overlay permission missing")
-            showToast("补盲悬浮窗需要悬浮窗权限")
-            return
-        }
         if (isUiVisible()) {
-            V2AppLog.i(TAG, "blind spot hide preview UI before overlay side=$side")
-            restoreUiAfterOverlay = true
+            V2AppLog.i(TAG, "blind spot hide preview UI before small window side=$side")
             hideUi()
             handler.removeCallbacksAndMessages(SHOW_TOKEN)
             handler.postDelayed({
                 val avoid = shouldAvoidWindow()
                 if (!signalIsOff && !avoid) showNow(side)
                 else if (avoid) {
-                    restoreUiAfterOverlay = false
                     V2AppLog.i(TAG, "blind spot delayed show canceled: blind spot avoidance active target=${avoidanceTarget()}")
                 } else {
                     V2AppLog.i(TAG, "blind spot delayed show canceled: signal is off")
@@ -178,30 +164,38 @@ class V2BlindSpotController(
             return
         }
         val previousIndex = cameraIndex
+        val previousSide = activeSide
+        if (previousIndex == index && previousSide == side) {
+            V2AppLog.i(TAG, "blind spot show skipped: already active side=$side index=$index")
+            return
+        }
         hideFisheyePreview()
         cameraIndex = index
-        if (overlay == null) {
-            overlay = V2BlindSpotOverlay(
-                context = context,
-                attachPreview = attachPreview,
-                detachPreview = detachPreview,
-                previewInputSize = previewInputSize,
-                renderedFrames = renderedFrames,
-                onClose = { hide() },
-            )
+        activeSide = side
+        V2AppLog.i(TAG, "blind spot show small window side=$side ${previewDescription(index)}")
+        if (previousIndex >= 0 && (previousIndex != index || previousSide != side)) {
+            V2BlindSpotSmallWindowActivity.finishActiveFromService()
+            handler.postDelayed({
+                if (signalIsOff) {
+                    V2AppLog.i(TAG, "blind spot recreate canceled: signal is off side=$side index=$index")
+                    return@postDelayed
+                }
+                if (shouldAvoidWindow()) {
+                    V2AppLog.i(TAG, "blind spot recreate canceled: blind spot avoidance active target=${avoidanceTarget()} side=$side")
+                    return@postDelayed
+                }
+                if (cameraIndex != index || activeSide != side) {
+                    V2AppLog.i(TAG, "blind spot recreate canceled: active target changed expected=$side/$index actual=$activeSide/$cameraIndex")
+                    return@postDelayed
+                }
+                V2BlindSpotSmallWindowActivity.show(context, side, index)
+                if (isDisplayPowerOn()) restoreMainPreview(previousIndex)
+                V2AppLog.i(TAG, "blind spot small window recreated side=$side ${previewDescription(index)}")
+            }, SHOW_TOKEN, RECREATE_SMALL_WINDOW_DELAY_MS)
+        } else {
+            V2BlindSpotSmallWindowActivity.show(context, side, index)
         }
-        V2AppLog.i(TAG, "blind spot show side=$side ${previewDescription(index)}")
-        overlay?.show(side, index)
-        if (previousIndex >= 0 && previousIndex != index && isDisplayPowerOn()) restoreMainPreview(previousIndex)
         V2AppLog.perf("V2BlindSpotPerf", "show", android.os.SystemClock.elapsedRealtime() - startedMs, "side=$side index=$index previous=$previousIndex")
-    }
-
-    private fun restoreUiAfterOverlayIfNeeded() {
-        if (!restoreUiAfterOverlay) return
-        restoreUiAfterOverlay = false
-        if (!isDisplayPowerOn() || isUiVisible()) return
-        V2AppLog.i(TAG, "blind spot restore preview UI")
-        restoreUi()
     }
 
     private fun cancelPendingShowHide() {
@@ -209,13 +203,12 @@ class V2BlindSpotController(
         handler.removeCallbacksAndMessages(SHOW_TOKEN)
     }
 
-    private fun hasOverlayPermission(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
-
     private companion object {
         private const val TAG = "V2CameraService"
         private const val HIDE_TOKEN = "blind_spot_hide"
         private const val SHOW_TOKEN = "blind_spot_show"
         private const val SHOW_AFTER_UI_HIDE_MS = 300L
+        private const val RECREATE_SMALL_WINDOW_DELAY_MS = 0L
+        private const val OFF_HIDE_DEBOUNCE_MS = 500L
     }
 }

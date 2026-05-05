@@ -86,17 +86,18 @@ class V2CameraWatchdog(
 
         if (previous != null) {
             if (shouldExpectPreviewRendering(snapshot.recording)) {
-                val stalledPreview = snapshot.slots.filter { slot ->
-                    slot.previewAttached && previous.slots.firstOrNull { it.index == slot.index }?.let { prev ->
-                        slot.frameSignals <= prev.frameSignals || slot.renderedFrames <= prev.renderedFrames
-                    } == true
+                if (!snapshot.compositePreviewAttached && snapshot.slots.none { it.singlePreviewAttached }) {
+                    issues += "preview_surface=missing"
                 }
-                if (stalledPreview.isNotEmpty()) {
-                    issues += "preview=${stalledPreview.joinToString { "${it.label}(sig=${it.frameSignals},r=${it.renderedFrames},err=${it.lastError})" }}"
+                if (snapshot.compositePreviewAttached &&
+                    previous.compositePreviewAttached &&
+                    snapshot.nativeCompositePreviewRenders <= previous.nativeCompositePreviewRenders
+                ) {
+                    issues += "composite_preview_stalled(r=${snapshot.nativeCompositePreviewRenders})"
                 }
 
                 val unlatchedInputs = snapshot.slots.filter { slot ->
-                    slot.previewAttached && slot.nativeInputAttached && !slot.nativeHasLatchedFrame
+                    slot.requiresNativeInputWatch(snapshot) && slot.nativeInputAttached && !slot.nativeHasLatchedFrame
                 }
                 if (unlatchedInputs.isNotEmpty()) {
                     issues += "input_unlatched=${unlatchedInputs.joinToString { "${it.label}(gen=${it.nativeFrameGeneration},upd=${it.nativeInputUpdates},dirty=${it.nativeInputDirty})" }}"
@@ -104,7 +105,7 @@ class V2CameraWatchdog(
 
                 val stalledInputs = snapshot.slots.filter { slot ->
                     val prev = previous.slots.firstOrNull { it.index == slot.index } ?: return@filter false
-                    slot.previewAttached &&
+                    slot.requiresNativeInputWatch(snapshot) &&
                         slot.nativeInputAttached &&
                         prev.nativeInputAttached &&
                         slot.nativeFrameGeneration <= prev.nativeFrameGeneration &&
@@ -116,7 +117,7 @@ class V2CameraWatchdog(
 
                 val stalledLatches = snapshot.slots.filter { slot ->
                     val prev = previous.slots.firstOrNull { it.index == slot.index } ?: return@filter false
-                    slot.previewAttached &&
+                    slot.requiresNativeInputWatch(snapshot) &&
                         slot.nativeInputAttached &&
                         slot.nativeFrameGeneration > prev.nativeFrameGeneration &&
                         slot.nativeLatchedGeneration <= prev.nativeLatchedGeneration
@@ -152,8 +153,7 @@ class V2CameraWatchdog(
         val slotText = snapshot.slots.joinToString(prefix = "[", postfix = "]", separator = " ") { slot ->
             val prev = previous?.slots?.firstOrNull { it.index == slot.index }
             val signalFps = ratePerSecond(slot.frameSignals - (prev?.frameSignals ?: slot.frameSignals), deltaMs)
-            val renderFps = ratePerSecond(slot.renderedFrames - (prev?.renderedFrames ?: slot.renderedFrames), deltaMs)
-            "${slot.label}{open=${slot.deviceOpen && slot.sessionOpen} preview=${slot.previewAttached} sig=${formatRate(signalFps)} view=${formatRate(renderFps)} fail=${slot.renderFailures} in=${slot.nativeInputAttached} latch=${slot.nativeHasLatchedFrame} dirty=${slot.nativeInputDirty} gen=${slot.nativeFrameGeneration}/${slot.nativeLatchedGeneration}/${slot.nativePreviewGeneration}/${slot.nativeEncoderGeneration} upd=${slot.nativeInputUpdates} last=${slot.lastRenderMs}ms err=${slot.lastError}}"
+            "${slot.label}{open=${slot.deviceOpen && slot.sessionOpen} single=${slot.singlePreviewAttached} sig=${formatRate(signalFps)} fail=${slot.renderFailures} in=${slot.nativeInputAttached} latch=${slot.nativeHasLatchedFrame} dirty=${slot.nativeInputDirty} gen=${slot.nativeFrameGeneration}/${slot.nativeLatchedGeneration}/${slot.nativePreviewGeneration}/${slot.nativeEncoderGeneration} upd=${slot.nativeInputUpdates} last=${slot.lastRenderMs}ms err=${slot.lastError}}"
         }
 
         val metrics = snapshot.recordingMetrics
@@ -173,8 +173,15 @@ class V2CameraWatchdog(
             "rec=OFF"
         }
 
-        V2AppLog.i("V2Perf", "dt=${deltaMs}ms display=${isDisplayPowerOn()} failures=$failureCount $recordingText slots=$slotText")
+        V2AppLog.i(
+            "V2Perf",
+            "dt=${deltaMs}ms display=${isDisplayPowerOn()} failures=$failureCount composite=${snapshot.compositePreviewAttached}/${snapshot.nativeCompositePreviewRenders} $recordingText slots=$slotText"
+        )
     }
+
+    private fun com.kooo.evcam.v2.service.V2CameraSlotHealth.requiresNativeInputWatch(
+        snapshot: V2CameraHealthSnapshot,
+    ): Boolean = singlePreviewAttached || snapshot.compositePreviewAttached
 
     private fun ratePerSecond(delta: Long, deltaMs: Long): Float = delta.coerceAtLeast(0L) * 1000f / deltaMs.coerceAtLeast(1L)
 

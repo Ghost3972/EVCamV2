@@ -3,10 +3,8 @@ package com.kooo.evcam.v2.ui.settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -62,32 +60,25 @@ class V2FisheyeSettingsSection(
             textSize = 16f
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val enableSwitch = Switch(activity).apply {
-            isChecked = V2FisheyeSettings.isEnabled(activity)
-            setOnCheckedChangeListener { _, enabled ->
+        val enableSwitch = cards.settingSwitch(V2FisheyeSettings.isEnabled(activity)) { enabled ->
                 V2FisheyeSettings.setEnabled(activity, enabled)
                 paramsContainer.visibility = if (enabled) View.VISIBLE else View.GONE
                 V2AppLog.i(TAG, "fisheyeCorrection=$enabled")
                 V2CameraServiceCommands.refreshFisheye(activity)
                 Toast.makeText(activity, if (enabled) "鱼眼矫正已开启" else "鱼眼矫正已关闭", Toast.LENGTH_SHORT).show()
-            }
         }
-        enableRow.setOnClickListener { enableSwitch.toggle() }
+        enableRow.setOnClickListener { enableSwitch.performClick() }
         enableRow.addView(enableSwitch)
         return enableRow
     }
 
-    private fun resetButton(onReset: () -> Unit): View = Button(activity).apply {
-        text = "恢复默认参数"
-        textSize = 14f
-        minHeight = dp(44)
-        setOnClickListener {
-            V2FisheyeSettings.resetAllParams(activity)
-            V2CameraServiceCommands.refreshFisheye(activity)
-            Toast.makeText(activity, "鱼眼参数已恢复默认", Toast.LENGTH_SHORT).show()
-            onReset()
-        }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
+    private fun resetButton(onReset: () -> Unit): View = cards.actionButton("恢复默认参数", {
+        V2FisheyeSettings.resetAllParams(activity)
+        V2CameraServiceCommands.refreshFisheye(activity)
+        Toast.makeText(activity, "鱼眼参数已恢复默认", Toast.LENGTH_SHORT).show()
+        onReset()
+    }, minWidthDp = 220, minHeightDp = 80).apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80)).apply {
             setMargins(0, dp(8), 0, dp(8))
         }
     }
@@ -108,12 +99,7 @@ class V2FisheyeSettingsSection(
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        title.addView(Button(activity).apply {
-            text = "预览"
-            textSize = 14f
-            minHeight = dp(40)
-            setOnClickListener { V2CameraServiceCommands.showFisheyePreview(activity, index) }
-        }, LinearLayout.LayoutParams(dp(86), dp(44)))
+        title.addView(cards.actionButton("预览", { V2CameraServiceCommands.showFisheyePreview(activity, index) }, minWidthDp = 96, minHeightDp = 64), LinearLayout.LayoutParams(dp(96), dp(64)))
         line.addView(title)
 
         var currentK1 = params.k1

@@ -3,10 +3,8 @@ package com.kooo.evcam.v2.ui.settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
-import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -56,30 +54,23 @@ internal class V2BlindSpotCorrectionSettingsSection(
             textSize = 16f
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val enableSwitch = Switch(activity).apply {
-            isChecked = V2BlindSpotSettings.isCorrectionEnabled(activity)
-            setOnCheckedChangeListener { _, enabled ->
+        val enableSwitch = cards.settingSwitch(V2BlindSpotSettings.isCorrectionEnabled(activity)) { enabled ->
                 V2BlindSpotSettings.setCorrectionEnabled(activity, enabled)
                 paramsContainer.visibility = if (enabled) View.VISIBLE else View.GONE
                 V2CameraServiceCommands.refreshBlindSpot(activity)
-            }
         }
-        enableRow.setOnClickListener { enableSwitch.toggle() }
+        enableRow.setOnClickListener { enableSwitch.performClick() }
         enableRow.addView(enableSwitch)
         return enableRow
     }
 
-    private fun resetButton(onReset: () -> Unit): View = Button(activity).apply {
-        text = "恢复默认参数"
-        textSize = 14f
-        minHeight = dp(44)
-        setOnClickListener {
-            V2BlindSpotSettings.resetAllCorrections(activity)
-            previewSide?.let { side -> V2CameraServiceCommands.showBlindSpotPreview(activity, side) }
-            Toast.makeText(activity, "补盲矫正参数已恢复默认", Toast.LENGTH_SHORT).show()
-            onReset()
-        }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply {
+    private fun resetButton(onReset: () -> Unit): View = cards.actionButton("恢复默认参数", {
+        V2BlindSpotSettings.resetAllCorrections(activity)
+        previewSide?.let { side -> V2CameraServiceCommands.showBlindSpotPreview(activity, side) }
+        Toast.makeText(activity, "补盲矫正参数已恢复默认", Toast.LENGTH_SHORT).show()
+        onReset()
+    }, minWidthDp = 220, minHeightDp = 80).apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80)).apply {
             setMargins(0, dp(8), 0, dp(8))
         }
     }
@@ -99,15 +90,10 @@ internal class V2BlindSpotCorrectionSettingsSection(
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        titleRow.addView(Button(activity).apply {
-            text = "预览"
-            textSize = 14f
-            minHeight = dp(40)
-            setOnClickListener {
-                previewSide = side
-                V2CameraServiceCommands.showBlindSpotPreview(activity, side)
-            }
-        }, LinearLayout.LayoutParams(dp(86), dp(44)))
+        titleRow.addView(cards.actionButton("预览", {
+            previewSide = side
+            V2CameraServiceCommands.showBlindSpotPreview(activity, side)
+        }, minWidthDp = 96, minHeightDp = 64), LinearLayout.LayoutParams(dp(96), dp(64)))
         container.addView(titleRow)
 
         var current = V2BlindSpotSettings.correction(activity, side)
@@ -135,11 +121,8 @@ internal class V2BlindSpotCorrectionSettingsSection(
             textSize = 16f
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val toggle = Switch(activity).apply {
-            isChecked = checked
-            setOnCheckedChangeListener { _, enabled -> onChanged(enabled) }
-        }
-        line.setOnClickListener { toggle.toggle() }
+        val toggle = cards.settingSwitch(checked) { enabled -> onChanged(enabled) }
+        line.setOnClickListener { toggle.performClick() }
         line.addView(toggle)
         return line
     }

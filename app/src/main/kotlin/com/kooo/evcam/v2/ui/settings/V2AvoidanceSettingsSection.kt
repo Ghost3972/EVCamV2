@@ -6,7 +6,6 @@ import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.Switch
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
@@ -34,18 +33,16 @@ class V2AvoidanceSettingsSection(
 
     private fun targetsRow(): View = labeledHorizontalOptionsRow("App/窗口") {
         V2AvoidanceSettings.defaultTargets.forEach { target ->
-            addView(CheckBox(activity).apply {
+            addView(cards.styleCheckBox(CheckBox(activity).apply {
                 text = targetLabel(target)
-                textSize = 14f
-                setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
                 isChecked = V2AvoidanceSettings.isTargetEnabled(activity, target)
                 setOnCheckedChangeListener { _, enabled ->
                     V2AvoidanceSettings.setTargetEnabled(activity, target, enabled)
                     V2CameraServiceCommands.notifySettingsChangedIfRunning(activity, V2SettingsCategory.AVOIDANCE)
                     V2AppLog.i("V2SettingsActivity", "avoidance target changed ${target.value}=$enabled")
                 }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                rightMargin = cards.dp(10)
+            }), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                rightMargin = cards.dp(18)
             })
         }
     }
@@ -64,8 +61,8 @@ class V2AvoidanceSettingsSection(
         }
         line.addView(TextView(activity).apply {
             text = label
-            textSize = 15f
-            setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
+            textSize = 22f
+            setTextColor(ContextCompat.getColor(activity, R.color.settings_title_primary))
         }, LinearLayout.LayoutParams(cards.dp(92), ViewGroup.LayoutParams.WRAP_CONTENT))
         val options = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -87,18 +84,15 @@ class V2AvoidanceSettingsSection(
         }
         option.addView(TextView(activity).apply {
             text = label
-            textSize = 14f
-            setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
+            textSize = 20f
+            setTextColor(ContextCompat.getColor(activity, R.color.settings_title_primary))
         })
-        val switch = Switch(activity).apply {
-            isChecked = V2AvoidanceSettings.isBehaviorEnabled(activity, behavior)
-            setOnCheckedChangeListener { _, enabled ->
+        val switch = cards.settingSwitch(V2AvoidanceSettings.isBehaviorEnabled(activity, behavior)) { enabled ->
                 V2AvoidanceSettings.setBehaviorEnabled(activity, behavior, enabled)
                 V2CameraServiceCommands.notifySettingsChangedIfRunning(activity, V2SettingsCategory.AVOIDANCE)
                 V2AppLog.i("V2SettingsActivity", "avoidance behavior changed $label=$enabled mask=${V2AvoidanceSettings.behaviorMask(activity)}")
-            }
         }
-        option.setOnClickListener { switch.toggle() }
+        option.setOnClickListener { switch.performClick() }
         option.addView(switch)
         return option
     }

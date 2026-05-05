@@ -627,56 +627,10 @@ fn releaseThumbnailCapture(capture: *ThumbnailCapture) void {
 }
 
 fn captureFirstFrameThumbnailLocked(p: *Pipe, capture: *ThumbnailCapture) void {
-    if (capture.rgb_raw != null) return;
+    _ = capture;
     if (!p.recording.thumbnail_path_set or p.recording.thumbnail_written) return;
-    if (p.width <= 0 or p.height <= 0) return;
-
-    const src_w: usize = @intCast(p.width);
-    const src_h: usize = @intCast(p.height);
-    const src_size = src_w * src_h * 4;
-    const raw = malloc(src_size) orelse {
-        loge("thumbnail malloc failed bytes={d}", .{src_size});
-        return;
-    };
-    defer free(raw);
-    const rgba: [*]u8 = @ptrCast(raw);
-
-    c.glPixelStorei(c.GL_PACK_ALIGNMENT, 1);
-    c.glReadPixels(0, 0, p.width, p.height, c.GL_RGBA, c.GL_UNSIGNED_BYTE, raw);
-    if (glError("thumbnail glReadPixels")) |e| {
-        loge("thumbnail read failed {s}", .{e});
-        return;
-    }
-
-    const thumb_w: usize = @min(THUMBNAIL_WIDTH, src_w);
-    const thumb_h: usize = @min(THUMBNAIL_HEIGHT, src_h);
-
-    const rgb_bytes: usize = thumb_w * thumb_h * 3;
-    const rgb_raw = malloc(rgb_bytes) orelse {
-        loge("thumbnail rgb malloc failed bytes={d}", .{rgb_bytes});
-        return;
-    };
-    const rgb: [*]u8 = @ptrCast(rgb_raw);
-
-    var y: usize = 0;
-    while (y < thumb_h) : (y += 1) {
-        const src_y = src_h - 1 - ((y * src_h) / thumb_h);
-        var x: usize = 0;
-        while (x < thumb_w) : (x += 1) {
-            const src_x = (x * src_w) / thumb_w;
-            const src = (src_y * src_w + src_x) * 4;
-            const dst = (y * thumb_w + x) * 3;
-            rgb[dst] = rgba[src];
-            rgb[dst + 1] = rgba[src + 1];
-            rgb[dst + 2] = rgba[src + 2];
-        }
-    }
-
-    capture.path = p.recording.thumbnail_path;
-    capture.rgb_raw = rgb_raw;
-    capture.width = thumb_w;
-    capture.height = thumb_h;
-    capture.bytes = rgb_bytes;
+    p.recording.thumbnail_written = true;
+    logi("thumbnail deferred to playback extractor path={s}", .{std.mem.sliceTo(&p.recording.thumbnail_path, 0)});
 }
 
 fn encodeThumbnailCapture(capture: *const ThumbnailCapture) bool {

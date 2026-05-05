@@ -14,6 +14,7 @@ internal class V2CameraEngineStatusController(
     private val recordingController: V2CameraRecordingController,
     private val cameraAccessAllowed: () -> Boolean,
     private val released: () -> Boolean,
+    private val compositePreviewAttached: () -> Boolean,
 ) {
     fun previewIndexForPosition(position: String): Int? {
         return slots.firstOrNull { it.spec.name == position }?.index
@@ -39,27 +40,33 @@ internal class V2CameraEngineStatusController(
 
     fun previewInputSize(index: Int): Size? = slots.getOrNull(index)?.inputSize ?: fallbackInputSize
 
-    fun healthSnapshot(): V2CameraHealthSnapshot = V2CameraEngineStateMapper.healthSnapshot(
-        cameraAccessAllowed = cameraAccessAllowed(),
-        released = released(),
-        recording = recordingController.isRecording,
-        slots = slotStates(),
-        recordingMetrics = recordingController.metricsSnapshot(),
-    )
+    fun healthSnapshot(): V2CameraHealthSnapshot {
+        val metrics = nativeMetricsSnapshot()
+        return V2CameraEngineStateMapper.healthSnapshot(
+            cameraAccessAllowed = cameraAccessAllowed(),
+            released = released(),
+            recording = recordingController.isRecording,
+            compositePreviewAttached = compositePreviewAttached(),
+            nativeCompositePreviewRenders = metrics.metric(NATIVE_COMPOSITE_PREVIEW_RENDERS),
+            slots = slotStates(metrics),
+            recordingMetrics = recordingController.metricsSnapshot(),
+        )
+    }
 
     fun statusText(): String = statusFormatter.status(
         recording = recordingController.isNormalRecording,
         recordingStartedAtMs = recordingController.startedAtMs,
         metrics = recordingController.metricsSnapshot(),
-        slots = V2CameraEngineStateMapper.statusSlots(slotStates()),
+        slots = V2CameraEngineStateMapper.statusSlots(slotStates(nativeMetricsSnapshot())),
     )
 
-    private fun slotStates(): List<V2CameraSlotState> {
-        val metrics = if (pipelineHandle != 0L && GlesNative.isLoaded) {
-            runCatching { GlesNative.getMetricsSnapshot(pipelineHandle) }.getOrDefault(longArrayOf())
-        } else {
-            longArrayOf()
-        }
+    private fun nativeMetricsSnapshot(): LongArray = if (pipelineHandle != 0L && GlesNative.isLoaded) {
+        runCatching { GlesNative.getMetricsSnapshot(pipelineHandle) }.getOrDefault(longArrayOf())
+    } else {
+        longArrayOf()
+    }
+
+    private fun slotStates(metrics: LongArray): List<V2CameraSlotState> {
         return slots.map { slot -> slot.toState(metrics) }
     }
 
@@ -104,6 +111,10 @@ internal class V2CameraEngineStatusController(
     }
 
     private fun LongArray.metric(index: Int): Long = getOrNull(index)?.coerceAtLeast(0L) ?: 0L
+
+    private companion object {
+        private const val NATIVE_COMPOSITE_PREVIEW_RENDERS = 0
+    }
 
     private fun nativeSlotMetric(index: Int, offset: Int): Long {
         if (index !in slots.indices || pipelineHandle == 0L || !GlesNative.isLoaded) return 0L

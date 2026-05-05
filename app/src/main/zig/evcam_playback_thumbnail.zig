@@ -178,11 +178,12 @@ fn scaleBitmap(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, bitmap: c.jo
 }
 
 fn extractFrame(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, retriever: c.jobject) c.jobject {
-    const times = [_]c.jlong{ 0, 1_000_000, 3_000_000 };
+    const OPTION_CLOSEST: c.jint = 3;
+    const times = [_]c.jlong{ 2_000_000, 4_000_000, 1_000_000, 0 };
     for (times) |time_us| {
         var scaled_args = [_]c.jvalue{
             .{ .j = time_us },
-            .{ .i = 2 },
+            .{ .i = OPTION_CLOSEST },
             .{ .i = 320 },
             .{ .i = 180 },
         };
@@ -190,7 +191,7 @@ fn extractFrame(env: [*c]c.JNIEnv, jni: *const PlaybackThumbnailJni, retriever: 
         if (!clearJniException(env, "MediaMetadataRetriever.getScaledFrameAtTime") and scaled != null) return scaled;
         var args = [_]c.jvalue{
             .{ .j = time_us },
-            .{ .i = 2 },
+            .{ .i = OPTION_CLOSEST },
         };
         const frame = env.*[0].CallObjectMethodA.?(env, retriever, jni.retriever_get_frame, &args);
         if (clearJniException(env, "MediaMetadataRetriever.getFrameAtTime")) continue;

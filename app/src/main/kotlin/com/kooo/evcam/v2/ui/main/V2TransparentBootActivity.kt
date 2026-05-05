@@ -1,7 +1,6 @@
 package com.kooo.evcam.v2.ui.main
 
 import android.app.Activity
-import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -21,7 +20,7 @@ class V2TransparentBootActivity : Activity() {
 
         startCameraServiceFromForegroundActivity()
         if (startupPolicy.autoStartRecording) {
-            launchMainForAutoRecording()
+            requestAutoRecordingFromService()
             finishQuietly()
         } else {
             handler.postDelayed({ finishQuietly() }, FINISH_DELAY_MS)
@@ -43,17 +42,12 @@ class V2TransparentBootActivity : Activity() {
         }
     }
 
-    private fun launchMainForAutoRecording() {
+    private fun requestAutoRecordingFromService() {
         runCatching {
-            val intent = Intent(this, V2MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                putExtra(V2MainActivity.EXTRA_AUTO_START_FROM_BOOT, true)
-                putExtra(V2MainActivity.EXTRA_SILENT_MODE, true)
-            }
-            startActivity(intent)
-            V2AppLog.i(TAG, "main activity start requested for auto recording")
+            V2CameraServiceCommands.autoStartRecording(this)
+            V2AppLog.i(TAG, "service auto recording requested")
         }.onFailure { error ->
-            V2AppLog.e(TAG, "start main activity failed", error)
+            V2AppLog.e(TAG, "request service auto recording failed", error)
         }
     }
 

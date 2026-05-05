@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="32dp" android:height="32dp" android:gravity="center">
+        <shape android:shape="rectangle">
+            <corners android:radius="5dp" />
+            <solid android:color="@color/settings_checkbox_unchecked_fill" />
+            <stroke android:width="2dp" android:color="@color/settings_switch_off" />
+        </shape>
+    </item>
+</layer-list>

@@ -1,17 +1,11 @@
 package com.kooo.evcam.v2.ui.settings
 
-import android.content.res.ColorStateList
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
-import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.keepalive.V2KeepAliveStatus
@@ -36,14 +30,7 @@ class V2GeneralSettingsSection(
         val texts = cards.cardTexts("保活状态", V2KeepAliveStatus.summary(activity), 0)
         val summaryText = texts.getChildAt(1) as TextView
         row.addView(texts)
-        row.addView(Button(activity).apply {
-            text = "刷新 →"
-            textSize = 16f
-            minHeight = dp(48)
-            setTextColor(ContextCompat.getColor(activity, R.color.button_text))
-            backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(activity, R.color.button_background))
-            setOnClickListener { summaryText.text = V2KeepAliveStatus.summary(activity) }
-        })
+        row.addView(cards.actionButton("刷新", { summaryText.text = V2KeepAliveStatus.summary(activity) }, minWidthDp = 168, minHeightDp = 88))
         return row
     }
 
@@ -63,29 +50,20 @@ class V2GeneralSettingsSection(
             vehicleModelSubtitle()
         )
         val summaryText = texts.getChildAt(1) as TextView
-
-        var initialized = false
-        val spinner = Spinner(activity).apply {
-            adapter = vehicleModelAdapter(models.map { it.label })
-            setSelection(currentIndex)
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    if (!initialized) {
-                        initialized = true
-                        return
-                    }
-                    V2VehicleModelSettings.setModelId(activity, models[position].id)
-                    summaryText.text = vehicleModelSubtitle()
-                    V2AppLog.i(TAG, "vehicle model changed to ${models[position].label} ${V2VehicleModelSettings.mappingSummary(activity).replace('\n', ' ')}")
-                    Toast.makeText(activity, "需重启生效", Toast.LENGTH_SHORT).show()
-                }
-
-                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            }
-        }
-        row.setOnClickListener { spinner.performClick() }
+        val dropdown = cards.dropdownField(
+            labels = models.map { it.label },
+            selectedIndex = currentIndex,
+            onSelected = { position ->
+                V2VehicleModelSettings.setModelId(activity, models[position].id)
+                summaryText.text = vehicleModelSubtitle()
+                V2AppLog.i(TAG, "vehicle model changed to ${models[position].label} ${V2VehicleModelSettings.mappingSummary(activity).replace('\n', ' ')}")
+                Toast.makeText(activity, "需重启生效", Toast.LENGTH_SHORT).show()
+            },
+            widthDp = 290,
+        )
         row.addView(texts)
-        row.addView(spinner, LinearLayout.LayoutParams(dp(170), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(dropdown)
+        row.setOnClickListener { dropdown.performClick() }
         return row
     }
 
@@ -121,23 +99,8 @@ class V2GeneralSettingsSection(
         }
     }
 
-    private fun vehicleModelAdapter(labels: List<String>) = object : ArrayAdapter<String>(activity, android.R.layout.simple_spinner_item, labels) {
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = styledText(super.getView(position, convertView, parent) as TextView, dropdown = false)
-        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View = styledText(super.getDropDownView(position, convertView, parent) as TextView, dropdown = true)
-
-        private fun styledText(view: TextView, dropdown: Boolean): TextView = view.apply {
-            textSize = 16f
-            gravity = Gravity.CENTER
-            setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
-            setBackgroundColor(ContextCompat.getColor(activity, if (dropdown) R.color.card_background else R.color.input_background))
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-    }
-
     private fun vehicleModelSubtitle(): String =
         V2VehicleModelSettings.mappingSummary(activity) + "\n使用当前预览布局，仅切换前后左右摄像头映射；更改后重启应用生效"
-
-    private fun dp(value: Int): Int = cards.dp(value)
 
     private companion object {
         const val TAG = "V2SettingsActivity"

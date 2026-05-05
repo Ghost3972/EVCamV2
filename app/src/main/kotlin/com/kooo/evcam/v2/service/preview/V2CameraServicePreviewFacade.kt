@@ -59,7 +59,9 @@ internal class V2CameraServicePreviewFacade(
     }
 
     fun restorePreviewSurfaces() {
-        compositePreviewSurface?.takeIf { it.isValid }?.let { engine.attachCompositePreviewSurface(it) }
+        compositePreviewSurface?.takeIf { it.isValid }?.let {
+            engine.reattachCompositePreviewSurface()
+        }
         previewCoordinator.restoreAllMain()
     }
 

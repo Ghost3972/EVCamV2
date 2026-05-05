@@ -38,6 +38,18 @@ internal class V2BlindSpotOverlayMetrics(
         logFpsIfNeeded(cameraIndex, value, params.width, params.height)
     }
 
+    fun updateText(
+        width: Int,
+        height: Int,
+        cameraIndex: Int,
+        metricsView: TextView?,
+    ) {
+        if (width <= 0 || height <= 0) return
+        val value = sampleFps(cameraIndex) ?: return
+        metricsView?.text = String.format(Locale.US, "%dx%d\n%.1f fps", width, height, value)
+        logFpsIfNeeded(cameraIndex, value, width, height)
+    }
+
     private fun updatePlaceholder(params: WindowManager.LayoutParams?, metricsView: TextView?) {
         params ?: return
         metricsView?.text = String.format(Locale.US, "%dx%d\n-- fps", params.width, params.height)

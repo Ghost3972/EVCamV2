@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/settings_button_background" />
+            <corners android:radius="14dp" />
+            <stroke android:width="1dp" android:color="@color/settings_card_stroke" />
+        </shape>
+    </item>
+    <item
+        android:drawable="@drawable/ic_expand_more"
+        android:gravity="end|center_vertical"
+        android:right="14dp"
+        android:width="18dp"
+        android:height="18dp" />
+</layer-list>

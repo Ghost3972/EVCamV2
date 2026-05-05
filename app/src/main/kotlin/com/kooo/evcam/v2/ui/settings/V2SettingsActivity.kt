@@ -1,6 +1,7 @@
 package com.kooo.evcam.v2.ui.settings
 
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -30,7 +31,7 @@ class V2SettingsActivity : AppCompatActivity() {
         V2AppLog.init(this)
         V2AppLog.i("V2SettingsActivity", "onCreate")
         root = FrameLayout(this).apply {
-            setBackgroundColor(ContextCompat.getColor(this@V2SettingsActivity, R.color.page_background))
+            setBackgroundColor(ContextCompat.getColor(this@V2SettingsActivity, R.color.settings_page_background))
         }
         setContentView(root)
         showHomePage()
@@ -54,7 +55,7 @@ class V2SettingsActivity : AppCompatActivity() {
         showingPermissionPage = false
         V2AppLog.i("V2SettingsActivity", "show home page")
         root.removeAllViews()
-        root.addView(createPage("软件设置", "⌂", { finish() }, createHomeContent()), cards.fullScreenParams())
+        root.addView(createPage("设置", { finish() }, createHomeContent()), cards.fullScreenParams())
         if (restoreScrollY != null) {
             homeScrollView?.post { homeScrollView?.scrollTo(0, restoreScrollY) }
         }
@@ -65,38 +66,48 @@ class V2SettingsActivity : AppCompatActivity() {
         V2AppLog.i("V2SettingsActivity", "show permission page")
         root.removeAllViews()
         root.addView(
-            createPage(
-                "权限设置",
-                "←",
-                { showHomePage() },
-                V2PermissionSettingsDialog.createPageView(this, showTitle = false)
-            ),
+            createPage("权限设置", { showHomePage() }, V2PermissionSettingsDialog.createPageView(this, showTitle = false)),
             cards.fullScreenParams()
         )
     }
 
-    private fun createPage(title: String, buttonText: String, onButtonClick: () -> Unit, contentView: View): View {
-        val page = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(ContextCompat.getColor(this@V2SettingsActivity, R.color.page_background))
+    private fun createPage(title: String, onBackClick: () -> Unit, contentView: View): View {
+        val page = FrameLayout(this).apply {
+            background = ContextCompat.getDrawable(this@V2SettingsActivity, R.drawable.v2_settings_page_bg)
+            clipChildren = false
+            clipToPadding = false
         }
-        page.addView(cards.header(title, buttonText, onButtonClick))
-        page.addView(contentView, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f
-        ))
+        page.addView(createDecorLayer())
+
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipToPadding = false
+            clipChildren = false
+            setPadding(0, dp(20), 0, dp(24))
+        }
+        page.addView(column, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+            leftMargin = pageHorizontalMargin()
+            rightMargin = pageHorizontalMargin()
+        })
+
+        column.addView(cards.header(title, onBackClick))
+        column.addView(contentView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+            topMargin = dp(8)
+        })
         return page
     }
 
     private fun createHomeContent(): View {
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(ContextCompat.getColor(this@V2SettingsActivity, R.color.page_background))
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            clipToPadding = false
+            setPadding(0, 0, 0, dp(32))
         }
         homeScrollView = scroll
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), 0, dp(16), dp(8))
+            setPadding(0, 0, 0, 0)
         }
         scroll.addView(content)
 
@@ -130,4 +141,43 @@ class V2SettingsActivity : AppCompatActivity() {
     private fun fisheyeSwitchCard(): View = fisheyeSection.create()
 
     private fun dp(value: Int): Int = cards.dp(value)
+
+    private fun pageHorizontalMargin(): Int = dp(80)
+
+    private fun createDecorLayer(): View = FrameLayout(this).apply {
+        layoutParams = FrameLayout.LayoutParams(dp(560), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END)
+        clipChildren = false
+        clipToPadding = false
+
+        addView(View(context).apply {
+            background = circleDrawable(ContextCompat.getColor(this@V2SettingsActivity, R.color.settings_decor_primary))
+        }, FrameLayout.LayoutParams(dp(420), dp(420)).apply {
+            gravity = Gravity.END or Gravity.TOP
+            topMargin = dp(-60)
+            rightMargin = dp(-120)
+        })
+
+        addView(View(context).apply {
+            background = circleDrawable(ContextCompat.getColor(this@V2SettingsActivity, R.color.settings_decor_secondary))
+        }, FrameLayout.LayoutParams(dp(260), dp(260)).apply {
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            rightMargin = dp(24)
+        })
+
+        addView(View(context).apply {
+            background = ContextCompat.getDrawable(this@V2SettingsActivity, R.drawable.v2_settings_right_decor_bg)
+            rotation = -16f
+            alpha = 0.55f
+            translationX = dp(44).toFloat()
+            translationY = dp(220).toFloat()
+        }, FrameLayout.LayoutParams(dp(280), dp(110)).apply {
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            rightMargin = dp(12)
+        })
+    }
+
+    private fun circleDrawable(color: Int) = android.graphics.drawable.GradientDrawable().apply {
+        shape = android.graphics.drawable.GradientDrawable.OVAL
+        setColor(color)
+    }
     }

@@ -6,7 +6,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.Switch
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
@@ -82,8 +81,10 @@ class V2SignalSettingsSection(
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
             setHintTextColor(ContextCompat.getColor(activity, R.color.text_secondary))
             hint = defaultPropId.toString()
+            setBackgroundResource(R.drawable.v2_settings_field_bg)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
         }
-        val switch = Switch(activity).apply { isChecked = checked }
+        val switch = cards.settingSwitch(checked) { }
         val controls = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -108,13 +109,14 @@ class V2SignalSettingsSection(
         }
 
         val extraView = extraContent?.invoke(checked)
-        switch.setOnCheckedChangeListener { _, isChecked ->
-            extraView?.visibility = if (isChecked) View.VISIBLE else View.GONE
+        switch.setOnClickListener {
+            switch.isChecked = !switch.isChecked
+            extraView?.visibility = if (switch.isChecked) View.VISIBLE else View.GONE
             saveAndRefresh(true)
         }
         propEdit.setOnEditorActionListener { _, _, _ -> saveAndRefresh(true); true }
         propEdit.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) saveAndRefresh(false) }
-        row.setOnClickListener { switch.toggle() }
+        row.setOnClickListener { switch.performClick() }
         row.addView(controls)
         if (extraView != null) row.addView(extraView)
         return row

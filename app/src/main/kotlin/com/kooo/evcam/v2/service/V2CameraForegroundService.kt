@@ -115,6 +115,18 @@ class V2CameraForegroundService : Service() {
 
     internal fun canShowFisheyePreview(index: Int): Boolean = runtime.canShowFisheyePreview(index)
 
+    internal fun attachBlindSpotPreviewSurface(index: Int, surface: Surface) {
+        runtime.attachBlindSpotPreviewSurface(index, surface)
+    }
+
+    internal fun detachBlindSpotPreviewSurface(index: Int) {
+        runtime.detachBlindSpotPreviewSurface(index)
+    }
+
+    internal fun previewIndexForPosition(position: String): Int? = runtime.previewIndexForPosition(position)
+
+    internal fun previewRenderedFrames(index: Int): Long = runtime.previewRenderedFrames(index)
+
     fun startRecording() {
         runtime.startRecording()
     }

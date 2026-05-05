@@ -62,6 +62,18 @@ internal class V2CameraPreviewSurfaceController(
         publishStatus()
     }
 
+    fun reattachCompositePreviewSurface() {
+        val surface = compositePreviewSurface?.takeIf { it.isValid } ?: return
+        if (released() || pipelineHandle == 0L || !cameraAccessAllowed()) return
+        V2AppLog.w(TAG, "reattach composite preview")
+        if (compositePreviewAttached) {
+            runCatching { nativeCompositor.detachCompositePreview() }
+                .onFailure { V2AppLog.w(TAG, "detach composite preview before reattach failed", it) }
+            compositePreviewAttached = false
+        }
+        attachCompositePreviewSurface(surface)
+    }
+
     fun attachPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true) {
         val slot = slots.getOrNull(index) ?: return
         if (released() || pipelineHandle == 0L) return
@@ -138,6 +150,8 @@ internal class V2CameraPreviewSurfaceController(
     fun stopPreviewWorkerForRelease() {
         runCatching { nativeCompositor.stopPreviewWorker() }
     }
+
+    fun isCompositePreviewAttached(): Boolean = compositePreviewAttached
 
     private fun hasAttachedPreviewSurface(): Boolean = compositePreviewAttached || slots.any { it.previewAttached }
 

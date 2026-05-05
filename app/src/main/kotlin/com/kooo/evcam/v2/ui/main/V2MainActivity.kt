@@ -1,6 +1,7 @@
 package com.kooo.evcam.v2.ui.main
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
@@ -29,6 +30,8 @@ class V2MainActivity : AppCompatActivity() {
         const val EXTRA_AUTO_START_FROM_BOOT = "auto_start_from_boot"
         const val EXTRA_SILENT_MODE = "silent_mode"
         private const val EMERGENCY_RECORDING_DURATION_MS = V2CameraForegroundService.EMERGENCY_RECORDING_DURATION_MS
+        private const val SMALL_WINDOW_CHECK_DELAY_MS = 500L
+        private const val FLYME_MINI_WINDOW_MODE = 11
         @Volatile private var lastKnownRecording = false
     }
 
@@ -77,6 +80,7 @@ class V2MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         V2AppLog.init(this)
         V2AppLog.i("V2MainActivity", "onCreate")
+        if (closeIfLaunchedInSmallWindow("create")) return
         binding = ActivityV2MainA7Binding.inflate(layoutInflater)
         setContentView(binding.root)
         previewBinder = V2MainPreviewBinder(binding, mainHandler) { service }
@@ -105,9 +109,76 @@ class V2MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (closeIfLaunchedInSmallWindow("resume")) return
+        mainHandler.postDelayed({ closeIfLaunchedInSmallWindow("resume-delayed") }, SMALL_WINDOW_CHECK_DELAY_MS)
         restoreMainWindowMode()
         V2AppLog.i("V2MainActivity", "onResume hasPermissions=${hasPermissions()}")
         if (hasPermissions()) continueAfterPermissionsGranted("resume")
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) closeIfLaunchedInSmallWindow("focus")
+    }
+
+    private fun closeIfLaunchedInSmallWindow(reason: String): Boolean {
+        if (isFinishing || isDestroyed) return true
+        val multiWindow = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInMultiWindowMode
+        val flymeSmallWindow = isCurrentConfigurationInFlymeSmallWindow() || isCurrentTaskInFlymeSmallWindow() || isCurrentWindowPortraitLike()
+        if (!multiWindow && !flymeSmallWindow) return false
+        V2AppLog.w("V2MainActivity", "main preview launched in small window, closing task reason=$reason multiWindow=$multiWindow flymeSmallWindow=$flymeSmallWindow taskId=$taskId")
+        service?.setUiVisibility(false)
+        finishCurrentTaskFromSmallWindow()
+        return true
+    }
+
+    private fun isCurrentConfigurationInFlymeSmallWindow(): Boolean = runCatching {
+        val windowConfiguration = resources.configuration.javaClass.methods
+            .firstOrNull { it.name == "getWindowConfiguration" && it.parameterTypes.isEmpty() }
+            ?.invoke(resources.configuration)
+            ?: return@runCatching false
+        val description = windowConfiguration.toString()
+        val mode = runCatching {
+            windowConfiguration.javaClass.getMethod("getWindowingMode").invoke(windowConfiguration) as? Int
+        }.getOrNull()
+        description.contains("flyme-mini-window", ignoreCase = true) || mode == FLYME_MINI_WINDOW_MODE
+    }.onFailure {
+        V2AppLog.d("V2MainActivity", "small window configuration check unavailable: ${it.javaClass.simpleName}")
+    }.getOrDefault(false)
+
+    private fun isCurrentTaskInFlymeSmallWindow(): Boolean = runCatching {
+        val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        @Suppress("DEPRECATION")
+        activityManager.getRunningTasks(20).orEmpty().any { task ->
+            task.id == taskId && task.toString().contains("flyme-mini-window", ignoreCase = true)
+        }
+    }.onFailure {
+        V2AppLog.w("V2MainActivity", "small window task check failed", it)
+    }.getOrDefault(false)
+
+    private fun isCurrentWindowPortraitLike(): Boolean {
+        val decorWidth = window.decorView.width
+        val decorHeight = window.decorView.height
+        if (decorWidth > 0 && decorHeight > 0 && decorHeight > decorWidth) return true
+        val metrics = resources.displayMetrics
+        return metrics.widthPixels > 0 && metrics.heightPixels > 0 && metrics.heightPixels > metrics.widthPixels
+    }
+
+    private fun finishCurrentTaskFromSmallWindow() {
+        runCatching {
+            val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+            activityManager.appTasks.firstOrNull { appTask ->
+                runCatching { appTask.taskInfo?.id == taskId }.getOrDefault(false)
+            }?.let { appTask ->
+                V2AppLog.w("V2MainActivity", "remove current small-window task taskId=$taskId")
+                appTask.finishAndRemoveTask()
+                return
+            }
+        }.onFailure {
+            V2AppLog.w("V2MainActivity", "remove current small-window task failed", it)
+        }
+        finishAffinity()
+        finishAndRemoveTask()
     }
 
     private fun restoreMainWindowMode() {
@@ -139,7 +210,7 @@ class V2MainActivity : AppCompatActivity() {
         service?.setUiStatusListener(null)
         service?.setUiEmergencyRecordingListener(null)
         service?.setUiVisibility(false)
-        previewBinder.unbindPreviews()
+        if (::previewBinder.isInitialized) previewBinder.unbindPreviews()
         if (bound) { unbindService(connection); bound = false; service = null }
         super.onPause()
     }
@@ -147,8 +218,8 @@ class V2MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         V2AppLog.i("V2MainActivity", "onDestroy finishing=$isFinishing bound=$bound")
         mainHandler.removeCallbacksAndMessages(null)
-        recordingUi.destroy()
-        previewBinder.releasePreviewSurfaces()
+        if (::recordingUi.isInitialized) recordingUi.destroy()
+        if (::previewBinder.isInitialized) previewBinder.releasePreviewSurfaces()
         V2AppLog.saveToPersistentLog(this)
         super.onDestroy()
     }
