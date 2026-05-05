@@ -127,6 +127,10 @@ class V2CameraForegroundService : Service() {
 
     internal fun previewRenderedFrames(index: Int): Long = runtime.previewRenderedFrames(index)
 
+    fun compositePreviewRenderedFrames(): Long = runtime.compositePreviewRenderedFrames()
+
+    fun compositePreviewFpsMilli(): Long = runtime.compositePreviewFpsMilli()
+
     fun startRecording() {
         runtime.startRecording()
     }

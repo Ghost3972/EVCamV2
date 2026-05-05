@@ -1,70 +1,72 @@
 package com.kooo.evcam.v2.ui.main
 
-import android.graphics.SurfaceTexture
 import android.os.Handler
 import android.view.Surface
-import android.view.TextureView
+import android.view.SurfaceHolder
 import android.view.View
 import com.kooo.evcam.databinding.ActivityV2MainA7Binding
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
-import com.kooo.evcam.v2.ui.preview.V2PreviewFpsCounter
 
 internal class V2MainPreviewBinder(
     private val binding: ActivityV2MainA7Binding,
     private val mainHandler: Handler,
     private val service: () -> V2CameraForegroundService?,
 ) {
-    private val fpsCounters = Array(V2_CAMERA_SLOT_COUNT) { V2PreviewFpsCounter() }
     private val previewSizeLabels = Array(V2_CAMERA_SLOT_COUNT) { "--×--" }
     private val previewSurfaces = arrayOfNulls<Surface>(V2_CAMERA_SLOT_COUNT)
-    private var compositePreviewSurfaceTexture: SurfaceTexture? = null
+    private var compositePreviewHolder: SurfaceHolder? = null
     private var compositePreviewAttachState = CompositePreviewAttachState.DETACHED
     private var compositePreviewFirstFrameShown = false
+    private var nativeFpsPolling = false
+
+    private val compositePreviewCallback = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            V2AppLog.i(TAG, "composite preview surface created valid=${holder.surface?.isValid == true}")
+            resetCompositePreviewFirstFrameGate("surface_created")
+            attachCompositePreviewSurface(holder)
+        }
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            V2AppLog.i(TAG, "composite preview surface changed size=${width}x$height format=$format")
+            attachCompositePreviewSurface(holder)
+        }
+
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            V2AppLog.i(TAG, "composite preview surface destroyed")
+            resetCompositePreviewFirstFrameGate("surface_destroyed")
+            detachCompositePreviewSurface(releaseSurface = false)
+        }
+    }
+
+    private val nativeFpsPoller = object : Runnable {
+        override fun run() {
+            pollNativeCompositeFps()
+            if (nativeFpsPolling) mainHandler.postDelayed(this, NATIVE_FPS_POLL_INTERVAL_MS)
+        }
+    }
 
     fun bindPreviews() {
         resetCompositePreviewFirstFrameGate("bind")
-        binding.textureFront.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                V2AppLog.i(TAG, "composite preview surface available size=${width}x$height")
-                fpsCounters[COMPOSITE_PREVIEW_INDEX].reset()
-                previewSizeLabels[COMPOSITE_PREVIEW_INDEX] = service()?.compositePreviewSizeLabel() ?: "--×--"
-                binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n-- fps"
-                resetCompositePreviewFirstFrameGate("surface_available")
-                attachCompositePreviewSurface(surface)
-            }
-
-            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) = Unit
-
-            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                V2AppLog.i(TAG, "composite preview surface destroyed")
-                resetCompositePreviewFirstFrameGate("surface_destroyed")
-                detachCompositePreviewSurface(releaseSurface = true)
-                return true
-            }
-
-            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
-                revealCompositePreviewIfNeeded("first_frame")
-                fpsCounters[COMPOSITE_PREVIEW_INDEX].onFrame()?.let { fps ->
-                    binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n$fps fps"
-                }
-            }
-        }
-        if (binding.textureFront.isAvailable && binding.textureFront.surfaceTexture != null) {
-            attachCompositePreviewSurface(binding.textureFront.surfaceTexture!!)
-        }
+        binding.textureFront.setZOrderOnTop(false)
+        binding.textureFront.holder.addCallback(compositePreviewCallback)
+        updateCompositePreviewLabels(resetFps = true)
+        startNativeFpsPolling("bind")
         binding.textureFront.post { attachCompositePreviewIfAvailable("post") }
         mainHandler.postDelayed({ attachCompositePreviewIfAvailable("delayed300") }, 300L)
         mainHandler.postDelayed({ attachCompositePreviewIfAvailable("delayed1000") }, 1_000L)
     }
 
     fun unbindPreviews() {
-        detachCompositePreviewSurface(releaseSurface = true)
+        stopNativeFpsPolling()
+        binding.textureFront.holder.removeCallback(compositePreviewCallback)
+        detachCompositePreviewSurface(releaseSurface = false)
     }
 
     fun releasePreviewSurfaces() {
-        detachCompositePreviewSurface(releaseSurface = true)
+        stopNativeFpsPolling()
+        detachCompositePreviewSurface(releaseSurface = false)
     }
 
     fun updatePreviewPlaceholders(paused: Boolean) {
@@ -77,20 +79,26 @@ internal class V2MainPreviewBinder(
     }
 
     private fun attachCompositePreviewIfAvailable(reason: String) {
-        val surfaceTexture = binding.textureFront.surfaceTexture
+        val holder = binding.textureFront.holder
+        val surface = holder.surface
         V2AppLog.i(
             TAG,
-            "composite preview bind check reason=$reason available=${binding.textureFront.isAvailable} surface=${surfaceTexture != null} size=${binding.textureFront.width}x${binding.textureFront.height}"
+            "composite preview bind check reason=$reason surfaceValid=${surface?.isValid == true} size=${binding.textureFront.width}x${binding.textureFront.height}"
         )
-        if (binding.textureFront.isAvailable && surfaceTexture != null) attachCompositePreviewSurface(surfaceTexture)
+        if (surface?.isValid == true) attachCompositePreviewSurface(holder)
     }
 
-    private fun attachCompositePreviewSurface(surfaceTexture: SurfaceTexture) {
+    private fun attachCompositePreviewSurface(holder: SurfaceHolder) {
+        val surface = holder.surface
+        if (surface == null || !surface.isValid) {
+            V2AppLog.w(TAG, "attachCompositePreviewSurface deferred: invalid holder surface")
+            return
+        }
         val existingSurface = previewSurfaces[COMPOSITE_PREVIEW_INDEX]
-        if (compositePreviewSurfaceTexture === surfaceTexture && existingSurface?.isValid == true) {
+        if (compositePreviewHolder === holder && existingSurface === surface && existingSurface.isValid) {
             if (compositePreviewAttachState == CompositePreviewAttachState.ATTACHED) {
                 V2AppLog.d(TAG, "attachCompositePreviewSurface skipped: already attached valid=${existingSurface.isValid}")
-                updateCompositePreviewLabels()
+                updateCompositePreviewLabels(resetFps = false)
                 return
             }
             V2AppLog.d(TAG, "attachCompositePreviewSurface reuse existing valid=${existingSurface.isValid} state=$compositePreviewAttachState")
@@ -101,12 +109,11 @@ internal class V2MainPreviewBinder(
             }
             previewService.attachCompositePreviewSurface(existingSurface)
             compositePreviewAttachState = CompositePreviewAttachState.ATTACHED
-            updateCompositePreviewLabels()
+            updateCompositePreviewLabels(resetFps = true)
             return
         }
-        detachCompositePreviewSurface(releaseSurface = true)
-        val surface = Surface(surfaceTexture)
-        compositePreviewSurfaceTexture = surfaceTexture
+        detachCompositePreviewSurface(releaseSurface = false)
+        compositePreviewHolder = holder
         previewSurfaces[COMPOSITE_PREVIEW_INDEX] = surface
         V2AppLog.d(TAG, "attachCompositePreviewSurface valid=${surface.isValid}")
         val previewService = service()
@@ -116,7 +123,7 @@ internal class V2MainPreviewBinder(
         }
         previewService.attachCompositePreviewSurface(surface)
         compositePreviewAttachState = CompositePreviewAttachState.ATTACHED
-        updateCompositePreviewLabels()
+        updateCompositePreviewLabels(resetFps = true)
     }
 
     private fun detachCompositePreviewSurface(releaseSurface: Boolean = true) {
@@ -127,9 +134,9 @@ internal class V2MainPreviewBinder(
         }
         if (releaseSurface) {
             previewSurfaces[COMPOSITE_PREVIEW_INDEX]?.release()
-            previewSurfaces[COMPOSITE_PREVIEW_INDEX] = null
-            compositePreviewSurfaceTexture = null
         }
+        previewSurfaces[COMPOSITE_PREVIEW_INDEX] = null
+        compositePreviewHolder = null
     }
 
     private fun resetCompositePreviewFirstFrameGate(reason: String) {
@@ -145,10 +152,38 @@ internal class V2MainPreviewBinder(
         V2AppLog.i(TAG, "composite preview first frame shown reason=$reason")
     }
 
-    private fun updateCompositePreviewLabels() {
+    private fun updateCompositePreviewLabels(resetFps: Boolean) {
         updatePreviewPlaceholders(service()?.isPreviewPausedByAvoidance() == true)
         previewSizeLabels[COMPOSITE_PREVIEW_INDEX] = service()?.compositePreviewSizeLabel() ?: "--×--"
-        binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n-- fps"
+        if (resetFps) {
+            binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n-- fps"
+        }
+    }
+
+    private fun startNativeFpsPolling(reason: String) {
+        V2AppLog.d(TAG, "native composite fps polling started reason=$reason")
+        nativeFpsPolling = true
+        mainHandler.removeCallbacks(nativeFpsPoller)
+        mainHandler.post(nativeFpsPoller)
+    }
+
+    private fun stopNativeFpsPolling() {
+        nativeFpsPolling = false
+        mainHandler.removeCallbacks(nativeFpsPoller)
+    }
+
+    private fun pollNativeCompositeFps() {
+        val previewService = service() ?: return
+        val frames = previewService.compositePreviewRenderedFrames().coerceAtLeast(0L)
+        if (frames > 0) revealCompositePreviewIfNeeded("native_frame")
+        val fpsMilli = previewService.compositePreviewFpsMilli().coerceAtLeast(0L)
+        val fpsText = if (fpsMilli > 0L) formatNativeFps(fpsMilli) else "-- fps"
+        binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n$fpsText"
+    }
+
+    private fun formatNativeFps(fpsMilli: Long): String {
+        val roundedTenths = (fpsMilli.coerceAtLeast(0L) + 50L) / 100L
+        return "${roundedTenths / 10}.${roundedTenths % 10} fps"
     }
 
     private enum class CompositePreviewAttachState {
@@ -159,5 +194,6 @@ internal class V2MainPreviewBinder(
     private companion object {
         private const val TAG = "V2MainActivity"
         private const val COMPOSITE_PREVIEW_INDEX = 0
+        private const val NATIVE_FPS_POLL_INTERVAL_MS = 500L
     }
 }

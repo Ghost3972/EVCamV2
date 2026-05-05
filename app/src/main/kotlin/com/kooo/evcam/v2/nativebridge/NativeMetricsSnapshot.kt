@@ -38,6 +38,7 @@ internal object NativeMetricsSnapshot {
     const val RECORDING_QUEUE_FALLBACK_COUNT = 77
     const val RECORDING_QUEUE_FBO_RECREATE_COUNT = 78
     const val RECORDING_QUEUE_NEXT_CAPTURE_MS = 79
+    const val COMPOSITE_PREVIEW_FPS_MILLI = 112
 
     const val INPUT_BASE = 80
     const val INPUT_STRIDE = 8

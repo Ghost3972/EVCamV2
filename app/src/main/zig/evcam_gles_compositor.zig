@@ -35,6 +35,8 @@ const WORKER_ERROR_TICK_RENDER_DRAIN = types.WORKER_ERROR_TICK_RENDER_DRAIN;
 const MAX_NATIVE_CAMERAS = types.MAX_NATIVE_CAMERAS;
 const MAX_EMERGENCY_SOURCES = types.MAX_EMERGENCY_SOURCES;
 const MAX_EMERGENCY_REQUESTS = types.MAX_EMERGENCY_REQUESTS;
+const COMPOSITE_PREVIEW_FPS_HISTORY = types.COMPOSITE_PREVIEW_FPS_HISTORY;
+const COMPOSITE_PREVIEW_FPS_WINDOW_MS = types.COMPOSITE_PREVIEW_FPS_WINDOW_MS;
 const O_RDWR_ANDROID = types.O_RDWR_ANDROID;
 const O_CREAT_ANDROID = types.O_CREAT_ANDROID;
 const O_TRUNC_ANDROID = types.O_TRUNC_ANDROID;
@@ -81,7 +83,9 @@ var g_pipes: [MAX_PIPES]Pipe = [_]Pipe{Pipe{}} ** MAX_PIPES;
 var g_used: [MAX_PIPES]bool = [_]bool{false} ** MAX_PIPES;
 var g_next_handle: c.jlong = 1;
 var g_metrics_cache_handles: [MAX_PIPES]c.jlong = [_]c.jlong{0} ** MAX_PIPES;
-const METRICS_SNAPSHOT_LEN: usize = 112;
+const METRICS_COMPOSITE_PREVIEW_FPS_MILLI: usize = 112;
+const METRICS_SNAPSHOT_LEN: usize = METRICS_COMPOSITE_PREVIEW_FPS_MILLI + 1;
+const FPS_MILLI_SCALE: i64 = 1000;
 const PRIO_PROCESS: c_int = 0;
 const ANDROID_PRIORITY_DISPLAY: c_int = -4;
 var g_metrics_cache_values: [MAX_PIPES][METRICS_SNAPSHOT_LEN]c.jlong = [_][METRICS_SNAPSHOT_LEN]c.jlong{[_]c.jlong{0} ** METRICS_SNAPSHOT_LEN} ** MAX_PIPES;
@@ -1529,6 +1533,42 @@ fn drawTexture2DToCurrentSurfaceLocked(p: *Pipe, texture: c.GLuint, width: i32, 
     c.glDisableVertexAttribArray(@intCast(p.texture_pos_loc));
 }
 
+fn resetCompositePreviewFpsLocked(p: *Pipe) void {
+    @memset(p.composite_preview_fps_history[0..], 0);
+    p.composite_preview_fps_head = 0;
+    p.composite_preview_fps_count = 0;
+    p.composite_preview_fps_milli = 0;
+}
+
+fn compositePreviewFpsMilliLocked(p: *const Pipe, newest_ms: i64) i64 {
+    if (p.composite_preview_fps_count < 2) return 0;
+    const oldest_ms = p.composite_preview_fps_history[p.composite_preview_fps_head];
+    const elapsed_ms = newest_ms - oldest_ms;
+    if (elapsed_ms <= 0) return 0;
+    const intervals: i64 = @intCast(p.composite_preview_fps_count - 1);
+    return @divTrunc(intervals * 1000 * FPS_MILLI_SCALE + @divTrunc(elapsed_ms, 2), elapsed_ms);
+}
+
+fn recordCompositePreviewFrameLocked(p: *Pipe, frame_ms: i64) void {
+    const cutoff_ms = frame_ms - COMPOSITE_PREVIEW_FPS_WINDOW_MS;
+    while (p.composite_preview_fps_count > 0) {
+        const oldest_ms = p.composite_preview_fps_history[p.composite_preview_fps_head];
+        if (oldest_ms > 0 and oldest_ms >= cutoff_ms) break;
+        p.composite_preview_fps_history[p.composite_preview_fps_head] = 0;
+        p.composite_preview_fps_head = (p.composite_preview_fps_head + 1) % COMPOSITE_PREVIEW_FPS_HISTORY;
+        p.composite_preview_fps_count -= 1;
+    }
+    if (p.composite_preview_fps_count >= COMPOSITE_PREVIEW_FPS_HISTORY) {
+        p.composite_preview_fps_history[p.composite_preview_fps_head] = 0;
+        p.composite_preview_fps_head = (p.composite_preview_fps_head + 1) % COMPOSITE_PREVIEW_FPS_HISTORY;
+        p.composite_preview_fps_count -= 1;
+    }
+    const tail = (p.composite_preview_fps_head + p.composite_preview_fps_count) % COMPOSITE_PREVIEW_FPS_HISTORY;
+    p.composite_preview_fps_history[tail] = frame_ms;
+    p.composite_preview_fps_count += 1;
+    p.composite_preview_fps_milli = compositePreviewFpsMilliLocked(p, frame_ms);
+}
+
 fn resetRecordingFrameQueueLocked(p: *Pipe) void {
     for (&p.recording_frame_slots) |*slot| {
         slot.ready = false;
@@ -1784,6 +1824,7 @@ fn renderCompositePreviewLocked(_: [*c]c.JNIEnv, p: *Pipe, update_inputs: bool) 
     }
     p.preview_render_count += 1;
     const end = nowMs();
+    recordCompositePreviewFrameLocked(p, end);
     p.last_render_ms = end - start;
     if (p.last_render_ms >= 24 or @mod(p.preview_render_count, 120) == 0) {
         logi("composite preview perf totalMs={d} renders={d} drops={d}", .{ p.last_render_ms, p.preview_render_count, p.dropped_count });
@@ -3464,6 +3505,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getMetricsSnapshot(env:
         values[77] = p.recording_frame_queue_fallback_count;
         values[78] = p.recording_frame_queue_fbo_recreate_count;
         values[79] = p.recording_frame_queue_next_capture_ms;
+        values[METRICS_COMPOSITE_PREVIEW_FPS_MILLI] = p.composite_preview_fps_milli;
         unlockPipe(p);
         storeMetricsCache(handle, &values);
     } else {
@@ -3640,6 +3682,7 @@ fn detachCompositePreviewSurfaceLocked(p: *Pipe) void {
     }
     p.composite_preview_width = 0;
     p.composite_preview_height = 0;
+    resetCompositePreviewFpsLocked(p);
 }
 
 fn attachCompositePreviewWindowLocked(p: *Pipe, window: ?*c.ANativeWindow) c.jboolean {

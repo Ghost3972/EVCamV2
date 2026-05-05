@@ -191,6 +191,10 @@ class V2CameraEngine(private val context: Context, private val listener: Listene
         return statusController.previewRenderedFrames(index)
     }
 
+    fun compositePreviewRenderedFrames(): Long = statusController.compositePreviewRenderedFrames()
+
+    fun compositePreviewFpsMilli(): Long = statusController.compositePreviewFpsMilli()
+
     fun setPreviewRenderingEnabled(enabled: Boolean) {
         previewSurfaceController.setPreviewRenderingEnabled(enabled)
     }

@@ -95,6 +95,10 @@ internal class V2CameraServiceRuntime(
 
     fun previewRenderedFrames(index: Int): Long = graph.engine.previewRenderedFrames(index)
 
+    fun compositePreviewRenderedFrames(): Long = graph.engine.compositePreviewRenderedFrames()
+
+    fun compositePreviewFpsMilli(): Long = graph.engine.compositePreviewFpsMilli()
+
     fun startRecording() {
         graph.recordingOrchestrator.startRecording()
     }

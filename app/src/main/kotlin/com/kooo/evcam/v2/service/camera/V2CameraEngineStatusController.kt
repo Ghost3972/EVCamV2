@@ -31,6 +31,10 @@ internal class V2CameraEngineStatusController(
         return maxOf(localFrames, nativeFrames)
     }
 
+    fun compositePreviewRenderedFrames(): Long = nativeMetricsSnapshot().metric(NATIVE_COMPOSITE_PREVIEW_RENDERS)
+
+    fun compositePreviewFpsMilli(): Long = nativeMetricsSnapshot().metric(NativeMetricsSnapshot.COMPOSITE_PREVIEW_FPS_MILLI)
+
     fun previewInputSizeLabel(index: Int): String {
         val size = slots.getOrNull(index)?.inputSize ?: fallbackInputSize
         return "${size.width}×${size.height}"

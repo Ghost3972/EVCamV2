@@ -11,7 +11,7 @@
         android:layout_marginStart="240dp"
         android:background="@color/home_preview_background">
 
-        <com.kooo.evcam.v2.ui.widgets.V2AutoFitTextureView
+        <com.kooo.evcam.v2.ui.widgets.V2AutoFitSurfaceView
             android:id="@+id/texture_front"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
