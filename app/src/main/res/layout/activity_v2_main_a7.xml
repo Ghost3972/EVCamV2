@@ -17,6 +17,13 @@
             android:layout_height="match_parent"
             android:layout_gravity="center" />
 
+        <View
+            android:id="@+id/preview_warmup_front"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/home_preview_background"
+            android:visibility="visible" />
+
         <TextView
             android:id="@+id/preview_placeholder_front"
             android:layout_width="match_parent"

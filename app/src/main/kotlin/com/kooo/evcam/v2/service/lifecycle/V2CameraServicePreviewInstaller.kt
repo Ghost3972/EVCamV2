@@ -43,7 +43,6 @@ internal object V2CameraServicePreviewInstaller {
             isUiVisible = { graph.uiVisibilityOrchestrator.isVisible },
             hasOverlayPreview = { graph.previewCoordinator.hasOverlayOwner() },
             restoreMainPreviews = { graph.previewFacade.restorePreviewSurfaces() },
-            resetWatchdog = { reason -> graph.cameraWatchdog.reset(reason) },
             syncRecordingStateAndUi = { graph.statusReporter.publishSnapshot("readiness") },
         )
         graph.previewFacade = V2CameraServicePreviewFacade(

@@ -9,8 +9,6 @@ import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.avoidance.V2AvoidanceController
 import com.kooo.evcam.v2.service.camera.V2CameraEngine
 import com.kooo.evcam.v2.service.camera.V2CameraReadinessOrchestrator
-import com.kooo.evcam.v2.service.camera.V2CameraWatchdog
-import com.kooo.evcam.v2.service.camera.V2WatchdogRestartOrchestrator
 import com.kooo.evcam.v2.service.commands.V2CameraServiceActionRouter
 import com.kooo.evcam.v2.service.commands.V2ServiceCommandQueue
 import com.kooo.evcam.v2.service.display.V2DisplayPowerController
@@ -51,8 +49,6 @@ internal class V2CameraServiceRuntimeGraph(
     lateinit var statusReporter: V2ServiceStatusReporter
     lateinit var displayPowerController: V2DisplayPowerController
     lateinit var displayPowerOrchestrator: V2DisplayPowerOrchestrator
-    lateinit var cameraWatchdog: V2CameraWatchdog
-    lateinit var watchdogRestartOrchestrator: V2WatchdogRestartOrchestrator
     lateinit var settingsRuntimeCoordinator: V2SettingsRuntimeCoordinator
     lateinit var actionRouter: V2CameraServiceActionRouter
     lateinit var lifecycleOrchestrator: V2CameraServiceLifecycleOrchestrator

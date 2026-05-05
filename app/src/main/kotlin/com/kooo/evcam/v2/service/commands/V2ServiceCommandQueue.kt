@@ -8,7 +8,7 @@ import com.kooo.evcam.v2.log.V2AppLog
 /**
  * Single coarse-grained serializer for service state transitions.
  *
- * The Android shell still owns lifecycle/UI callbacks, but camera/recording/display/watchdog
+ * The Android shell still owns lifecycle/UI callbacks, but camera/recording/display
  * commands enter the engine through this queue so competing sources do not interleave direct
  * engine operations on the main thread.
  */

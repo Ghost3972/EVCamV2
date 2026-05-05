@@ -94,7 +94,6 @@ internal object V2CameraServiceRoutingInstaller {
             blindSpotController = graph.blindSpotController,
             fisheyePreviewController = graph.fisheyePreviewController,
             avoidanceController = graph.avoidanceController,
-            cameraWatchdog = graph.cameraWatchdog,
             keepAliveOrchestrator = graph.keepAliveOrchestrator,
             statusReporter = graph.statusReporter,
             autoRecordingController = graph.autoRecordingController,

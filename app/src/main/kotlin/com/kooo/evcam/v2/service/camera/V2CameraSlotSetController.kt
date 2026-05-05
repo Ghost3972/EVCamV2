@@ -32,6 +32,7 @@ internal class V2CameraSlotSetController(
         }
         val startedMs = SystemClock.elapsedRealtime()
         V2AppLog.i(TAG, "startCameras slots=${specs.joinToString { "${it.label}:${it.cameraId}" }}")
+        previewSurfaceController.stopPreviewWorkerForCameraMutation("start_cameras")
         slots.forEach { slot ->
             slot.ensureInputSurface(cameraManager)
             slotLifecycle.openCamera(slot)
@@ -44,6 +45,7 @@ internal class V2CameraSlotSetController(
         bumpCameraGeneration()
         val startedMs = SystemClock.elapsedRealtime()
         V2AppLog.i(TAG, "stopCameras openSlots=${slots.count { it.nativeCameraHandle != 0L }}")
+        previewSurfaceController.stopPreviewWorkerForCameraMutation("stop_cameras")
         previewSurfaceController.detachAttachedPreviewsForCameraStop()
         slots.forEach { slot -> slot.close() }
         V2AppLog.perf(TAG, "stopCameras", SystemClock.elapsedRealtime() - startedMs)

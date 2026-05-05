@@ -15,8 +15,6 @@ internal class V2DisplayPowerOrchestrator(
     private val startRecording: () -> Unit,
     private val publishSnapshot: (String) -> Unit,
     private val dispatchDelayed: (String, Long, () -> Unit) -> Unit,
-    private val resetWatchdog: (String) -> Unit,
-    private val startWatchdog: () -> Unit,
     private val cancelAutoRecording: () -> Unit,
     private val scheduleAutoRecording: () -> Unit,
     private val clearAvoidance: (String) -> Unit,
@@ -33,7 +31,6 @@ internal class V2DisplayPowerOrchestrator(
         val autoRecordingEnabled = isAutoRecordingEnabled()
         resumeRecordingAfterDisplayOn = resumeRecordingAfterDisplayOn || isRecording() || autoRecordingEnabled
         V2AppLog.i(TAG, "display off/pre-STR action=$action: stop recording, detach preview, release cameras resumeRecording=$resumeRecordingAfterDisplayOn autoRecording=$autoRecordingEnabled")
-        resetWatchdog("display_off")
         cancelAutoRecording()
         clearAvoidance("display off")
         hideBlindSpot()
@@ -66,8 +63,6 @@ internal class V2DisplayPowerOrchestrator(
         restoreMainPreviews()
         cancelAutoRecording()
         restoreRecordingAfterDisplayOnIfNeeded()
-        resetWatchdog("display_on")
-        startWatchdog()
         publishSnapshot("display_on")
         V2AppLog.perf(TAG, "displayOn_schedule", SystemClock.elapsedRealtime() - startedMs, "action=$action")
     }

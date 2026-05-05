@@ -1097,7 +1097,7 @@ fn beginDrawPass(p: *Pipe) void {
 fn drawQuadWithFisheye(p: *Pipe, index: usize, q: *const Quad, apply_fisheye: bool) void {
     if (index >= 4) return;
     const input = &p.input[index];
-    if (input.texture == 0) return;
+    if (input.texture == 0 or input.surface_texture_native == null or !input.has_latched_frame) return;
     c.glVertexAttribPointer(@intCast(p.pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &q.verts);
     c.glVertexAttribPointer(@intCast(p.tex_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &q.tex);
     c.glBindTexture(GL_TEXTURE_EXTERNAL_OES, input.texture);

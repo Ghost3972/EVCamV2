@@ -8,7 +8,6 @@ internal class V2CameraReadinessOrchestrator(
     private val isUiVisible: () -> Boolean,
     private val hasOverlayPreview: () -> Boolean,
     private val restoreMainPreviews: () -> Unit,
-    private val resetWatchdog: (reason: String) -> Unit,
     private val syncRecordingStateAndUi: () -> Unit,
 ) {
     fun ensureReadyAfterPermissions() {
@@ -17,16 +16,11 @@ internal class V2CameraReadinessOrchestrator(
         engine.setCameraAccessAllowed(true)
         engine.startCameras()
         restoreMainPreviews()
-        resetWatchdog("permission_ready")
         syncRecordingStateAndUi()
     }
 
     fun updatePreviewRenderingEnabled() {
         engine.setPreviewRenderingEnabled(isUiVisible() || hasOverlayPreview())
-    }
-
-    fun shouldExpectPreviewRendering(recording: Boolean): Boolean {
-        return isUiVisible() || hasOverlayPreview()
     }
 
     private companion object {

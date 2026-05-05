@@ -21,14 +21,17 @@ internal class V2MainPreviewBinder(
     private val previewSurfaces = arrayOfNulls<Surface>(V2_CAMERA_SLOT_COUNT)
     private var compositePreviewSurfaceTexture: SurfaceTexture? = null
     private var compositePreviewAttachState = CompositePreviewAttachState.DETACHED
+    private var compositePreviewFirstFrameShown = false
 
     fun bindPreviews() {
+        resetCompositePreviewFirstFrameGate("bind")
         binding.textureFront.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
                 V2AppLog.i(TAG, "composite preview surface available size=${width}x$height")
                 fpsCounters[COMPOSITE_PREVIEW_INDEX].reset()
                 previewSizeLabels[COMPOSITE_PREVIEW_INDEX] = service()?.compositePreviewSizeLabel() ?: "--×--"
                 binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n-- fps"
+                resetCompositePreviewFirstFrameGate("surface_available")
                 attachCompositePreviewSurface(surface)
             }
 
@@ -36,11 +39,13 @@ internal class V2MainPreviewBinder(
 
             override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
                 V2AppLog.i(TAG, "composite preview surface destroyed")
+                resetCompositePreviewFirstFrameGate("surface_destroyed")
                 detachCompositePreviewSurface(releaseSurface = true)
                 return true
             }
 
             override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+                revealCompositePreviewIfNeeded("first_frame")
                 fpsCounters[COMPOSITE_PREVIEW_INDEX].onFrame()?.let { fps ->
                     binding.fpsFront.text = "${previewSizeLabels[COMPOSITE_PREVIEW_INDEX]}\n$fps fps"
                 }
@@ -64,6 +69,11 @@ internal class V2MainPreviewBinder(
 
     fun updatePreviewPlaceholders(paused: Boolean) {
         binding.previewPlaceholderFront.visibility = if (paused) View.VISIBLE else View.GONE
+        binding.previewWarmupFront.visibility = when {
+            paused -> View.GONE
+            compositePreviewFirstFrameShown -> View.GONE
+            else -> View.VISIBLE
+        }
     }
 
     private fun attachCompositePreviewIfAvailable(reason: String) {
@@ -120,6 +130,19 @@ internal class V2MainPreviewBinder(
             previewSurfaces[COMPOSITE_PREVIEW_INDEX] = null
             compositePreviewSurfaceTexture = null
         }
+    }
+
+    private fun resetCompositePreviewFirstFrameGate(reason: String) {
+        compositePreviewFirstFrameShown = false
+        V2AppLog.d(TAG, "composite preview first frame gate reset reason=$reason")
+        updatePreviewPlaceholders(service()?.isPreviewPausedByAvoidance() == true)
+    }
+
+    private fun revealCompositePreviewIfNeeded(reason: String) {
+        if (compositePreviewFirstFrameShown) return
+        compositePreviewFirstFrameShown = true
+        binding.previewWarmupFront.visibility = View.GONE
+        V2AppLog.i(TAG, "composite preview first frame shown reason=$reason")
     }
 
     private fun updateCompositePreviewLabels() {

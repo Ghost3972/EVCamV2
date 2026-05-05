@@ -147,6 +147,12 @@ internal class V2CameraPreviewSurfaceController(
             .onFailure { V2AppLog.w(TAG, "restart preview worker after surface mutation failed", it) }
     }
 
+    fun stopPreviewWorkerForCameraMutation(reason: String) {
+        if (pipelineHandle == 0L) return
+        runCatching { nativeCompositor.stopPreviewWorker(CAMERA_MUTATION_WORKER_STOP_TIMEOUT_MS) }
+            .onFailure { V2AppLog.w(TAG, "stop preview worker for camera mutation failed reason=$reason", it) }
+    }
+
     fun stopPreviewWorkerForRelease() {
         runCatching { nativeCompositor.stopPreviewWorker() }
     }
@@ -157,5 +163,6 @@ internal class V2CameraPreviewSurfaceController(
 
     private companion object {
         private const val TAG = "V2CameraEngine"
+        private const val CAMERA_MUTATION_WORKER_STOP_TIMEOUT_MS = 2_000L
     }
 }
