@@ -63,7 +63,7 @@ object V2BlindSpotTransform {
                 postRotate(baseRotation, centerX, centerY)
                 if (baseRotation == 90f || baseRotation == 270f) {
                     val scale = width / height
-                    postScale(1f / scale, scale, centerX, centerY)
+                    postScale(scale, 1f / scale, centerX, centerY)
                 }
             }
 
