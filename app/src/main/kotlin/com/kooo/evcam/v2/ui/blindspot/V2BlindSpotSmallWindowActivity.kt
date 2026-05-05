@@ -258,7 +258,7 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
     }
 
     private fun windowDefaultRotationForSide(orientation: String, side: String): Int {
-        if (orientation == V2BlindSpotSettings.WINDOW_ORIENTATION_LANDSCAPE) return 0
+        if (orientation != V2BlindSpotSettings.WINDOW_ORIENTATION_LANDSCAPE) return 0
         return if (side == "right") 270 else 90
     }
 
