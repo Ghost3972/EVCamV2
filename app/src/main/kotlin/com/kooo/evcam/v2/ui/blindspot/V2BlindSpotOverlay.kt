@@ -55,7 +55,6 @@ class V2BlindSpotOverlay(
     private var metricsView: TextView? = null
     private var currentSide: String = "left"
     private var correction = V2BlindSpotCorrection()
-    private var windowSwapped = false
     private val overlayMetrics = V2BlindSpotOverlayMetrics(renderedFrames)
 
     private val metricsRunnable = object : Runnable {
@@ -71,7 +70,6 @@ class V2BlindSpotOverlay(
             val previousSide = currentSide
             currentSide = side
             loadTransformForSide(side)
-            updateWindowSwappedState()
             applyPreviewTransform(textureView)
             if (cameraIndex == index && previewSurfaceController.isAttached(index)) {
                 return
@@ -105,7 +103,6 @@ class V2BlindSpotOverlay(
         metricsView = overlayViews.metricsView
         applyPreviewTransform(textureView)
         windowLayout.createParams(currentSide)
-        updateWindowSwappedState()
         if (!windowLayout.addView(root ?: return)) {
             root = null
             textureView = null
@@ -135,7 +132,6 @@ class V2BlindSpotOverlay(
         metricsView = null
         windowLayout.clear()
         cameraIndex = -1
-        windowSwapped = false
         resetMetricsCounter()
         gestureController.reset()
         V2AppLog.i("V2BlindSpotOverlay", "hide")
@@ -202,14 +198,8 @@ class V2BlindSpotOverlay(
         correction = config.correction
     }
 
-    private fun updateWindowSwappedState() {
-        windowSwapped = V2BlindSpotTransform.isCloserToPortrait(previewRotationDegrees())
-    }
-
     private fun ensureWindowSizeMatchesRotationForUserRotate(updateLayout: Boolean = true) {
-        val desiredSwapped = V2BlindSpotTransform.isCloserToPortrait(previewRotationDegrees())
-        windowSwapped = desiredSwapped
-        if (windowLayout.swapBoundsForRotation(currentSide, desiredSwapped, root, updateLayout)) updateMetricsText()
+        if (updateLayout) updateMetricsText()
     }
 
     private fun hideFromCloseButton() {
@@ -221,12 +211,8 @@ class V2BlindSpotOverlay(
             texture = texture,
             overlayRotationDegrees = rotationDegrees,
             correction = correction,
-            windowSwapped = windowSwapped,
-            previewSize = if (cameraIndex >= 0) previewInputSize(cameraIndex) else null,
         )
     }
-
-    private fun previewRotationDegrees(): Float = V2BlindSpotTransform.effectiveRotation(rotationDegrees, correction)
 
     private fun shouldHandleRootTouch(x: Float, y: Float): Boolean {
         return V2BlindSpotOverlayHitTester.isOutsideControls(

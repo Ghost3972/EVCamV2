@@ -1,7 +1,6 @@
 package com.kooo.evcam.v2.ui.blindspot
 
 import android.graphics.Matrix
-import android.util.Size
 import android.view.Gravity
 import android.view.TextureView
 import android.view.ViewGroup
@@ -13,27 +12,20 @@ object V2BlindSpotTransform {
         texture: TextureView?,
         overlayRotationDegrees: Int,
         correction: V2BlindSpotCorrection,
-        windowSwapped: Boolean,
-        previewSize: Size?,
     ) {
         texture ?: return
         ensureMatchParentBounds(texture)
-        texture.rotation = 0f
-        texture.pivotX = texture.width / 2f
-        texture.pivotY = texture.height / 2f
-        texture.scaleX = 1f
-        texture.scaleY = 1f
-        texture.translationX = 0f
-        texture.translationY = 0f
-        texture.setTransform(matrix(texture, overlayRotationDegrees, correction, windowSwapped, previewSize))
-    }
-
-    fun effectiveRotation(overlayRotationDegrees: Int, correction: V2BlindSpotCorrection): Float =
-        normalizeRotation(overlayRotationDegrees + correction.rotation)
-
-    fun isCloserToPortrait(rotation: Float): Boolean {
-        val mod180 = normalizeRotation(rotation) % 180f
-        return mod180 >= 45f && mod180 < 135f
+        texture.post {
+            if (texture.width <= 0 || texture.height <= 0) return@post
+            texture.rotation = 0f
+            texture.pivotX = texture.width / 2f
+            texture.pivotY = texture.height / 2f
+            texture.scaleX = 1f
+            texture.scaleY = 1f
+            texture.translationX = 0f
+            texture.translationY = 0f
+            texture.setTransform(matrix(texture, overlayRotationDegrees, correction))
+        }
     }
 
     private fun ensureMatchParentBounds(texture: TextureView) {
@@ -53,19 +45,13 @@ object V2BlindSpotTransform {
         texture: TextureView,
         overlayRotationDegrees: Int,
         correction: V2BlindSpotCorrection,
-        windowSwapped: Boolean,
-        previewSize: Size?,
     ): Matrix {
         val width = texture.width.coerceAtLeast(1).toFloat()
         val height = texture.height.coerceAtLeast(1).toFloat()
         val centerX = width / 2f
         val centerY = height / 2f
-        val baseRotation = 0
-        val correctionRotation = effectiveRotation(overlayRotationDegrees, correction)
-        val cropRotation = if (windowSwapped) normalizeRotation(baseRotation + correctionRotation) else normalizeRotation(baseRotation.toFloat())
-        val morePortrait = isCloserToPortrait(cropRotation)
-        val previewW = previewSize?.width ?: 0
-        val previewH = previewSize?.height ?: 0
+        val baseRotation = normalizeRotation(overlayRotationDegrees.toFloat())
+        val correctionRotation = normalizeRotation(correction.rotation)
         val scaleX = correction.scaleX.coerceIn(MIN_CORRECTION_SCALE, MAX_CORRECTION_SCALE)
         val scaleY = correction.scaleY.coerceIn(MIN_CORRECTION_SCALE, MAX_CORRECTION_SCALE)
         val translateX = correction.translateX.coerceIn(MIN_CORRECTION_TRANSLATE, MAX_CORRECTION_TRANSLATE)
@@ -73,27 +59,17 @@ object V2BlindSpotTransform {
         val mirrorX = if (correction.mirrorH) -1f else 1f
         val mirrorY = if (correction.mirrorV) -1f else 1f
         return Matrix().apply {
-            if (baseRotation != 0) {
-                postRotate(baseRotation.toFloat(), centerX, centerY)
-                if (baseRotation == 90 || baseRotation == 270) {
+            if (baseRotation != 0f) {
+                postRotate(baseRotation, centerX, centerY)
+                if (baseRotation == 90f || baseRotation == 270f) {
                     val scale = width / height
                     postScale(1f / scale, scale, centerX, centerY)
                 }
             }
 
-            if (correctionRotation != 0f && windowSwapped && previewW > 0 && previewH > 0) {
-                reset()
-                postScale(previewW.toFloat() / width, previewH.toFloat() / height, centerX, centerY)
-                if (baseRotation != 0) postRotate(baseRotation.toFloat(), centerX, centerY)
-                postRotate(correctionRotation, centerX, centerY)
-                postScale(width / previewH.toFloat(), height / previewW.toFloat(), centerX, centerY)
-                postScale(scaleX, scaleY, centerX, centerY)
-                postTranslate(translateX * width, translateY * height)
-            } else {
-                postScale(scaleX, scaleY, centerX, centerY)
-                if (correctionRotation != 0f) postRotate(correctionRotation, centerX, centerY)
-                postTranslate(translateX * width, translateY * height)
-            }
+            postScale(scaleX, scaleY, centerX, centerY)
+            if (correctionRotation != 0f) postRotate(correctionRotation, centerX, centerY)
+            postTranslate(translateX * width, translateY * height)
 
             if (correction.mirrorH || correction.mirrorV) postScale(mirrorX, mirrorY, centerX, centerY)
         }

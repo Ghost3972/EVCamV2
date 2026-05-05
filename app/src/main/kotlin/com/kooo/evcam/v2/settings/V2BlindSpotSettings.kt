@@ -16,9 +16,13 @@ object V2BlindSpotSettings {
     private const val KEY_OVERLAY_ROTATION_LEFT = "overlay_rotation_left"
     private const val KEY_OVERLAY_ROTATION_RIGHT = "overlay_rotation_right"
     private const val KEY_CORRECTION_ENABLED = "blind_spot_correction_enabled"
+    private const val KEY_WINDOW_ORIENTATION = "window_orientation"
 
     const val DEFAULT_TURN_SIGNAL_PROP_ID = 557875254
     private const val LEGACY_DEFAULT_TURN_SIGNAL_PROP_ID = 289408008
+    const val WINDOW_ORIENTATION_PORTRAIT = "portrait"
+    const val WINDOW_ORIENTATION_LANDSCAPE = "landscape"
+    const val DEFAULT_WINDOW_ORIENTATION = WINDOW_ORIENTATION_PORTRAIT
     const val LEFT_VALUE = 1
     const val RIGHT_VALUE = 2
     const val OFF_VALUE = 0
@@ -72,6 +76,21 @@ object V2BlindSpotSettings {
     fun overlayRotation(context: Context, side: String): Int {
         val key = overlayRotationKey(side)
         return prefs(context).getInt(key, overlayRotation(context))
+    }
+
+    fun windowOrientation(context: Context): String {
+        val value = prefs(context).getString(KEY_WINDOW_ORIENTATION, DEFAULT_WINDOW_ORIENTATION)
+        return if (value == WINDOW_ORIENTATION_LANDSCAPE) {
+            WINDOW_ORIENTATION_LANDSCAPE
+        } else {
+            WINDOW_ORIENTATION_PORTRAIT
+        }
+    }
+
+    fun setWindowOrientation(context: Context, orientation: String) {
+        val normalized = normalizeWindowOrientation(orientation)
+        prefs(context).edit().putString(KEY_WINDOW_ORIENTATION, normalized).apply()
+        V2AppLog.i("V2BlindSpotSettings", "windowOrientation=$normalized")
     }
 
     val DEFAULT_CORRECTION = V2BlindSpotCorrection()
@@ -132,8 +151,8 @@ object V2BlindSpotSettings {
 
     fun setCorrection(context: Context, side: String, correction: V2BlindSpotCorrection) {
         prefs(context).edit()
-            .putFloat(correctionKey(side, "scale_x"), correction.scaleX.coerceIn(0.5f, 2f))
-            .putFloat(correctionKey(side, "scale_y"), correction.scaleY.coerceIn(0.5f, 2f))
+            .putFloat(correctionKey(side, "scale_x"), correction.scaleX.coerceIn(0.1f, 3f))
+            .putFloat(correctionKey(side, "scale_y"), correction.scaleY.coerceIn(0.1f, 3f))
             .putFloat(correctionKey(side, "translate_x"), correction.translateX.coerceIn(-1f, 1f))
             .putFloat(correctionKey(side, "translate_y"), correction.translateY.coerceIn(-1f, 1f))
             .putFloat(correctionKey(side, "rotation"), normalizeRotation(correction.rotation))
@@ -162,6 +181,9 @@ object V2BlindSpotSettings {
     private fun correctionKey(side: String, name: String): String = "blind_spot_correction_${side}_$name"
 
     private fun normalizeRotation(rotation: Float): Float = ((rotation % 360f) + 360f) % 360f
+
+    private fun normalizeWindowOrientation(orientation: String): String =
+        if (orientation == WINDOW_ORIENTATION_LANDSCAPE) WINDOW_ORIENTATION_LANDSCAPE else WINDOW_ORIENTATION_PORTRAIT
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

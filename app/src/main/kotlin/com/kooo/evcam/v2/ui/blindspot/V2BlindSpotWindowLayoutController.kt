@@ -70,21 +70,6 @@ internal class V2BlindSpotWindowLayoutController(
         resetLayoutCache()
     }
 
-    fun swapBoundsForRotation(side: String, desiredSwapped: Boolean, view: View?, updateLayout: Boolean): Boolean {
-        val params = currentParams ?: return false
-        val currentlySwapped = params.width <= params.height
-        if (desiredSwapped == currentlySwapped) return false
-        val nextWidth = clampWidth(params.height)
-        val nextHeight = clampHeight(params.width)
-        params.width = nextWidth
-        params.height = nextHeight
-        params.x = clampX(params.x, nextWidth)
-        params.y = clampY(params.y, nextHeight)
-        if (updateLayout && view != null) updateNow(view)
-        saveBounds(side)
-        return true
-    }
-
     fun requestUpdate(view: View) {
         val params = currentParams ?: return
         if (isCachedLayout(params)) return

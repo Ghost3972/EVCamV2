@@ -28,7 +28,7 @@ internal class V2BlindSpotCorrectionSettingsSection(
         }
         card.addView(cards.cardTexts(
             title = "补盲画面矫正",
-            subtitle = "左右独立缩放、平移、镜像；点击预览后拖动参数可实时查看效果",
+            subtitle = "窗口方向可选；左右独立缩放、平移、镜像；点击预览后拖动参数可实时查看效果",
             useWeight = false
         ))
         val paramsContainer = LinearLayout(activity).apply {
@@ -41,10 +41,48 @@ internal class V2BlindSpotCorrectionSettingsSection(
             paramsContainer.addView(sideSection("left", "左侧摄像头"))
             paramsContainer.addView(sideSection("right", "右侧摄像头"))
         }
+        card.addView(windowOrientationRow())
         card.addView(enableRow(paramsContainer))
         card.addView(paramsContainer)
         rebuildParams()
         return card
+    }
+
+    private fun windowOrientationRow(): View {
+        val labels = listOf("竖向窗口", "横向窗口")
+        val selected = if (V2BlindSpotSettings.windowOrientation(activity) == V2BlindSpotSettings.WINDOW_ORIENTATION_LANDSCAPE) 1 else 0
+        val row = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        row.addView(TextView(activity).apply {
+            text = "窗口方向"
+            textSize = 16f
+            setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val dropdown = cards.dropdownField(
+            labels = labels,
+            selectedIndex = selected,
+            onSelected = { },
+            canSelect = { position ->
+                val orientation = if (position == 1) {
+                    V2BlindSpotSettings.WINDOW_ORIENTATION_LANDSCAPE
+                } else {
+                    V2BlindSpotSettings.WINDOW_ORIENTATION_PORTRAIT
+                }
+                V2BlindSpotSettings.setWindowOrientation(activity, orientation)
+                previewSide?.let { side -> V2CameraServiceCommands.showBlindSpotPreview(activity, side) }
+                Toast.makeText(activity, "补盲窗口方向已切换为${labels[position]}", Toast.LENGTH_SHORT).show()
+                true
+            },
+            widthDp = 240,
+        )
+        row.addView(dropdown, LinearLayout.LayoutParams(dp(240), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.setOnClickListener { dropdown.performClick() }
+        return row
     }
 
     private fun enableRow(paramsContainer: View): View {
@@ -104,8 +142,8 @@ internal class V2BlindSpotCorrectionSettingsSection(
                 V2CameraServiceCommands.showBlindSpotPreview(activity, side)
             }
         }
-        container.addView(sliderRow("缩放X", 0.5f, 2.0f, current.scaleX) { save(current.copy(scaleX = it)) })
-        container.addView(sliderRow("缩放Y", 0.5f, 2.0f, current.scaleY) { save(current.copy(scaleY = it)) })
+        container.addView(sliderRow("缩放X", 0.1f, 3.0f, current.scaleX) { save(current.copy(scaleX = it)) })
+        container.addView(sliderRow("缩放Y", 0.1f, 3.0f, current.scaleY) { save(current.copy(scaleY = it)) })
         container.addView(sliderRow("平移X", -1.0f, 1.0f, current.translateX) { save(current.copy(translateX = it)) })
         container.addView(sliderRow("平移Y", -1.0f, 1.0f, current.translateY) { save(current.copy(translateY = it)) })
         container.addView(sliderRow("旋转", 0f, 360f, current.rotation) { save(current.copy(rotation = it)) })

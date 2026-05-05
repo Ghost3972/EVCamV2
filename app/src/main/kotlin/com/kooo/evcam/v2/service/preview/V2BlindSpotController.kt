@@ -85,7 +85,7 @@ class V2BlindSpotController(
         }
         cancelPendingShowHide()
         V2AppLog.i(TAG, "blind spot correction preview side=$normalizedSide")
-        showNow(normalizedSide)
+        showNow(normalizedSide, forceRefresh = true)
     }
 
     fun hide() {
@@ -153,7 +153,7 @@ class V2BlindSpotController(
         showNow(side)
     }
 
-    private fun showNow(side: String) {
+    private fun showNow(side: String, forceRefresh: Boolean = false) {
         val startedMs = android.os.SystemClock.elapsedRealtime()
         if (shouldAvoidWindow()) {
             V2AppLog.i(TAG, "blind spot showNow skipped: blind spot avoidance active target=${avoidanceTarget()} side=$side")
@@ -166,7 +166,12 @@ class V2BlindSpotController(
         val previousIndex = cameraIndex
         val previousSide = activeSide
         if (previousIndex == index && previousSide == side) {
-            V2AppLog.i(TAG, "blind spot show skipped: already active side=$side index=$index")
+            if (forceRefresh) {
+                V2BlindSpotSmallWindowActivity.show(context, side, index)
+                V2AppLog.i(TAG, "blind spot small window refreshed side=$side index=$index")
+            } else {
+                V2AppLog.i(TAG, "blind spot show skipped: already active side=$side index=$index")
+            }
             return
         }
         hideFisheyePreview()
