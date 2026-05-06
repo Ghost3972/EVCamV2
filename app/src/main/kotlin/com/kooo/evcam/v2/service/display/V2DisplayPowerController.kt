@@ -18,6 +18,7 @@ class V2DisplayPowerController(
         onDisplayOn = { action -> onDisplayOn(action) },
     )
     private var ecarxClient: V2EcarxDisplayPowerClient? = null
+    private var pendingEcarxOffRunnable: Runnable? = null
 
     fun isOn(): Boolean = displayPowerOn
 
@@ -27,19 +28,23 @@ class V2DisplayPowerController(
     }
 
     fun unregister() {
+        cancelPendingEcarxOff()
         stopEcarxClient()
         coordinator.unregister()
     }
 
     fun markOff(action: String?) {
+        cancelPendingEcarxOff()
         displayPowerOn = V2DisplayPowerState.updateFromAction(action) ?: false
     }
 
     fun markOn(action: String?) {
+        cancelPendingEcarxOff()
         displayPowerOn = V2DisplayPowerState.updateFromAction(action) ?: true
     }
 
     fun markOnIfAlreadyOn(action: String?) {
+        cancelPendingEcarxOff()
         V2DisplayPowerState.updateFromAction(action) ?: V2DisplayPowerState.updateFromSystem(true)
     }
 
@@ -76,20 +81,47 @@ class V2DisplayPowerController(
             }
         }
         if (powerOn == displayPowerOn) {
+            if (powerOn) cancelPendingEcarxOff()
             V2DisplayPowerState.updateFromSystem(powerOn)
             V2AppLog.i(TAG, "ECarX display power unchanged displayOn=$powerOn state=$state source=$source")
             return
         }
         if (powerOn) {
+            cancelPendingEcarxOff()
             V2AppLog.i(TAG, "ECarX display power ON state=$state source=$source: restore cameras")
             onDisplayOn("ecarx_display_power:$source:state=$state")
         } else {
-            V2AppLog.w(TAG, "ECarX display power OFF state=$state source=$source: release cameras before STR")
-            onDisplayOff("ecarx_display_power:$source:state=$state")
+            scheduleEcarxDisplayOff(state, source)
         }
+    }
+
+    private fun scheduleEcarxDisplayOff(state: Int, source: String) {
+        val action = "ecarx_display_power:$source:state=$state"
+        cancelPendingEcarxOff()
+        val runnable = Runnable {
+            pendingEcarxOffRunnable = null
+            val confirmedState = ecarxClient?.currentState(V2EcarxDisplayPowerClient.DISPLAY_ID_CSD) ?: state
+            val confirmedOff = confirmedState == V2EcarxDisplayPowerClient.POWER_ALL_OFF ||
+                confirmedState == V2EcarxDisplayPowerClient.BACKLIGHT_OFF_TOUCH_ON
+            if (!confirmedOff) {
+                V2AppLog.i(TAG, "ECarX display power OFF canceled state=$state confirmed=$confirmedState source=$source")
+                return@Runnable
+            }
+            V2AppLog.w(TAG, "ECarX display power OFF confirmed state=$confirmedState source=$source: release cameras before STR")
+            onDisplayOff(action)
+        }
+        pendingEcarxOffRunnable = runnable
+        V2AppLog.i(TAG, "ECarX display power OFF pending state=$state source=$source debounce=${ECARX_OFF_DEBOUNCE_MS}ms")
+        handler.postDelayed(runnable, ECARX_OFF_DEBOUNCE_MS)
+    }
+
+    private fun cancelPendingEcarxOff() {
+        pendingEcarxOffRunnable?.let(handler::removeCallbacks)
+        pendingEcarxOffRunnable = null
     }
 
     private companion object {
         private const val TAG = "V2CameraService"
+        private const val ECARX_OFF_DEBOUNCE_MS = 800L
     }
 }

@@ -65,12 +65,13 @@ internal class V2CameraPreviewSurfaceController(
     fun reattachCompositePreviewSurface() {
         val surface = compositePreviewSurface?.takeIf { it.isValid } ?: return
         if (released() || pipelineHandle == 0L || !cameraAccessAllowed()) return
-        V2AppLog.w(TAG, "reattach composite preview")
         if (compositePreviewAttached) {
-            runCatching { nativeCompositor.detachCompositePreview() }
-                .onFailure { V2AppLog.w(TAG, "detach composite preview before reattach failed", it) }
-            compositePreviewAttached = false
+            V2AppLog.d(TAG, "reattach composite preview skipped: already attached")
+            startPreviewWorkerIfNeeded()
+            publishStatusIfNeeded()
+            return
         }
+        V2AppLog.w(TAG, "reattach composite preview")
         attachCompositePreviewSurface(surface)
     }
 

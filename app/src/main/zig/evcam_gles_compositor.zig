@@ -87,7 +87,7 @@ const METRICS_COMPOSITE_PREVIEW_FPS_MILLI: usize = 112;
 const METRICS_SNAPSHOT_LEN: usize = METRICS_COMPOSITE_PREVIEW_FPS_MILLI + 1;
 const FPS_MILLI_SCALE: i64 = 1000;
 const PRIO_PROCESS: c_int = 0;
-const ANDROID_PRIORITY_DISPLAY: c_int = -4;
+const ANDROID_PRIORITY_FOREGROUND: c_int = -2;
 var g_metrics_cache_values: [MAX_PIPES][METRICS_SNAPSHOT_LEN]c.jlong = [_][METRICS_SNAPSHOT_LEN]c.jlong{[_]c.jlong{0} ** METRICS_SNAPSHOT_LEN} ** MAX_PIPES;
 var g_last_error: [256:0]u8 = initError("OK");
 var g_error_scratch: [128:0]u8 = [_:0]u8{0} ** 128;
@@ -352,7 +352,7 @@ fn attachWorkerEnv() ?[*c]c.JNIEnv {
 fn boostRenderWorkerPriority() void {
     const tid = gettid();
     if (tid <= 0) return;
-    const rc = setpriority(PRIO_PROCESS, tid, ANDROID_PRIORITY_DISPLAY);
+    const rc = setpriority(PRIO_PROCESS, tid, ANDROID_PRIORITY_FOREGROUND);
     if (rc != 0) {
         logd("render worker priority boost unavailable tid={} rc={}", .{ tid, rc });
     }
@@ -998,6 +998,10 @@ fn makeCurrent(p: *Pipe, surface: c.EGLSurface) bool {
     return true;
 }
 
+fn setPreviewSwapInterval(p: *Pipe) void {
+    _ = c.eglSwapInterval(p.display, 1);
+}
+
 fn updateSurfaceTexture(st: ?*c.ASurfaceTexture) bool {
     const native_st = st orelse {
         setErrorSlice("missing native ASurfaceTexture");
@@ -1414,6 +1418,7 @@ fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
     }
     const start = nowMs();
     if (!makeCurrent(p, p.preview_surface[i])) return false;
+    setPreviewSwapInterval(p);
     _ = env;
     if (!latchInputTextureLocked(&p.input[i])) {
         clearCurrent(p);
@@ -1461,6 +1466,7 @@ fn renderPreviewFromLatchedLocked(p: *Pipe, index: i32) bool {
     }
     const start = nowMs();
     if (!makeCurrent(p, p.preview_surface[i])) return false;
+    setPreviewSwapInterval(p);
     p.input[i].preview_generation = p.input[i].frame_generation;
     const size = previewWindowSizeLocked(p, i, @mod(p.input[i].preview_render_count, 120) == 0);
     const vw = size.width;
@@ -1802,6 +1808,7 @@ fn renderCompositePreviewLocked(_: [*c]c.JNIEnv, p: *Pipe, update_inputs: bool) 
     }
 
     if (!makeCurrent(p, p.composite_preview_surface)) return false;
+    setPreviewSwapInterval(p);
     if (queued_texture != 0) {
         drawTexture2DToCurrentSurfaceLocked(p, queued_texture, vw, vh);
     } else {

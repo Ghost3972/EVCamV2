@@ -95,6 +95,13 @@ internal class V2EcarxDisplayPowerClient(
             .onFailure { V2AppLog.e(TAG, "query current state failed reason=$reason", it) }
     }
 
+    fun currentState(displayId: Int): Int? {
+        val displayPowerService = service ?: return null
+        return runCatching { displayPowerService.getDisplayPowerState(displayId) }
+            .onFailure { V2AppLog.e(TAG, "read current state failed displayId=$displayId", it) }
+            .getOrNull()
+    }
+
     private fun scheduleRebind(reason: String) {
         if (stopped) return
         handler.removeCallbacks(rebindRunnable)
