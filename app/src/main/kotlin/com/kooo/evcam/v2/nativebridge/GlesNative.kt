@@ -75,9 +75,6 @@ object GlesNative {
         fpsRangeUpper: Int,
     ): Long
     external fun releaseNativeCameraPreview(cameraHandle: Long): Boolean
-    external fun nativeEmergencyRequest(startWallClockMs: Long, endWallClockMs: Long): Boolean
-    external fun nativeEmergencyExtractPending(outputDir: String, stoppedAtWallClockMs: Long): Array<String>
-    external fun nativeEmergencyClearPending(): Int
     external fun nativePrepareSegmentCacheCallback(): Boolean
     external fun nativeCleanupStorage(outputDir: String, reservedBytes: Long, availableBytes: Long): LongArray
     external fun nativeListPlaybackVideos(scanDirs: Array<String>): Array<String>

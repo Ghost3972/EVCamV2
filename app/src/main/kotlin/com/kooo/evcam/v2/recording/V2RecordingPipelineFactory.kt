@@ -14,7 +14,6 @@ object V2RecordingPipelineFactory {
         val videoBitrate: Int,
         val recordingFps: Int,
         val segmentDurationMs: Long,
-        val fileSuffix: String = "",
     )
 
     fun create(
@@ -32,7 +31,6 @@ object V2RecordingPipelineFactory {
             videoBitrate = config.videoBitrate,
             recordingFps = config.recordingFps,
             segmentDurationMs = config.segmentDurationMs,
-            fileSuffix = config.fileSuffix,
             onFailure = onFailure,
         )
 }

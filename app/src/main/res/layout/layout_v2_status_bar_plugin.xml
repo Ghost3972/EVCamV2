@@ -53,23 +53,6 @@
         android:background="#1A000000" />
 
     <Button
-        android:id="@+id/btn_status_bar_emergency"
-        android:layout_width="match_parent"
-        android:layout_height="@dimen/v2_status_bar_btn_h"
-        android:layout_marginTop="@dimen/v2_status_bar_divider_gap"
-        android:background="@drawable/v2_status_bar_button_bg"
-        android:gravity="center"
-        android:includeFontPadding="false"
-        android:stateListAnimator="@null"
-        android:textAlignment="center"
-        android:text="紧急录制"
-        android:textAllCaps="false"
-        android:textColor="#E5000000"
-        android:fontFamily="sans-serif-medium"
-        android:textSize="@dimen/v2_status_bar_body_text"
-        android:textStyle="bold" />
-
-    <Button
         android:id="@+id/btn_status_bar_open"
         android:layout_width="match_parent"
         android:layout_height="@dimen/v2_status_bar_btn_h"

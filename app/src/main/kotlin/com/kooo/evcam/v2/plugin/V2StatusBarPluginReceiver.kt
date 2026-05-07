@@ -10,8 +10,7 @@ import com.kooo.evcam.v2.service.V2CameraForegroundService
 class V2StatusBarPluginReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action
-        if (action != V2CameraForegroundService.ACTION_TOGGLE_RECORDING_FROM_PLUGIN &&
-            action != V2CameraForegroundService.ACTION_START_EMERGENCY_FROM_PLUGIN) return
+        if (action != V2CameraForegroundService.ACTION_TOGGLE_RECORDING_FROM_PLUGIN) return
 
         Log.i(TAG, "plugin command received action=$action")
         val serviceIntent = Intent(context, V2CameraForegroundService::class.java).setAction(action)

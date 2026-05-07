@@ -1,9 +1,7 @@
-package com.kooo.evcam.v2.service.lifecycle
+package com.kooo.evcam.v2.service.runtime
 
 import android.app.Service
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.os.PowerManager
 import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.avoidance.V2AvoidanceController
@@ -14,6 +12,7 @@ import com.kooo.evcam.v2.service.commands.V2ServiceCommandQueue
 import com.kooo.evcam.v2.service.display.V2DisplayPowerController
 import com.kooo.evcam.v2.service.display.V2DisplayPowerOrchestrator
 import com.kooo.evcam.v2.service.keepalive.V2KeepAliveOrchestrator
+import com.kooo.evcam.v2.service.lifecycle.V2CameraServiceLifecycleOrchestrator
 import com.kooo.evcam.v2.service.preview.V2BlindSpotController
 import com.kooo.evcam.v2.service.preview.V2CameraServicePreviewFacade
 import com.kooo.evcam.v2.service.preview.V2FisheyePreviewController
@@ -22,6 +21,7 @@ import com.kooo.evcam.v2.service.recording.V2AutoRecordingController
 import com.kooo.evcam.v2.service.recording.V2RecordingOrchestrator
 import com.kooo.evcam.v2.service.settings.V2SettingsRuntimeCoordinator
 import com.kooo.evcam.v2.service.status.V2ServiceStatusReporter
+import com.kooo.evcam.v2.service.status.V2ServiceStateStore
 import com.kooo.evcam.v2.service.status.V2UiVisibilityOrchestrator
 import com.kooo.evcam.v2.service.vhal.V2CustomKeyController
 import com.kooo.evcam.v2.settings.V2SettingsRepository
@@ -30,13 +30,15 @@ internal class V2CameraServiceRuntimeGraph(
     val service: V2CameraForegroundService,
     val engineListener: V2CameraEngine.Listener,
 ) {
-    val mainHandler = Handler(Looper.getMainLooper())
+    val threads = V2CameraServiceThreads()
+    val mainHandler = threads.mainHandler
+    val workerHandler = threads.workerHandler
     lateinit var commandQueue: V2ServiceCommandQueue
     lateinit var engine: V2CameraEngine
+    lateinit var stateStore: V2ServiceStateStore
     lateinit var keepAliveOrchestrator: V2KeepAliveOrchestrator
     lateinit var autoRecordingController: V2AutoRecordingController
     var uiStatusListener: ((String) -> Unit)? = null
-    var uiEmergencyRecordingListener: ((Boolean, Long) -> Unit)? = null
     lateinit var uiVisibilityOrchestrator: V2UiVisibilityOrchestrator
     lateinit var previewCoordinator: V2PreviewSurfaceCoordinator
     lateinit var previewFacade: V2CameraServicePreviewFacade

@@ -43,15 +43,7 @@ internal class V2CameraRecordingController(
     val startedAtMs: Long get() = recordingStartedAtMs
 
     fun startNormalRecording() {
-        startRecordingInternal(fileSuffix = "", activeSegmentDurationMs = segmentDurationMs)
-    }
-
-    fun startEventRecording(durationMs: Long) {
-        startRecordingInternal(fileSuffix = "_event", activeSegmentDurationMs = durationMs + EVENT_SEGMENT_GUARD_MS)
-    }
-
-    fun requestEmergencyClip(durationMs: Long): Boolean {
-        return pipeline?.requestEmergencyClip(System.currentTimeMillis(), durationMs) == true
+        startRecordingInternal()
     }
 
     fun stopBlockingForSwitch() {
@@ -69,7 +61,7 @@ internal class V2CameraRecordingController(
     fun toggleRecording(): Boolean {
         when {
             normalRecording -> stop()
-            recording -> V2AppLog.i(TAG, "toggleRecording ignored: event recording active")
+            recording -> V2AppLog.i(TAG, "toggleRecording ignored: recording active")
             else -> startNormalRecording()
         }
         return normalRecording
@@ -77,8 +69,7 @@ internal class V2CameraRecordingController(
 
     fun metricsSnapshot(): RecordingMetrics? = pipeline?.metricsSnapshot()
 
-    private fun startRecordingInternal(fileSuffix: String, activeSegmentDurationMs: Long) {
-        val normalMode = fileSuffix.isEmpty()
+    private fun startRecordingInternal() {
         if (!cameraAccessAllowed()) {
             V2AppLog.w(TAG, "startRecording skipped: screen is off")
             return
@@ -103,7 +94,7 @@ internal class V2CameraRecordingController(
             return
         }
 
-        V2AppLog.i(TAG, "startRecording mode=composite outputSize=${outputSize.width}x${outputSize.height} cameras=$openCount bitrate=$bitrate fps=$fps segmentMs=$activeSegmentDurationMs suffix=$fileSuffix codec=H.264")
+        V2AppLog.i(TAG, "startRecording mode=composite outputSize=${outputSize.width}x${outputSize.height} cameras=$openCount bitrate=$bitrate fps=$fps segmentMs=$segmentDurationMs codec=H.264")
         configureNativeRuntime("recording-start")
         val next = V2RecordingPipelineFactory.create(
             context = context,
@@ -115,8 +106,7 @@ internal class V2CameraRecordingController(
                 outputHeight = outputSize.height,
                 videoBitrate = bitrate,
                 recordingFps = fps,
-                segmentDurationMs = activeSegmentDurationMs,
-                fileSuffix = fileSuffix,
+                segmentDurationMs = segmentDurationMs,
             ),
             onFailure = { message -> handleRecorderFailure(message) },
         )
@@ -130,9 +120,9 @@ internal class V2CameraRecordingController(
 
         pipeline = next
         recording = true
-        normalRecording = normalMode
+        normalRecording = true
         recordingStartedAtMs = SystemClock.elapsedRealtime()
-        V2AppLog.perf(TAG, "startRecording", SystemClock.elapsedRealtime() - startedMs, "suffix=$fileSuffix")
+        V2AppLog.perf(TAG, "startRecording", SystemClock.elapsedRealtime() - startedMs)
         publishStatus()
     }
 
@@ -169,6 +159,5 @@ internal class V2CameraRecordingController(
 
     private companion object {
         private const val TAG = "V2CameraEngine"
-        private const val EVENT_SEGMENT_GUARD_MS = 5_000L
     }
 }

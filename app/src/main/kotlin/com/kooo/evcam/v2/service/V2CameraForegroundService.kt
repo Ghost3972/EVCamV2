@@ -8,7 +8,7 @@ import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.log.V2BroadcastLogger
-import com.kooo.evcam.v2.service.lifecycle.V2CameraServiceRuntime
+import com.kooo.evcam.v2.service.runtime.V2CameraServiceRuntime
 
 class V2CameraForegroundService : Service() {
     companion object {
@@ -23,12 +23,10 @@ class V2CameraForegroundService : Service() {
         const val ACTION_SHOW_BLIND_SPOT_PREVIEW = "com.kooo.evcam.v2.action.SHOW_BLIND_SPOT_PREVIEW"
         const val ACTION_HIDE_BLIND_SPOT_PREVIEW = "com.kooo.evcam.v2.action.HIDE_BLIND_SPOT_PREVIEW"
         const val ACTION_TOGGLE_RECORDING_FROM_PLUGIN = "com.kooo.evcam.v2.action.PLUGIN_TOGGLE_RECORDING"
-        const val ACTION_START_EMERGENCY_FROM_PLUGIN = "com.kooo.evcam.v2.action.PLUGIN_START_EMERGENCY"
         const val EXTRA_CAMERA_INDEX = "camera_index"
         const val EXTRA_SIDE = "side"
         const val EXTRA_SETTINGS_CATEGORY = "settings_category"
         internal const val AUTO_START_RECORDING_DELAY_MS = 0L
-        const val EMERGENCY_RECORDING_DURATION_MS = 15_000L
 
         @Volatile var isRunning = false
             private set
@@ -139,23 +137,12 @@ class V2CameraForegroundService : Service() {
         runtime.stopRecording()
     }
 
-    fun startEmergencyRecording(
-        durationMs: Long = EMERGENCY_RECORDING_DURATION_MS,
-        onStateChanged: ((Boolean) -> Unit)? = null,
-    ): Boolean {
-        return runtime.startEmergencyRecording(durationMs, onStateChanged)
-    }
-
     fun shutdownFromUi() {
         runtime.shutdownFromUi()
     }
 
     fun setUiStatusListener(listener: ((String) -> Unit)?) {
         runtime.setUiStatusListener(listener)
-    }
-
-    fun setUiEmergencyRecordingListener(listener: ((Boolean, Long) -> Unit)?) {
-        runtime.setUiEmergencyRecordingListener(listener)
     }
 
     fun setUiVisibility(visible: Boolean, hideListener: (() -> Unit)? = null) {

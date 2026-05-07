@@ -10,7 +10,7 @@ object V2RecordingConfigProvider {
     fun current(context: Context, screenSize: Size): V2RecordingConfig {
         val recording = V2SettingsRepository.recordingConfig(context)
         val perCameraSize = V2RecordingSettings.sizeFromValue(recording.resolution) ?: screenSize
-        val outputSize = V2RecordingSettings.compositeOutputSize(perCameraSize, screenSize)
+        val outputSize = V2RecordingSettings.compositeOutputSize(perCameraSize)
         return V2RecordingConfig(
             size = perCameraSize,
             outputSize = outputSize,

@@ -6,7 +6,6 @@ import android.os.Build
 import android.util.Size
 import android.view.WindowManager
 import com.kooo.evcam.v2.log.V2AppLog
-import kotlin.math.min
 
 object V2RecordingSettings {
     private const val PREFS = "evcam_v2_recording_settings"
@@ -132,16 +131,7 @@ object V2RecordingSettings {
             .coerceAtMost(MAX_COMPOSITE_BITRATE)
             .toInt()
 
-    fun compositeOutputSize(cameraSize: Size, screenSize: Size): Size {
-        val ideal = evenSize(Size(cameraSize.width * COMPOSITE_COLUMNS, cameraSize.height * COMPOSITE_ROWS))
-        val max = evenSize(screenSize)
-        if (ideal.width <= max.width && ideal.height <= max.height) return ideal
-        val scale = min(max.width.toDouble() / ideal.width.toDouble(), max.height.toDouble() / ideal.height.toDouble())
-        return evenSize(Size(
-            (ideal.width * scale).toInt().coerceAtLeast(2),
-            (ideal.height * scale).toInt().coerceAtLeast(2),
-        ))
-    }
+    fun compositeOutputSize(cameraSize: Size): Size = evenSize(cameraSize)
 
     fun screenSize(context: Context): Size {
         val fallback = Size(2560, 1600)

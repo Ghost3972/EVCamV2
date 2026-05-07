@@ -29,19 +29,12 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val contextResolver = V2StatusBarContextResolver(APP_PACKAGE, TAG)
     private val userActions = V2StatusBarUserActionDispatcher(TAG)
-    private val emergencyButtonRenderer = V2StatusBarEmergencyButtonRenderer()
     private var statusText: TextView? = null
     private var recordingLabel: TextView? = null
     private var recordingSwitch: CheckedTextView? = null
-    private var emergencyButton: TextView? = null
     private var notificationSeen = false
     private var notificationRecording = false
-    private var notificationEmergency: Boolean? = null
-    private var notificationEmergencyEndsAtMs = 0L
     private var lastNotificationStatus = ""
-    private var optimisticEmergencyUntilMs = 0L
-    private var emergencyAutoCloseArmed = false
-    private var emergencyAutoCloseAtMs = 0L
 
     override fun onCreate(sysuiContext: Context, pluginContext: Context) {
         this.sysuiContext = sysuiContext
@@ -76,10 +69,8 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         statusText = view.findViewById(R.id.tv_status_bar_recording_state)
         recordingLabel = view.findViewById(R.id.tv_status_bar_recording_label)
         recordingSwitch = view.findViewById(R.id.switch_status_bar_recording)
-        emergencyButton = view.findViewById(R.id.btn_status_bar_emergency)
         view.findViewById<View?>(R.id.header_status_bar_recording)?.setOnClickListener(this)
         recordingSwitch?.setOnClickListener(this)
-        emergencyButton?.setOnClickListener(this)
         view.findViewById<View?>(R.id.btn_status_bar_open)?.setOnClickListener(this)
         refreshState()
         return view
@@ -91,12 +82,6 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         lastNotificationStatus = status
         notificationSeen = true
         notificationRecording = status.contains("rec=ON")
-        notificationEmergency = when {
-            status.contains("emg=ON") -> true
-            status.contains("emg=OFF") -> false
-            else -> null
-        }
-        notificationEmergencyEndsAtMs = parseEmergencyEnd(status)
         mainHandler.post(::refreshState)
     }
 
@@ -106,15 +91,6 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
                 Log.i(TAG, "plugin menu click: toggle recording")
                 startServiceAction(V2CameraForegroundService.ACTION_TOGGLE_RECORDING_FROM_PLUGIN)
                 scheduleRefresh()
-            }
-            R.id.btn_status_bar_emergency -> {
-                Log.i(TAG, "plugin menu click: emergency recording")
-                optimisticEmergencyUntilMs = System.currentTimeMillis() + EMERGENCY_OPTIMISTIC_MS
-                emergencyAutoCloseArmed = true
-                emergencyAutoCloseAtMs = optimisticEmergencyUntilMs
-                renderState(serviceReady = true, recording = currentRecording(), emergency = true, emergencyEndsAtMs = optimisticEmergencyUntilMs)
-                startServiceAction(V2CameraForegroundService.ACTION_START_EMERGENCY_FROM_PLUGIN)
-                scheduleEmergencyRefreshLoop()
             }
             R.id.btn_status_bar_open -> {
                 Log.i(TAG, "plugin menu click: open main")
@@ -156,63 +132,19 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         val snapshot = V2StatusBarStateStore.read(stateContext())
         val serviceReady = notificationSeen || snapshot.serviceReady
         val recording = if (notificationSeen) notificationRecording else snapshot.recording
-        val now = System.currentTimeMillis()
-        val emergencyEndsAtMs = emergencyEndsAtMs(snapshot, now)
-        val emergency = snapshot.emergency || notificationEmergency == true || now < optimisticEmergencyUntilMs || now < emergencyAutoCloseAtMs
-        renderState(serviceReady, recording, emergency, emergencyEndsAtMs)
+        renderState(serviceReady, recording)
     }
 
-    private fun renderState(serviceReady: Boolean, recording: Boolean, emergency: Boolean, emergencyEndsAtMs: Long = 0L) {
+    private fun renderState(serviceReady: Boolean, recording: Boolean) {
         val switch = recordingSwitch ?: return
         val text = statusText ?: return
         switch.isChecked = recording
         recordingLabel?.text = "行车记录仪"
-        emergencyButtonRenderer.render(emergencyButton, emergency, emergencyEndsAtMs)
-        text.text = statusLabel(serviceReady, recording, emergency)
+        text.text = statusLabel(serviceReady, recording)
     }
 
-    private fun emergencyEndsAtMs(snapshot: V2StatusBarStateStore.Snapshot, now: Long): Long = when {
-        snapshot.emergencyEndsAtMs > now -> snapshot.emergencyEndsAtMs
-        notificationEmergencyEndsAtMs > now -> notificationEmergencyEndsAtMs
-        optimisticEmergencyUntilMs > now -> optimisticEmergencyUntilMs
-        else -> 0L
-    }
-
-    private fun parseEmergencyEnd(status: String): Long {
-        val start = status.indexOf("emgEnd=")
-        if (start < 0) return 0L
-        val valueStart = start + "emgEnd=".length
-        val valueEnd = status.indexOf('\n', valueStart).takeIf { it >= 0 } ?: status.length
-        return status.substring(valueStart, valueEnd).toLongOrNull() ?: 0L
-    }
-
-    private fun currentRecording(): Boolean = recordingSwitch?.isChecked ?: notificationRecording
-
-    private fun scheduleEmergencyRefreshLoop() {
-        mainHandler.removeCallbacks(emergencyRefreshRunnable)
-        mainHandler.postDelayed(emergencyRefreshRunnable, REFRESH_DELAY_MS)
-    }
-
-    private val emergencyRefreshRunnable = object : Runnable {
-        override fun run() {
-            refreshState()
-            val snapshot = V2StatusBarStateStore.read(stateContext())
-            val now = System.currentTimeMillis()
-            val shouldContinue = snapshot.emergency || notificationEmergency == true || now < optimisticEmergencyUntilMs || now < emergencyAutoCloseAtMs
-            if (emergencyAutoCloseArmed && emergencyAutoCloseAtMs > 0L && now >= emergencyAutoCloseAtMs) {
-                emergencyAutoCloseArmed = false
-                emergencyAutoCloseAtMs = 0L
-                callback?.dismissDialog()
-                return
-            }
-            if (shouldContinue) mainHandler.postDelayed(this, REFRESH_DELAY_MS)
-        }
-    }
-
-    private fun statusLabel(serviceReady: Boolean, recording: Boolean, emergency: Boolean): String = when {
+    private fun statusLabel(serviceReady: Boolean, recording: Boolean): String = when {
         !serviceReady -> "未录制"
-        emergency && recording -> "循环录制中 · 紧急录制中"
-        emergency -> "紧急录制中"
         recording -> "循环录制中"
         else -> "未录制"
     }
@@ -230,6 +162,5 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         private const val APP_PACKAGE = "com.kooo.evcam.v2"
         private const val PLUGIN_ID = 132
         private const val REFRESH_DELAY_MS = 1_000L
-        private const val EMERGENCY_OPTIMISTIC_MS = 15_000L
     }
 }

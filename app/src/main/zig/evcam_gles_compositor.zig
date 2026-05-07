@@ -7,7 +7,6 @@ const writer_mod = @import("evcam_writer.zig");
 const jpeg = @import("evcam_jpeg.zig");
 const files = @import("evcam_files.zig");
 const playback_cache = @import("evcam_playback_cache.zig");
-const emergency_clip = @import("evcam_emergency_clip.zig");
 
 // Use Zig 0.16's std.Io namespace for future file/stream I/O task coordination;
 // std.io was removed. NDK camera callbacks, EGL/GLES render ownership, and
@@ -33,8 +32,6 @@ const TICK_NEXT_INDEX_SHIFT = types.TICK_NEXT_INDEX_SHIFT;
 const WORKER_ERROR_THREAD_ATTACH = types.WORKER_ERROR_THREAD_ATTACH;
 const WORKER_ERROR_TICK_RENDER_DRAIN = types.WORKER_ERROR_TICK_RENDER_DRAIN;
 const MAX_NATIVE_CAMERAS = types.MAX_NATIVE_CAMERAS;
-const MAX_EMERGENCY_SOURCES = types.MAX_EMERGENCY_SOURCES;
-const MAX_EMERGENCY_REQUESTS = types.MAX_EMERGENCY_REQUESTS;
 const COMPOSITE_PREVIEW_FPS_HISTORY = types.COMPOSITE_PREVIEW_FPS_HISTORY;
 const COMPOSITE_PREVIEW_FPS_WINDOW_MS = types.COMPOSITE_PREVIEW_FPS_WINDOW_MS;
 const O_RDWR_ANDROID = types.O_RDWR_ANDROID;
@@ -42,11 +39,8 @@ const O_CREAT_ANDROID = types.O_CREAT_ANDROID;
 const O_TRUNC_ANDROID = types.O_TRUNC_ANDROID;
 const THUMBNAIL_WIDTH = types.THUMBNAIL_WIDTH;
 const THUMBNAIL_HEIGHT = types.THUMBNAIL_HEIGHT;
-const NativeTm = types.NativeTm;
 const EglPresentationTimeAndroidFn = types.EglPresentationTimeAndroidFn;
 const NativeCameraPreview = types.NativeCameraPreview;
-const EmergencySourceSegment = types.EmergencySourceSegment;
-const EmergencyClipRequest = types.EmergencyClipRequest;
 const Input = types.Input;
 const Quad = types.Quad;
 const OverlayBatch = types.OverlayBatch;
@@ -61,7 +55,6 @@ const RenderCommand = types.RenderCommand;
 const RenderRuntimeConfig = types.RenderRuntimeConfig;
 const Pipe = types.Pipe;
 const initZ = types.initZ;
-const EmergencyProtectionSnapshot = storage.EmergencyProtectionSnapshot;
 
 extern fn open(path: [*c]const u8, flags: c_int, mode: c_int) c_int;
 extern fn close(fd: c_int) c_int;
@@ -72,8 +65,6 @@ extern fn gettid() c_int;
 extern fn setpriority(which: c_int, who: c_int, prio: c_int) c_int;
 extern fn malloc(size: usize) ?*anyopaque;
 extern fn free(ptr: ?*anyopaque) void;
-
-extern fn localtime_r(timep: *const c_long, result: *NativeTm) ?*NativeTm;
 
 var g_io_instance: std.Io.Threaded = .init_single_threaded;
 var g_io_threaded_ready: bool = false;
@@ -95,10 +86,6 @@ var g_presentation_time_android: ?EglPresentationTimeAndroidFn = null;
 var g_native_cameras: [MAX_NATIVE_CAMERAS]NativeCameraPreview = [_]NativeCameraPreview{NativeCameraPreview{}} ** MAX_NATIVE_CAMERAS;
 var g_native_camera_used: [MAX_NATIVE_CAMERAS]bool = [_]bool{false} ** MAX_NATIVE_CAMERAS;
 var g_next_native_camera_handle: c.jlong = 1;
-var g_emergency_sources: [MAX_EMERGENCY_SOURCES]EmergencySourceSegment = [_]EmergencySourceSegment{EmergencySourceSegment{}} ** MAX_EMERGENCY_SOURCES;
-var g_emergency_source_count: usize = 0;
-var g_emergency_requests: [MAX_EMERGENCY_REQUESTS]EmergencyClipRequest = [_]EmergencyClipRequest{EmergencyClipRequest{}} ** MAX_EMERGENCY_REQUESTS;
-var g_emergency_request_count: usize = 0;
 var g_java_vm: [*c]c.JavaVM = null;
 var g_segment_cache_callback_class: c.jclass = null;
 var g_segment_cache_callback_method: c.jmethodID = null;
@@ -120,10 +107,6 @@ export fn JNI_OnLoad(vm: [*c]c.JavaVM, _: ?*anyopaque) callconv(.c) c.jint {
     writer_mod.configure(.{
         .nativeIo = nativeIo,
         .nowMs = nowMs,
-        .setErrorText = setErrorFromModule,
-        .logInfoText = logInfoFromModule,
-    });
-    emergency_clip.configure(.{
         .setErrorText = setErrorFromModule,
         .logInfoText = logInfoFromModule,
     });
@@ -509,47 +492,6 @@ fn setErrorSlice(msg: [:0]const u8) void {
     loge("{s}", .{msg});
 }
 
-fn appendFixedDecimal(dst: []u8, offset: *usize, value: u64, width: usize) bool {
-    if (offset.* + width >= dst.len) return false;
-    var remaining = value;
-    var i = width;
-    while (i > 0) {
-        i -= 1;
-        dst[offset.* + i] = '0' + @as(u8, @intCast(remaining % 10));
-        remaining /= 10;
-    }
-    if (remaining != 0) return false;
-    offset.* += width;
-    return true;
-}
-
-fn formatSegmentTimestamp(dst: *[32:0]u8, wall_clock_ms: c.jlong) bool {
-    if (wall_clock_ms <= 0) return false;
-    var seconds: c_long = @intCast(@divTrunc(wall_clock_ms, 1000));
-    var tm: NativeTm = undefined;
-    if (localtime_r(&seconds, &tm) == null) return false;
-    @memset(dst, 0);
-    var offset: usize = 0;
-    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_year + 1900), 4)) return false;
-    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_mon + 1), 2)) return false;
-    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_mday), 2)) return false;
-    if (offset >= dst.len - 1) return false;
-    dst[offset] = '_';
-    offset += 1;
-    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_hour), 2)) return false;
-    if (!appendFixedDecimal(dst[0..], &offset, @intCast(tm.tm_min), 2)) return false;
-    return offset > 0;
-}
-
-fn formatIndexSuffix(dst: *[8:0]u8, index: usize) bool {
-    @memset(dst, 0);
-    var offset: usize = 0;
-    if (offset >= dst.len - 1) return false;
-    dst[offset] = '_';
-    offset += 1;
-    return appendFixedDecimal(dst[0..], &offset, @intCast(index), 3);
-}
-
 fn jpegWriteContext(context: ?*anyopaque, data: []const u8) bool {
     const fd_ptr: *c_int = @ptrCast(@alignCast(context orelse return false));
     return files.writeAllFd(fd_ptr.*, data);
@@ -563,42 +505,8 @@ const ThumbnailCapture = struct {
     bytes: usize = 0,
 };
 
-fn pathNeededByPendingEmergency(path: [*c]const u8) bool {
-    const candidate = std.mem.span(path);
-    if (candidate.len == 0) return false;
-    lockGlobal();
-    defer unlockGlobal();
-    if (g_emergency_request_count == 0 or g_emergency_source_count == 0) return false;
-    for (g_emergency_sources[0..g_emergency_source_count]) |source| {
-        if (!std.mem.eql(u8, std.mem.sliceTo(&source.path, 0), candidate)) continue;
-        for (g_emergency_requests[0..g_emergency_request_count]) |request| {
-            if (source.end_ms > request.start_ms and source.start_ms < request.end_ms) return true;
-        }
-    }
-    return false;
-}
-
-fn captureEmergencyProtectionSnapshot() EmergencyProtectionSnapshot {
-    var snapshot = EmergencyProtectionSnapshot{};
-    lockGlobal();
-    defer unlockGlobal();
-    snapshot.source_count = @min(g_emergency_source_count, snapshot.sources.len);
-    snapshot.request_count = @min(g_emergency_request_count, snapshot.requests.len);
-    if (snapshot.source_count > 0) @memcpy(snapshot.sources[0..snapshot.source_count], g_emergency_sources[0..snapshot.source_count]);
-    if (snapshot.request_count > 0) @memcpy(snapshot.requests[0..snapshot.request_count], g_emergency_requests[0..snapshot.request_count]);
-    return snapshot;
-}
-
 fn cleanupLimitReached(limit: usize) void {
     setError("native cleanup candidate limit reached limit={d}", .{limit});
-}
-
-fn cleanupSkippedPendingEmergency(name: [:0]const u8) void {
-    logd("native cleanup skipped pending emergency source {s}", .{name});
-}
-
-fn cleanupSkippedNewPendingEmergency(name: [:0]const u8) void {
-    logd("native cleanup skipped newly pending emergency source {s}", .{name});
 }
 
 fn cleanupDeletedOldSegment(name: [:0]const u8, freed: i64, available: i64, reserved: i64) void {
@@ -606,19 +514,14 @@ fn cleanupDeletedOldSegment(name: [:0]const u8, freed: i64, available: i64, rese
 }
 
 fn cleanupStorageNative(dir_path: [*c]const u8, reserved_bytes: i64, available_bytes: i64, protected_path: ?[*c]const u8, out_deleted_count: *i64, out_deleted_bytes: *i64) i64 {
-    const emergency_snapshot = captureEmergencyProtectionSnapshot();
     return storage.cleanupStorageNative(
         dir_path,
         reserved_bytes,
         available_bytes,
         protected_path,
-        &emergency_snapshot,
         .{
             .cleanupLimitReached = cleanupLimitReached,
-            .skippedPendingEmergency = cleanupSkippedPendingEmergency,
-            .skippedNewPendingEmergency = cleanupSkippedNewPendingEmergency,
             .deletedOldSegment = cleanupDeletedOldSegment,
-            .isPendingEmergencyPath = pathNeededByPendingEmergency,
         },
         out_deleted_count,
         out_deleted_bytes,
@@ -1578,12 +1481,16 @@ fn recordCompositePreviewFrameLocked(p: *Pipe, frame_ms: i64) void {
 fn resetRecordingFrameQueueLocked(p: *Pipe) void {
     for (&p.recording_frame_slots) |*slot| {
         slot.ready = false;
+        slot.queued_for_encoder = false;
         slot.wall_clock_ms = 0;
         slot.sequence = 0;
     }
+    @memset(p.recording_frame_queue_indices[0..], 0);
     p.recording_frame_queue_head = 0;
     p.recording_frame_queue_tail = 0;
     p.recording_frame_queue_count = 0;
+    p.recording_frame_latest_index = -1;
+    p.recording_frame_write_cursor = 0;
     p.recording_frame_queue_next_capture_ms = 0;
 }
 
@@ -1598,6 +1505,7 @@ fn releaseRecordingFrameQueueLocked(p: *Pipe) void {
             slot.texture = 0;
         }
         slot.ready = false;
+        slot.queued_for_encoder = false;
         slot.wall_clock_ms = 0;
         slot.sequence = 0;
     }
@@ -1668,51 +1576,81 @@ fn markRecordingFrameCaptureScheduledLocked(p: *Pipe, steady_ms: i64) void {
     }
 }
 
-fn reserveRecordingFrameSlotLocked(p: *Pipe) usize {
-    if (p.recording_frame_queue_count >= RECORDING_FRAME_QUEUE_CAPACITY) {
-        const dropped = &p.recording_frame_slots[p.recording_frame_queue_head];
-        dropped.ready = false;
-        dropped.wall_clock_ms = 0;
-        p.recording_frame_queue_head = (p.recording_frame_queue_head + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
-        p.recording_frame_queue_count -= 1;
-        p.recording_frame_queue_drop_count += 1;
-        p.recording.dropped_frames += 1;
+fn clearFrameSlotAfterEncoderDropLocked(p: *Pipe, slot_index: usize) void {
+    if (slot_index >= RECORDING_FRAME_QUEUE_CAPACITY) return;
+    const latest = p.recording_frame_latest_index >= 0 and @as(usize, @intCast(p.recording_frame_latest_index)) == slot_index;
+    var slot = &p.recording_frame_slots[slot_index];
+    slot.queued_for_encoder = false;
+    slot.wall_clock_ms = 0;
+    if (!latest) slot.ready = false;
+}
+
+fn dropQueuedRecordingFrameLocked(p: *Pipe) ?usize {
+    if (p.recording_frame_queue_count == 0) return null;
+    const slot_index = p.recording_frame_queue_indices[p.recording_frame_queue_head];
+    p.recording_frame_queue_indices[p.recording_frame_queue_head] = 0;
+    p.recording_frame_queue_head = (p.recording_frame_queue_head + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
+    p.recording_frame_queue_count -= 1;
+    clearFrameSlotAfterEncoderDropLocked(p, slot_index);
+    p.recording_frame_queue_drop_count += 1;
+    p.recording.dropped_frames += 1;
+    return slot_index;
+}
+
+fn reserveCompositeFrameSlotLocked(p: *Pipe, enqueue_for_recording: bool) ?usize {
+    var attempt: usize = 0;
+    while (attempt < RECORDING_FRAME_QUEUE_CAPACITY) : (attempt += 1) {
+        const idx = (p.recording_frame_write_cursor + attempt) % RECORDING_FRAME_QUEUE_CAPACITY;
+        if (!p.recording_frame_slots[idx].queued_for_encoder) {
+            p.recording_frame_write_cursor = (idx + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
+            return idx;
+        }
     }
-    return p.recording_frame_queue_tail;
+
+    const idx = if (enqueue_for_recording) dropQueuedRecordingFrameLocked(p) orelse return null else return null;
+    p.recording_frame_write_cursor = (idx + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
+    return idx;
 }
 
 fn commitRecordingFrameSlotLocked(p: *Pipe, slot_index: usize, wall_clock_ms: i64) void {
-    var slot = &p.recording_frame_slots[slot_index];
+    if (p.recording_frame_queue_count >= RECORDING_FRAME_QUEUE_CAPACITY) _ = dropQueuedRecordingFrameLocked(p);
     p.recording_frame_queue_sequence += 1;
+    var slot = &p.recording_frame_slots[slot_index];
     slot.ready = true;
     slot.wall_clock_ms = wall_clock_ms;
     slot.sequence = p.recording_frame_queue_sequence;
-    p.recording_frame_queue_tail = (slot_index + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
+    slot.queued_for_encoder = true;
+    p.recording_frame_queue_indices[p.recording_frame_queue_tail] = slot_index;
+    p.recording_frame_queue_tail = (p.recording_frame_queue_tail + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
     p.recording_frame_queue_count += 1;
     p.recording_frame_queue_produced_count += 1;
     p.recording_frame_queue_max_depth = @max(p.recording_frame_queue_max_depth, @as(i64, @intCast(p.recording_frame_queue_count)));
 }
 
-fn produceRecordingFrameToQueueLocked(p: *Pipe, wall_clock_ms: i64, steady_ms: i64) ?c.GLuint {
-    p.recording.requested_frames += 1;
+fn produceCompositeFrameLocked(p: *Pipe, wall_clock_ms: i64, steady_ms: i64, enqueue_for_recording: bool) ?c.GLuint {
     if (!ensureRecordingFrameQueueLocked(p, p.width, p.height)) {
-        p.recording.dropped_frames += 1;
         return null;
     }
-    const slot_index = reserveRecordingFrameSlotLocked(p);
+    if (enqueue_for_recording and p.recording_frame_queue_count >= RECORDING_FRAME_QUEUE_CAPACITY) _ = dropQueuedRecordingFrameLocked(p);
+    const slot_index = reserveCompositeFrameSlotLocked(p, enqueue_for_recording) orelse return null;
     const slot = &p.recording_frame_slots[slot_index];
     slot.ready = false;
+    slot.queued_for_encoder = false;
+    slot.wall_clock_ms = 0;
     c.glBindFramebuffer(c.GL_FRAMEBUFFER, slot.framebuffer);
     p.recording.overlay_wall_clock_ms = wall_clock_ms;
     drawCompositeSceneLocked(p, p.width, p.height, false);
     c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
-    if (CHECK_RENDER_GL_ERROR) if (glError("produceRecordingFrameToQueue")) |e| {
+    if (CHECK_RENDER_GL_ERROR) if (glError("produceCompositeFrame")) |e| {
         setErrorSlice(e);
-        p.recording.dropped_frames += 1;
         return null;
     };
-    commitRecordingFrameSlotLocked(p, slot_index, wall_clock_ms);
-    markRecordingFrameCaptureScheduledLocked(p, steady_ms);
+    slot.ready = true;
+    p.recording_frame_latest_index = @intCast(slot_index);
+    if (enqueue_for_recording) {
+        commitRecordingFrameSlotLocked(p, slot_index, wall_clock_ms);
+        markRecordingFrameCaptureScheduledLocked(p, steady_ms);
+    }
     return slot.texture;
 }
 
@@ -1723,13 +1661,14 @@ fn renderQueuedRecordingFrameLocked(p: *Pipe) c.jlong {
         p.no_surface_count += 1;
         return TICK_DROPPED;
     }
-    const slot_index = p.recording_frame_queue_head;
+    const slot_index = p.recording_frame_queue_indices[p.recording_frame_queue_head];
+    if (slot_index >= RECORDING_FRAME_QUEUE_CAPACITY) {
+        _ = dropQueuedRecordingFrameLocked(p);
+        return TICK_DROPPED;
+    }
     const slot = &p.recording_frame_slots[slot_index];
-    if (!slot.ready or slot.texture == 0) {
-        slot.ready = false;
-        p.recording_frame_queue_head = (p.recording_frame_queue_head + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
-        p.recording_frame_queue_count -= 1;
-        p.recording.dropped_frames += 1;
+    if (!slot.queued_for_encoder or !slot.ready or slot.texture == 0) {
+        _ = dropQueuedRecordingFrameLocked(p);
         return TICK_DROPPED;
     }
 
@@ -1761,10 +1700,14 @@ fn renderQueuedRecordingFrameLocked(p: *Pipe) c.jlong {
     }
 
     var result: c.jlong = TICK_SHOULD_RENDER;
+    p.recording_frame_queue_indices[p.recording_frame_queue_head] = 0;
     p.recording_frame_queue_head = (p.recording_frame_queue_head + 1) % RECORDING_FRAME_QUEUE_CAPACITY;
     p.recording_frame_queue_count -= 1;
-    slot.ready = false;
+    slot.queued_for_encoder = false;
     slot.wall_clock_ms = 0;
+    if (!(p.recording_frame_latest_index >= 0 and @as(usize, @intCast(p.recording_frame_latest_index)) == slot_index)) {
+        slot.ready = false;
+    }
     p.recording_frame_queue_consumed_count += 1;
     p.recording.rendered_frames += 1;
     p.encoder_render_count += 1;
@@ -1791,31 +1734,32 @@ fn renderCompositePreviewLocked(_: [*c]c.JNIEnv, p: *Pipe, update_inputs: bool) 
     const vh = size.height;
     const steady_ms = start;
     const capture_for_recording = recordingFrameCaptureDueLocked(p, steady_ms);
-    var queued_texture: c.GLuint = 0;
-    if (capture_for_recording) {
-        const wall_clock_ms = wallClockMs();
-        if (!makePbufferCurrent(p)) return false;
-        if (update_inputs and !latchAllInputsLocked(p)) {
-            c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
-            clearCurrent(p);
-            return false;
-        }
-        if (produceRecordingFrameToQueueLocked(p, wall_clock_ms, steady_ms)) |texture| {
-            queued_texture = texture;
-        } else {
+    const wall_clock_ms = if (capture_for_recording) wallClockMs() else 0;
+    if (!makePbufferCurrent(p)) return false;
+    if (update_inputs and !latchAllInputsLocked(p)) {
+        c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
+        clearCurrent(p);
+        return false;
+    }
+    if (capture_for_recording) p.recording.requested_frames += 1;
+    const composite_texture = produceCompositeFrameLocked(p, wall_clock_ms, steady_ms, capture_for_recording) orelse blk: {
+        if (capture_for_recording) {
+            p.recording.dropped_frames += 1;
             p.recording_frame_queue_fallback_count += 1;
+            markRecordingFrameCaptureScheduledLocked(p, steady_ms);
         }
+        break :blk 0;
+    };
+
+    if (composite_texture == 0) {
+        clearCurrent(p);
     }
 
     if (!makeCurrent(p, p.composite_preview_surface)) return false;
     setPreviewSwapInterval(p);
-    if (queued_texture != 0) {
-        drawTexture2DToCurrentSurfaceLocked(p, queued_texture, vw, vh);
+    if (composite_texture != 0) {
+        drawTexture2DToCurrentSurfaceLocked(p, composite_texture, vw, vh);
     } else {
-        if (update_inputs and !capture_for_recording and !latchAllInputsLocked(p)) {
-            clearCurrent(p);
-            return false;
-        }
         drawCompositeSceneLocked(p, vw, vh, false);
     }
     if (CHECK_RENDER_GL_ERROR) if (glError("renderCompositePreview")) |e| {
@@ -2543,10 +2487,21 @@ fn recordingSchedulerActiveLocked(p: *const Pipe) bool {
 fn renderRecordingDueLocked(env: [*c]c.JNIEnv, p: *Pipe, steady_ms: i64) c.jlong {
     if (!recordingFrameCaptureDueLocked(p, steady_ms)) return 0;
     const wall_clock_ms = wallClockMs();
-    p.recording_frame_queue_fallback_count += 1;
-    const event = recordingTickRenderLocked(env, p, wall_clock_ms);
-    markRecordingFrameCaptureScheduledLocked(p, steady_ms);
-    return event;
+    p.recording.requested_frames += 1;
+    if (!makePbufferCurrent(p)) return -1;
+    if (!latchAllInputsLocked(p)) {
+        c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
+        clearCurrent(p);
+        return -1;
+    }
+    if (produceCompositeFrameLocked(p, wall_clock_ms, steady_ms, true) == null) {
+        p.recording.dropped_frames += 1;
+        p.recording_frame_queue_fallback_count += 1;
+        markRecordingFrameCaptureScheduledLocked(p, steady_ms);
+        return TICK_DROPPED;
+    }
+    _ = env;
+    return renderQueuedRecordingFrameLocked(p);
 }
 
 fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
@@ -2872,164 +2827,6 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_snapshotRecordingWorker
     return arr;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeEmergencyRequest(_: [*c]c.JNIEnv, _: c.jobject, start_ms: c.jlong, end_ms: c.jlong) callconv(.c) c.jboolean {
-    if (start_ms <= 0 or end_ms <= start_ms) return JNI_FALSE;
-    lockGlobal();
-    defer unlockGlobal();
-    if (g_emergency_request_count >= g_emergency_requests.len) {
-        std.mem.copyForwards(EmergencyClipRequest, g_emergency_requests[0 .. g_emergency_requests.len - 1], g_emergency_requests[1..g_emergency_requests.len]);
-        g_emergency_request_count = g_emergency_requests.len - 1;
-        setError("native emergency request queue full limit={d}", .{g_emergency_requests.len});
-    }
-    g_emergency_requests[g_emergency_request_count] = EmergencyClipRequest{ .start_ms = start_ms, .end_ms = end_ms };
-    g_emergency_request_count += 1;
-    return JNI_TRUE;
-}
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeEmergencyClearPending(_: [*c]c.JNIEnv, _: c.jobject) callconv(.c) c.jint {
-    lockGlobal();
-    defer unlockGlobal();
-    const count: c.jint = @intCast(g_emergency_request_count);
-    g_emergency_request_count = 0;
-    return count;
-}
-
-fn nativeEmergencyExtractClipForDir(env: [*c]c.JNIEnv, output_dir: c.jstring, clip_start_ms: c.jlong, clip_end_ms: c.jlong) c.jstring {
-    if (output_dir == null or clip_end_ms <= clip_start_ms) return null;
-    const dir_chars = env.*[0].GetStringUTFChars.?(env, output_dir, null) orelse return null;
-    defer env.*[0].ReleaseStringUTFChars.?(env, output_dir, dir_chars);
-    var timestamp: [32:0]u8 = [_:0]u8{0} ** 32;
-    if (!formatSegmentTimestamp(&timestamp, clip_start_ms)) return null;
-    const dir = std.mem.span(dir_chars);
-    const timestamp_text = std.mem.sliceTo(&timestamp, 0);
-
-    var sources: [32]EmergencySourceSegment = undefined;
-    var source_count: usize = 0;
-    lockGlobal();
-    {
-        defer unlockGlobal();
-        var covers_start = false;
-        var covers_end = false;
-        for (g_emergency_sources[0..g_emergency_source_count]) |source| {
-            if (source.start_ms <= clip_start_ms and source.end_ms > clip_start_ms) covers_start = true;
-            if (source.start_ms < clip_end_ms and source.end_ms >= clip_end_ms) covers_end = true;
-            if (source.end_ms > clip_start_ms and source.start_ms < clip_end_ms and source_count < sources.len) {
-                sources[source_count] = source;
-                source_count += 1;
-            }
-        }
-        if (!covers_start or !covers_end or source_count == 0) return null;
-    }
-
-    std.mem.sort(EmergencySourceSegment, sources[0..source_count], {}, struct {
-        fn lessThan(_: void, a: EmergencySourceSegment, b: EmergencySourceSegment) bool {
-            return a.start_ms < b.start_ms;
-        }
-    }.lessThan);
-
-    var final_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    var temp_path: [1024:0]u8 = [_:0]u8{0} ** 1024;
-    var index: usize = 0;
-    while (index < 999) : (index += 1) {
-        var index_suffix: [8:0]u8 = [_:0]u8{0} ** 8;
-        const final_name = if (index == 0) blk: {
-            break :blk std.fmt.bufPrintZ(&final_path, "{s}/{s}_event.mp4", .{ dir, timestamp_text }) catch continue;
-        } else blk: {
-            if (!formatIndexSuffix(&index_suffix, index)) continue;
-            const index_text = std.mem.sliceTo(&index_suffix, 0);
-            break :blk std.fmt.bufPrintZ(&final_path, "{s}/{s}_event{s}.mp4", .{ dir, timestamp_text, index_text }) catch continue;
-        };
-        const temp_name = std.fmt.bufPrintZ(&temp_path, "{s}.recording", .{final_name}) catch continue;
-        if (emergency_clip.fileExists(final_name) or emergency_clip.fileExists(temp_name)) continue;
-
-        var source_paths: [32][*c]const u8 = [_][*c]const u8{null} ** 32;
-        var source_starts: [32]c.jlong = [_]c.jlong{0} ** 32;
-        var source_ends: [32]c.jlong = [_]c.jlong{0} ** 32;
-        for (sources[0..source_count], 0..) |source, i| {
-            source_paths[i] = &source.path;
-            source_starts[i] = source.start_ms;
-            source_ends[i] = source.end_ms;
-        }
-        const written = emergency_clip.extract(temp_name, clip_start_ms, clip_end_ms, &source_paths, &source_starts, &source_ends, source_count);
-        if (written <= 0) {
-            _ = unlink(temp_name);
-            return null;
-        }
-        _ = unlink(final_name);
-        if (rename(temp_name, final_name) != 0) {
-            _ = unlink(temp_name);
-            setErrorSlice("native emergency rename failed");
-            return null;
-        }
-        var event_thumb: [1024:0]u8 = [_:0]u8{0} ** 1024;
-        if (files.thumbnailPathForVideo(&event_thumb, final_name)) {
-            var copied_thumb = false;
-            for (sources[0..source_count]) |source| {
-                var source_thumb: [1024:0]u8 = [_:0]u8{0} ** 1024;
-                if (!files.thumbnailPathForVideo(&source_thumb, &source.path)) continue;
-                _ = unlink(&event_thumb);
-                copied_thumb = files.copyFile(&source_thumb, &event_thumb);
-                if (copied_thumb) break;
-            }
-            if (copied_thumb) {
-                logi("native emergency thumbnail copied dst={s}", .{std.mem.sliceTo(&event_thumb, 0)});
-            } else {
-                logd("native emergency thumbnail source missing dst={s}", .{std.mem.sliceTo(&event_thumb, 0)});
-            }
-        }
-        return env.*[0].NewStringUTF.?(env, final_name);
-    }
-    setErrorSlice("native emergency output path unavailable");
-    return null;
-}
-
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeEmergencyExtractPending(env: [*c]c.JNIEnv, _: c.jobject, output_dir: c.jstring, stopped_at_ms: c.jlong) callconv(.c) c.jobjectArray {
-    const string_class = env.*[0].FindClass.?(env, "java/lang/String") orelse return null;
-    if (output_dir == null) return env.*[0].NewObjectArray.?(env, 0, string_class, null);
-
-    var requests: [MAX_EMERGENCY_REQUESTS]EmergencyClipRequest = undefined;
-    var request_count: usize = 0;
-    lockGlobal();
-    {
-        defer unlockGlobal();
-        request_count = g_emergency_request_count;
-        if (request_count > requests.len) request_count = requests.len;
-        @memcpy(requests[0..request_count], g_emergency_requests[0..request_count]);
-    }
-
-    var outputs: [MAX_EMERGENCY_REQUESTS]c.jstring = [_]c.jstring{null} ** MAX_EMERGENCY_REQUESTS;
-    var output_count: usize = 0;
-    var keep: [MAX_EMERGENCY_REQUESTS]EmergencyClipRequest = undefined;
-    var keep_count: usize = 0;
-
-    for (requests[0..request_count]) |request| {
-        const export_end = if (stopped_at_ms > 0 and request.end_ms > stopped_at_ms) stopped_at_ms else request.end_ms;
-        if (export_end <= request.start_ms) continue;
-        const out = nativeEmergencyExtractClipForDir(env, output_dir, request.start_ms, export_end);
-        if (out != null) {
-            outputs[output_count] = out;
-            output_count += 1;
-        } else if (stopped_at_ms <= 0) {
-            keep[keep_count] = request;
-            keep_count += 1;
-        }
-    }
-
-    lockGlobal();
-    {
-        defer unlockGlobal();
-        g_emergency_request_count = keep_count;
-        @memcpy(g_emergency_requests[0..keep_count], keep[0..keep_count]);
-    }
-
-    const arr = env.*[0].NewObjectArray.?(env, @intCast(output_count), string_class, null) orelse return null;
-    for (outputs[0..output_count], 0..) |out, i| {
-        env.*[0].SetObjectArrayElement.?(env, arr, @intCast(i), out);
-        env.*[0].DeleteLocalRef.?(env, out);
-    }
-    return arr;
-}
-
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_nativeCleanupStorage(env: [*c]c.JNIEnv, _: c.jobject, output_dir: c.jstring, reserved_bytes: c.jlong, available_bytes: c.jlong) callconv(.c) c.jlongArray {
     var values: [3]c.jlong = [_]c.jlong{0} ** 3;
     if (output_dir != null) {
@@ -3159,29 +2956,6 @@ fn detachEncoderSurfaceLocked(p: *Pipe) void {
     p.encoder_pending = false;
 }
 
-fn addEmergencySourceNative(video_path: [*c]const u8, start_ms: i64, end_ms: i64, prune_before_ms: i64) void {
-    if (video_path == null or start_ms <= 0 or end_ms <= start_ms) return;
-    lockGlobal();
-    defer unlockGlobal();
-    var write_index: usize = 0;
-    var i: usize = 0;
-    while (i < g_emergency_source_count) : (i += 1) {
-        if (g_emergency_sources[i].end_ms >= prune_before_ms) {
-            if (write_index != i) g_emergency_sources[write_index] = g_emergency_sources[i];
-            write_index += 1;
-        }
-    }
-    g_emergency_source_count = write_index;
-    if (g_emergency_source_count >= g_emergency_sources.len) {
-        std.mem.copyForwards(EmergencySourceSegment, g_emergency_sources[0 .. g_emergency_sources.len - 1], g_emergency_sources[1..g_emergency_sources.len]);
-        g_emergency_source_count = g_emergency_sources.len - 1;
-    }
-    var next = EmergencySourceSegment{ .start_ms = start_ms, .end_ms = end_ms };
-    if (!files.copyCStringToBuffer(&next.path, video_path)) return;
-    g_emergency_sources[g_emergency_source_count] = next;
-    g_emergency_source_count += 1;
-}
-
 fn managedConfigFromRecording(p: *Pipe) ManagedSegmentConfig {
     return .{
         .output_dir = p.recording.managed_output_dir,
@@ -3201,7 +2975,6 @@ fn managedFinalizeSegment(finalize: ManagedSegmentFinalize) i64 {
     const final_path_ptr: [*c]const u8 = &finalize.final_path;
     const ok = finishNativeSegmentWriterToPath(finalize.writer_handle, final_path_ptr);
     if (ok) {
-        addEmergencySourceNative(final_path_ptr, finalize.start_ms, finalize.end_ms, finalize.end_ms - finalize.config.segment_duration_ms * 3);
         var deleted_count: i64 = 0;
         var deleted_bytes: i64 = 0;
         const available = cleanupStorageNative(&finalize.config.output_dir, finalize.config.reserved_bytes, finalize.config.available_bytes, final_path_ptr, &deleted_count, &deleted_bytes);
@@ -3219,7 +2992,6 @@ fn managedFinalizeSegmentKeepWriter(finalize: ManagedSegmentFinalize) i64 {
     const final_path_ptr: [*c]const u8 = &finalize.final_path;
     switch (finishNativeSegmentWriterSegmentOnly(finalize.writer_handle, final_path_ptr)) {
         .finalized => {
-            addEmergencySourceNative(final_path_ptr, finalize.start_ms, finalize.end_ms, finalize.end_ms - finalize.config.segment_duration_ms * 3);
             var deleted_count: i64 = 0;
             var deleted_bytes: i64 = 0;
             const available = cleanupStorageNative(&finalize.config.output_dir, finalize.config.reserved_bytes, finalize.config.available_bytes, final_path_ptr, &deleted_count, &deleted_bytes);
@@ -3517,11 +3289,6 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getMetricsSnapshot(env:
         storeMetricsCache(handle, &values);
     } else {
         _ = loadMetricsCache(handle, &values);
-    }
-    if (tryLockGlobalBounded(1)) {
-        values[54] = @intCast(g_emergency_source_count);
-        values[55] = @intCast(g_emergency_request_count);
-        unlockGlobal();
     }
     const finalize_metrics = finalize_queue.snapshotMetrics();
     values[56] = @intCast(finalize_metrics.depth);

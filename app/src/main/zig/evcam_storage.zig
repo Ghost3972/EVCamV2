@@ -3,10 +3,6 @@ const c = @import("c");
 const types = @import("evcam_types.zig");
 
 const MAX_CLEANUP_FILES = types.MAX_CLEANUP_FILES;
-const MAX_EMERGENCY_SOURCES = types.MAX_EMERGENCY_SOURCES;
-const MAX_EMERGENCY_REQUESTS = types.MAX_EMERGENCY_REQUESTS;
-const EmergencySourceSegment = types.EmergencySourceSegment;
-const EmergencyClipRequest = types.EmergencyClipRequest;
 
 const O_RDONLY_ANDROID = types.O_RDONLY_ANDROID;
 const SEEK_END_ANDROID = types.SEEK_END_ANDROID;
@@ -21,25 +17,13 @@ extern fn free(ptr: ?*anyopaque) void;
 
 pub const CleanupCallbacks = struct {
     cleanupLimitReached: *const fn (usize) void,
-    skippedPendingEmergency: *const fn ([:0]const u8) void,
-    skippedNewPendingEmergency: *const fn ([:0]const u8) void,
     deletedOldSegment: *const fn ([:0]const u8, i64, i64, i64) void,
-    isPendingEmergencyPath: *const fn ([*c]const u8) bool,
 };
 
 const CleanupCandidate = struct {
     path: [1024:0]u8 = [_:0]u8{0} ** 1024,
     name: [256:0]u8 = [_:0]u8{0} ** 256,
     size: i64 = 0,
-    is_event: bool = false,
-    protected_by_emergency: bool = false,
-};
-
-pub const EmergencyProtectionSnapshot = struct {
-    sources: [MAX_EMERGENCY_SOURCES]EmergencySourceSegment = [_]EmergencySourceSegment{EmergencySourceSegment{}} ** MAX_EMERGENCY_SOURCES,
-    source_count: usize = 0,
-    requests: [MAX_EMERGENCY_REQUESTS]EmergencyClipRequest = [_]EmergencyClipRequest{EmergencyClipRequest{}} ** MAX_EMERGENCY_REQUESTS,
-    request_count: usize = 0,
 };
 
 pub const PlaybackScanResult = struct {
@@ -315,24 +299,11 @@ pub fn buildPlaybackCacheNative(result: *PlaybackCacheBuildResult, dir_path: [*c
     }
 }
 
-fn pathNeededByEmergencySnapshot(snapshot: *const EmergencyProtectionSnapshot, path: [*c]const u8) bool {
-    const candidate = std.mem.span(path);
-    if (candidate.len == 0 or snapshot.source_count == 0 or snapshot.request_count == 0) return false;
-    for (snapshot.sources[0..snapshot.source_count]) |source| {
-        if (!std.mem.eql(u8, std.mem.sliceTo(&source.path, 0), candidate)) continue;
-        for (snapshot.requests[0..snapshot.request_count]) |request| {
-            if (source.end_ms > request.start_ms and source.start_ms < request.end_ms) return true;
-        }
-    }
-    return false;
-}
-
 pub fn cleanupStorageNative(
     dir_path: [*c]const u8,
     reserved_bytes: i64,
     available_bytes: i64,
     protected_path: ?[*c]const u8,
-    emergency_snapshot: *const EmergencyProtectionSnapshot,
     callbacks: CleanupCallbacks,
     out_deleted_count: *i64,
     out_deleted_bytes: *i64,
@@ -360,8 +331,6 @@ pub fn cleanupStorageNative(
         if (std.ascii.endsWithIgnoreCase(name, ".mp4") and candidate_count < candidates.len) {
             candidates[candidate_count] = CleanupCandidate{};
             candidates[candidate_count].size = fileSizeNative(&path);
-            candidates[candidate_count].is_event = std.mem.indexOf(u8, name, "_event") != null;
-            candidates[candidate_count].protected_by_emergency = pathNeededByEmergencySnapshot(emergency_snapshot, &path);
             _ = copyCStringToBuffer(&candidates[candidate_count].path, &path);
             if (name.len < candidates[candidate_count].name.len) {
                 @memcpy(candidates[candidate_count].name[0..name.len], name);
@@ -374,7 +343,6 @@ pub fn cleanupStorageNative(
 
     std.mem.sort(CleanupCandidate, candidates[0..candidate_count], {}, struct {
         fn lessThan(_: void, a: CleanupCandidate, b: CleanupCandidate) bool {
-            if (a.is_event != b.is_event) return !a.is_event;
             return std.mem.order(u8, std.mem.sliceTo(&a.name, 0), std.mem.sliceTo(&b.name, 0)) == .lt;
         }
     }.lessThan);
@@ -382,14 +350,6 @@ pub fn cleanupStorageNative(
     if (reserved_bytes <= 0 or available >= reserved_bytes) return available;
     for (candidates[0..candidate_count]) |candidate| {
         if (available >= reserved_bytes) break;
-        if (candidate.protected_by_emergency) {
-            callbacks.skippedPendingEmergency(std.mem.sliceTo(&candidate.name, 0));
-            continue;
-        }
-        if (callbacks.isPendingEmergencyPath(&candidate.path)) {
-            callbacks.skippedNewPendingEmergency(std.mem.sliceTo(&candidate.name, 0));
-            continue;
-        }
         const deleted = deleteNativeFile(&candidate.path);
         if (deleted > 0) {
             out_deleted_count.* += 1;

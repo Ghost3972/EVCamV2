@@ -1,0 +1,22 @@
+package com.kooo.evcam.v2.service.runtime.module
+
+import com.kooo.evcam.v2.service.runtime.V2CameraServiceRuntimeGraph
+import com.kooo.evcam.v2.service.preview.V2BlindSpotController
+
+internal object V2CameraServiceBlindSpotModule {
+    fun install(graph: V2CameraServiceRuntimeGraph) {
+        graph.blindSpotController = V2BlindSpotController(
+            context = graph.service,
+            handler = graph.mainHandler,
+            isDisplayPowerOn = { graph.isDisplayPowerOn() },
+            isUiVisible = { graph.uiVisibilityOrchestrator.isVisible },
+            shouldAvoidWindow = { graph.avoidanceController.shouldAvoidBlindSpotWindow() },
+            avoidanceTarget = { graph.avoidanceController.activeTarget ?: graph.avoidanceController.currentTarget() },
+            previewIndexForSide = { side -> graph.engine.previewIndexForPosition(side) },
+            previewDescription = { index -> graph.engine.previewDescription(index) },
+            restoreMainPreview = { index -> graph.previewFacade.restoreMainPreviewSurface(index) },
+            hideFisheyePreview = { graph.fisheyePreviewController.hide() },
+            hideUi = { graph.uiVisibilityOrchestrator.hideForAvoidance() },
+        )
+    }
+}

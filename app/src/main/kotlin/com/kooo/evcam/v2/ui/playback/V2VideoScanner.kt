@@ -94,9 +94,6 @@ object V2VideoScanner {
         }
     }.getOrDefault(emptyList())
 
-    fun loadCachedGroups(context: Context, eventOnly: Boolean): List<V2VideoGroup> = loadCachedGroups(context)
-        .filter { group -> group.composite?.name?.contains("_event", ignoreCase = true) == eventOnly }
-
     fun scanPhotoGroups(context: Context): List<V2VideoGroup> = nativePlaybackImages(context)
         .asSequence()
         .filter { isImageFile(it) && imageNamePattern.matches(it.name) }

@@ -1,9 +1,10 @@
-package com.kooo.evcam.v2.service.lifecycle
+package com.kooo.evcam.v2.service.runtime.module
 
+import com.kooo.evcam.v2.service.runtime.V2CameraServiceRuntimeGraph
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.display.V2DisplayPowerOrchestrator
 
-internal object V2CameraServicePowerInstaller {
+internal object V2CameraServiceDisplayPowerPolicyModule {
     fun install(graph: V2CameraServiceRuntimeGraph) {
         graph.displayPowerOrchestrator = V2DisplayPowerOrchestrator(
             displayPowerController = graph.displayPowerController,

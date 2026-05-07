@@ -13,7 +13,6 @@ internal class V2CameraServiceActionRouter(
     private val showBlindSpotPreview: (String) -> Unit,
     private val hideBlindSpotPreview: () -> Unit,
     private val toggleRecordingFromPlugin: () -> Unit,
-    private val startEmergencyFromPlugin: () -> Unit,
     private val displayOff: (String?) -> Unit,
     private val displayOn: (String?) -> Unit,
 ) {
@@ -31,7 +30,6 @@ internal class V2CameraServiceActionRouter(
             action == V2CameraForegroundService.ACTION_SHOW_BLIND_SPOT_PREVIEW -> showBlindSpotPreview(intent.getStringExtra(V2CameraForegroundService.EXTRA_SIDE) ?: "left")
             action == V2CameraForegroundService.ACTION_HIDE_BLIND_SPOT_PREVIEW -> hideBlindSpotPreview()
             action == V2CameraForegroundService.ACTION_TOGGLE_RECORDING_FROM_PLUGIN -> toggleRecordingFromPlugin()
-            action == V2CameraForegroundService.ACTION_START_EMERGENCY_FROM_PLUGIN -> startEmergencyFromPlugin()
             V2DisplayPowerActions.isDisplayOff(action) -> displayOff(action)
             V2DisplayPowerActions.isDisplayOn(action) -> displayOn(action)
         }

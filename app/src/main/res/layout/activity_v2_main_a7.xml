@@ -104,36 +104,6 @@
             android:textColor="@color/home_text_primary"
             android:textSize="28sp" />
 
-        <FrameLayout
-            android:layout_width="128dp"
-            android:layout_height="128dp"
-            android:layout_marginTop="100dp">
-
-            <CheckedTextView
-                android:id="@+id/btn_video_playback"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@drawable/v2_home_selector_event_recording"
-                android:clickable="true"
-                android:contentDescription="紧急录制"
-                android:focusable="true"
-                android:gravity="center" />
-
-            <com.kooo.evcam.v2.ui.widgets.V2CircularProgressView
-                android:id="@+id/emergency_recording_progress"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:visibility="gone" />
-        </FrameLayout>
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="26dp"
-            android:text="紧急录制"
-            android:textColor="@color/home_text_primary"
-            android:textSize="28sp" />
-
         <Space
             android:layout_width="1dp"
             android:layout_height="0dp"

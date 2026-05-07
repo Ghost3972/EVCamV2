@@ -6,28 +6,51 @@ import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 
-class V2AvoidanceController(
+internal class V2AvoidanceController(
     private val context: Context,
     private val handler: Handler,
-    private val foregroundAppMonitor: V2ForegroundAppMonitor,
+    private val targetDetector: V2ForegroundTargetDetector,
     private val isDisplayPowerOn: () -> Boolean,
-    private val isRecording: () -> Boolean,
-    private val isUiVisible: () -> Boolean,
-    private val onHideBlindSpot: () -> Unit,
-    private val onHideFisheye: () -> Unit,
-    private val onCancelAutoRecording: () -> Unit,
-    private val onHideUi: () -> Unit,
-    private val onStopRecording: () -> Unit,
-    private val onRestoreRecording: () -> Unit,
-    private val onRestoreUi: () -> Unit,
-    private val onScheduleAutoRecording: () -> Unit,
-    private val showToast: (String) -> Unit,
+    isRecording: () -> Boolean,
+    isUiVisible: () -> Boolean,
+    onHideBlindSpot: () -> Unit,
+    onHideFisheye: () -> Unit,
+    onCancelAutoRecording: () -> Unit,
+    onHideUi: () -> Unit,
+    onStopRecording: () -> Unit,
+    onRestoreRecording: () -> Unit,
+    onRestoreUi: () -> Unit,
+    onScheduleAutoRecording: () -> Unit,
+    showToast: (String) -> Unit,
 ) {
     @Volatile private var config: V2SettingsSnapshot.Avoidance = V2SettingsRepository.avoidanceConfig(context)
-    private var snapshot: Snapshot? = null
+    private var snapshot: V2AvoidanceSnapshot? = null
     private var target: String? = null
-    private var lastDecisionLogMs = 0L
+    @Volatile private var lastForegroundTarget: String? = null
     private var restoreGeneration = 0
+    private val decisionLogger = V2AvoidanceDecisionLogger()
+    private val sessionActions = V2AvoidanceSessionActions(
+        isDisplayPowerOn = isDisplayPowerOn,
+        isRecording = isRecording,
+        isUiVisible = isUiVisible,
+        onHideBlindSpot = onHideBlindSpot,
+        onHideFisheye = onHideFisheye,
+        onCancelAutoRecording = onCancelAutoRecording,
+        onHideUi = onHideUi,
+        onStopRecording = onStopRecording,
+        onRestoreUi = onRestoreUi,
+        onScheduleAutoRecording = onScheduleAutoRecording,
+        showToast = showToast,
+    )
+    private val recordingRestorer = V2AvoidanceRecordingRestorer(
+        handler = handler,
+        isDisplayPowerOn = isDisplayPowerOn,
+        isRecording = isRecording,
+        isAvoidanceActive = { snapshot != null },
+        currentGeneration = { restoreGeneration },
+        onRestoreRecording = onRestoreRecording,
+        onScheduleAutoRecording = onScheduleAutoRecording,
+    )
 
     val isActive: Boolean get() = snapshot != null
     val activeTarget: String? get() = target
@@ -60,6 +83,7 @@ class V2AvoidanceController(
 
     fun stop() {
         handler.removeCallbacks(tick)
+        targetDetector.cancel()
     }
 
     fun clear(reason: String) {
@@ -67,13 +91,15 @@ class V2AvoidanceController(
         restoreGeneration++
         snapshot = null
         target = null
+        lastForegroundTarget = null
+        targetDetector.cancel()
     }
 
     fun currentTarget(): String? {
         val behaviorMask = config.behaviorMask
         val displayOn = isDisplayPowerOn()
         val targets = config.targets
-        val current = if (behaviorMask == 0 || !displayOn) null else foregroundAppMonitor.findForegroundTarget(targets)
+        val current = if (behaviorMask == 0 || !displayOn) null else lastForegroundTarget
         logDecision("currentTarget", behaviorMask, displayOn, targets, current, current != null)
         return current
     }
@@ -83,7 +109,7 @@ class V2AvoidanceController(
         val displayOn = isDisplayPowerOn()
         val hideBlindSpotEnabled = config.hideBlindSpot
         val targets = config.targets
-        val current = if (hideBlindSpotEnabled && displayOn && !isActive) foregroundAppMonitor.findForegroundTarget(targets) else target
+        val current = if (hideBlindSpotEnabled && displayOn && !isActive) lastForegroundTarget else target
         val avoid = hideBlindSpotEnabled && displayOn && (isActive || current != null)
         logDecision("shouldAvoidBlindSpotWindow", behaviorMask, displayOn, targets, current, avoid)
         return avoid
@@ -93,7 +119,22 @@ class V2AvoidanceController(
         val behaviorMask = config.behaviorMask
         val displayOn = isDisplayPowerOn()
         val targets = config.targets
-        val currentTarget = if (behaviorMask == 0 || !displayOn) null else foregroundAppMonitor.findForegroundTarget(targets)
+        if (behaviorMask == 0 || !displayOn) {
+            targetDetector.cancel()
+            handleTargetResult(null)
+            return
+        }
+        targetDetector.detect(targets) { currentTarget ->
+            handleTargetResult(currentTarget)
+        }
+    }
+
+    private fun handleTargetResult(detectedTarget: String?) {
+        val behaviorMask = config.behaviorMask
+        val displayOn = isDisplayPowerOn()
+        val targets = config.targets
+        val currentTarget = if (behaviorMask == 0 || !displayOn) null else detectedTarget?.takeIf { it in targets }
+        lastForegroundTarget = currentTarget
         logDecision("checkTarget", behaviorMask, displayOn, targets, currentTarget, currentTarget != null)
         when {
             currentTarget != null && snapshot == null -> enter(currentTarget, behaviorMask)
@@ -106,32 +147,11 @@ class V2AvoidanceController(
     }
 
     private fun enter(target: String, behaviorMask: Int) {
-        val currentSnapshot = Snapshot(
-            behaviorMask = behaviorMask,
-            wasRecording = isRecording(),
-            wasUiVisible = isUiVisible()
-        )
+        val currentSnapshot = sessionActions.createSnapshot(behaviorMask)
         snapshot = currentSnapshot
         this.target = target
         restoreGeneration++
-        V2AppLog.i(TAG, "enter avoidance target=$target behavior=${config.behaviorLabels()} wasRecording=${currentSnapshot.wasRecording} wasUiVisible=${currentSnapshot.wasUiVisible}")
-
-        if (config.hideBlindSpot) {
-            V2AppLog.i(TAG, "avoidance hide blind spot overlay")
-            onHideBlindSpot()
-        }
-        onHideFisheye()
-        showToast("避让中")
-        onCancelAutoRecording()
-
-        if (config.exitForeground) {
-            V2AppLog.i(TAG, "avoidance hide UI")
-            onHideUi()
-        }
-        if (config.stopRecording && isRecording()) {
-            V2AppLog.i(TAG, "avoidance stop recording")
-            onStopRecording()
-        }
+        sessionActions.enter(target, config, currentSnapshot)
     }
 
     private fun exit() {
@@ -140,38 +160,10 @@ class V2AvoidanceController(
         snapshot = null
         target = null
         val generation = ++restoreGeneration
-        V2AppLog.i(TAG, "exit avoidance target=$oldTarget restoreRecording=${oldSnapshot.wasRecording} restoreUi=${oldSnapshot.wasUiVisible}")
-        if (oldSnapshot.wasRecording && isDisplayPowerOn() && !isRecording()) {
-            restoreRecordingAfterAvoidance(generation)
-        }
-        if (!oldSnapshot.wasRecording && isDisplayPowerOn() && !isRecording()) onScheduleAutoRecording()
-        showToast("避让结束")
-        if (oldSnapshot.wasUiVisible) {
-            onRestoreUi()
-        }
+        sessionActions.exit(oldSnapshot, oldTarget, generation, recordingRestorer)
     }
 
     private fun checkIntervalMs(): Long = if (snapshot != null) ACTIVE_CHECK_INTERVAL_MS else IDLE_CHECK_INTERVAL_MS
-
-    private fun restoreRecordingAfterAvoidance(generation: Int, attempt: Int = 0) {
-        if (generation != restoreGeneration || snapshot != null || !isDisplayPowerOn() || isRecording()) return
-        onRestoreRecording()
-        if (isRecording()) return
-        if (attempt + 1 >= MAX_RESTORE_RECORDING_ATTEMPTS) {
-            V2AppLog.w(TAG, "avoidance restore recording failed after ${attempt + 1} attempts")
-            onScheduleAutoRecording()
-            return
-        }
-        handler.postDelayed({
-            restoreRecordingAfterAvoidance(generation, attempt + 1)
-        }, RESTORE_RECORDING_RETRY_DELAY_MS)
-    }
-
-    private data class Snapshot(
-        val behaviorMask: Int,
-        val wasRecording: Boolean,
-        val wasUiVisible: Boolean,
-    )
 
     private fun logDecision(
         source: String,
@@ -181,14 +173,16 @@ class V2AvoidanceController(
         currentTarget: String?,
         result: Boolean,
     ) {
-        val now = System.currentTimeMillis()
-        if (now - lastDecisionLogMs < DECISION_LOG_INTERVAL_MS) return
-        lastDecisionLogMs = now
-        V2AppLog.i(
-            TAG,
-            "avoidance decision source=$source result=$result active=$isActive activeTarget=$target " +
-                "behaviorMask=$behaviorMask behavior=${config.behaviorLabels()} " +
-                "displayOn=$displayOn targets=${targets.joinToString()} currentTarget=$currentTarget"
+        decisionLogger.log(
+            source = source,
+            behaviorMask = behaviorMask,
+            behaviorLabels = config.behaviorLabels(),
+            displayOn = displayOn,
+            targets = targets,
+            currentTarget = currentTarget,
+            result = result,
+            active = isActive,
+            activeTarget = target,
         )
     }
 
@@ -196,8 +190,5 @@ class V2AvoidanceController(
         private const val TAG = "V2CameraService"
         private const val ACTIVE_CHECK_INTERVAL_MS = 300L
         private const val IDLE_CHECK_INTERVAL_MS = 500L
-        private const val MAX_RESTORE_RECORDING_ATTEMPTS = 4
-        private const val RESTORE_RECORDING_RETRY_DELAY_MS = 500L
-        private const val DECISION_LOG_INTERVAL_MS = 10_000L
     }
 }

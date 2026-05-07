@@ -75,7 +75,6 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         binding.swipeRefresh.setProgressBackgroundColorSchemeColor(ContextCompat.getColor(this, R.color.page_background))
         binding.swipeRefresh.setOnRefreshListener { refreshVideos() }
         binding.tabNormalVideo.setOnClickListener { switchMode(V2PlaybackMode.NORMAL) }
-        binding.tabEventVideo.setOnClickListener { switchMode(V2PlaybackMode.EVENT) }
         binding.tabPhoto.setOnClickListener { switchMode(V2PlaybackMode.PHOTO) }
         binding.btnHome.setOnClickListener { finish() }
         binding.btnRefresh.setOnClickListener { refreshVideos() }
@@ -211,15 +210,12 @@ class V2VideoPlaybackActivity : AppCompatActivity() {
         val normal = ContextCompat.getColor(this, R.color.text_secondary)
 
         binding.tabNormalVideo.setBackgroundResource(if (playbackMode == V2PlaybackMode.NORMAL) selectedBg else 0)
-        binding.tabEventVideo.setBackgroundResource(if (playbackMode == V2PlaybackMode.EVENT) selectedBg else 0)
         binding.tabPhoto.setBackgroundResource(if (playbackMode == V2PlaybackMode.PHOTO) selectedBg else 0)
         binding.tabNormalVideo.getChildAt(0)?.visibility = if (playbackMode == V2PlaybackMode.NORMAL) View.VISIBLE else View.INVISIBLE
         binding.toolbarTitle.setTextColor(if (playbackMode == V2PlaybackMode.NORMAL) accent else normal)
-        binding.tabEventVideoText.setTextColor(if (playbackMode == V2PlaybackMode.EVENT) accent else normal)
         binding.tabPhotoText.setTextColor(if (playbackMode == V2PlaybackMode.PHOTO) accent else normal)
         binding.emptyText.text = when (playbackMode) {
             V2PlaybackMode.NORMAL -> "暂无循环录像"
-            V2PlaybackMode.EVENT -> "暂无紧急录像"
             V2PlaybackMode.PHOTO -> "暂无图片"
         }
     }

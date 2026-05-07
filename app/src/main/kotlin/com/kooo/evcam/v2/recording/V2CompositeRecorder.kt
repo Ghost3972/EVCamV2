@@ -23,7 +23,6 @@ class V2CompositeRecorder(
     private val videoBitrate: Int,
     private val recordingFps: Int,
     private val segmentDurationMs: Long,
-    private val fileSuffix: String,
     private val onFailure: (String) -> Unit = {},
 ) : V2RecordingPipeline {
     companion object {
@@ -43,17 +42,10 @@ class V2CompositeRecorder(
         isStopRequested = { stopRequested.get() },
     )
     private val storageCleanupScheduler = V2RecordingStorageCleanupScheduler(context, outputDir, logTag = "V2CompositeRecorder")
-    private val emergencyClips = V2EmergencyClipCoordinator(
-        context = context,
-        outputDir = outputDir,
-        isRecording = { recording },
-        stoppedWallClockMs = { stoppedWallClockMs },
-    )
 
     private var recording = false
     private var generation = 0L
     private var nativeWorkerActive = false
-    @Volatile private var stoppedWallClockMs = 0L
 
     override fun start(): Boolean {
         val startedMs = SystemClock.elapsedRealtime()
@@ -94,7 +86,7 @@ class V2CompositeRecorder(
             watermarkController.uploadInitial(initialWatermark)
             check(native.startManagedRecording(
                 outputDir = outputDir.absolutePath,
-                suffix = fileSuffix,
+                suffix = "",
                 width = outputWidth,
                 height = outputHeight,
                 bitrate = videoBitrate,
@@ -145,11 +137,6 @@ class V2CompositeRecorder(
         V2AppLog.perf("V2CompositeRecorder", "stopBlockingForRelease", SystemClock.elapsedRealtime() - startedMs)
     }
 
-    override fun requestEmergencyClip(startWallClockMs: Long, durationMs: Long): Boolean {
-        if (fileSuffix.isNotEmpty() || durationMs <= 0L) return false
-        return emergencyClips.request(startWallClockMs, durationMs)
-    }
-
     override fun metricsSnapshot(): RecordingMetrics {
         syncMetricsFromNative()
         return metrics.copy()
@@ -158,7 +145,6 @@ class V2CompositeRecorder(
     private fun stopManagedRecording(timeoutMs: Long, stopWallClockMs: Long) {
         recording = false
         watermarkController.stopUpdates()
-        stoppedWallClockMs = stopWallClockMs
         syncMetricsFromNative()
         runCatching { native.stopManagedRecording(timeoutMs, stopWallClockMs) }
             .onFailure {
@@ -168,7 +154,6 @@ class V2CompositeRecorder(
         watermarkController.clearNativeWatermark()
         nativeWorkerActive = false
         generation += 1
-        finishEmergencyClipExportsIfStopped()
         storageCleanupScheduler.cancelAndShutdown()
     }
 
@@ -206,10 +191,6 @@ class V2CompositeRecorder(
             metrics.recordingQueueFallbackCount = maxOf(metrics.recordingQueueFallbackCount, s[NativeMetricsSnapshot.RECORDING_QUEUE_FALLBACK_COUNT].coerceAtLeast(0L))
             metrics.recordingQueueFboRecreateCount = maxOf(metrics.recordingQueueFboRecreateCount, s[NativeMetricsSnapshot.RECORDING_QUEUE_FBO_RECREATE_COUNT].coerceAtLeast(0L))
         }
-    }
-
-    private fun finishEmergencyClipExportsIfStopped() {
-        emergencyClips.finishExportsIfStopped()
     }
 
     private fun runOnCaptureSync(block: () -> Unit): Result<Unit> {

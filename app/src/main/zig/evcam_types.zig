@@ -19,8 +19,6 @@ pub const WORKER_ERROR_THREAD_ATTACH: c.jlong = -10;
 pub const WORKER_ERROR_TICK_RENDER_DRAIN: c.jlong = -11;
 pub const MAX_NATIVE_WRITERS = 8;
 pub const MAX_NATIVE_CAMERAS = 4;
-pub const MAX_EMERGENCY_SOURCES = 256;
-pub const MAX_EMERGENCY_REQUESTS = 64;
 pub const COMPOSITE_PREVIEW_FPS_HISTORY: usize = 256;
 pub const COMPOSITE_PREVIEW_FPS_WINDOW_MS: i64 = 1000;
 pub const COLOR_FORMAT_SURFACE: i32 = 0x7F000789;
@@ -108,17 +106,6 @@ pub const NativeCameraPreview = struct {
     sequence_id: c_int = -1,
 };
 
-pub const EmergencySourceSegment = struct {
-    path: [1024:0]u8 = [_:0]u8{0} ** 1024,
-    start_ms: i64 = 0,
-    end_ms: i64 = 0,
-};
-
-pub const EmergencyClipRequest = struct {
-    start_ms: i64 = 0,
-    end_ms: i64 = 0,
-};
-
 pub const Input = struct {
     surface_texture: c.jobject = null,
     surface_texture_native: ?*c.ASurfaceTexture = null,
@@ -165,6 +152,7 @@ pub const RecordingFrameSlot = struct {
     texture: c.GLuint = 0,
     framebuffer: c.GLuint = 0,
     ready: bool = false,
+    queued_for_encoder: bool = false,
     wall_clock_ms: i64 = 0,
     sequence: i64 = 0,
 };
@@ -366,9 +354,12 @@ pub const Pipe = struct {
     recording_worker_generation: c.jlong = 0,
     recording_worker_next_deadline_ms: i64 = 0,
     recording_frame_slots: [RECORDING_FRAME_QUEUE_CAPACITY]RecordingFrameSlot = [_]RecordingFrameSlot{RecordingFrameSlot{}} ** RECORDING_FRAME_QUEUE_CAPACITY,
+    recording_frame_queue_indices: [RECORDING_FRAME_QUEUE_CAPACITY]usize = [_]usize{0} ** RECORDING_FRAME_QUEUE_CAPACITY,
     recording_frame_queue_head: usize = 0,
     recording_frame_queue_tail: usize = 0,
     recording_frame_queue_count: usize = 0,
+    recording_frame_latest_index: c_int = -1,
+    recording_frame_write_cursor: usize = 0,
     recording_frame_queue_width: i32 = 0,
     recording_frame_queue_height: i32 = 0,
     recording_frame_queue_next_capture_ms: i64 = 0,

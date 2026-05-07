@@ -77,10 +77,8 @@ internal class V2PlaybackContentLoader(
 
             val scanned = ArrayList<V2VideoGroup>()
             val missingThumbnails = ArrayList<V2VideoGroup>()
-            val eventOnly = playbackMode() == V2PlaybackMode.EVENT
             V2VideoScanner.scanGroupsIncremental(appContext, isCancelled = { generation != loadGeneration }) { group ->
                 scanned += group
-                if (group.composite?.name?.contains("_event", ignoreCase = true) != eventOnly) return@scanGroupsIncremental
                 val existing = existingByKey[group.identityKey]
                 val merged = if (existing == null) {
                     group
@@ -194,8 +192,7 @@ internal class V2PlaybackContentLoader(
     }
 
     private fun loadGroupsForCurrentMode(): List<V2VideoGroup> = when (playbackMode()) {
-        V2PlaybackMode.NORMAL -> V2VideoScanner.loadCachedGroups(appContext, eventOnly = false)
-        V2PlaybackMode.EVENT -> V2VideoScanner.loadCachedGroups(appContext, eventOnly = true)
+        V2PlaybackMode.NORMAL -> V2VideoScanner.loadCachedGroups(appContext)
         V2PlaybackMode.PHOTO -> V2VideoScanner.scanPhotoGroups(appContext)
     }
 
