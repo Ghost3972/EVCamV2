@@ -42,7 +42,7 @@ class V2AvoidanceSettingsSection(
                     V2AppLog.i("V2SettingsActivity", "avoidance target changed ${target.value}=$enabled")
                 }
             }), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                rightMargin = cards.dp(18)
+                rightMargin = cards.dp(26)
             })
         }
     }
@@ -62,8 +62,12 @@ class V2AvoidanceSettingsSection(
         line.addView(TextView(activity).apply {
             text = label
             textSize = 22f
+            maxLines = 1
+            includeFontPadding = false
             setTextColor(ContextCompat.getColor(activity, R.color.settings_title_primary))
-        }, LinearLayout.LayoutParams(cards.dp(92), ViewGroup.LayoutParams.WRAP_CONTENT))
+        }, LinearLayout.LayoutParams(cards.dp(128), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            rightMargin = cards.dp(18)
+        })
         val options = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -85,14 +89,16 @@ class V2AvoidanceSettingsSection(
         option.addView(TextView(activity).apply {
             text = label
             textSize = 20f
+            includeFontPadding = false
             setTextColor(ContextCompat.getColor(activity, R.color.settings_title_primary))
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            rightMargin = cards.dp(12)
         })
         val switch = cards.settingSwitch(V2AvoidanceSettings.isBehaviorEnabled(activity, behavior)) { enabled ->
                 V2AvoidanceSettings.setBehaviorEnabled(activity, behavior, enabled)
                 V2CameraServiceCommands.notifySettingsChangedIfRunning(activity, V2SettingsCategory.AVOIDANCE)
                 V2AppLog.i("V2SettingsActivity", "avoidance behavior changed $label=$enabled mask=${V2AvoidanceSettings.behaviorMask(activity)}")
         }
-        option.setOnClickListener { switch.performClick() }
         option.addView(switch)
         return option
     }

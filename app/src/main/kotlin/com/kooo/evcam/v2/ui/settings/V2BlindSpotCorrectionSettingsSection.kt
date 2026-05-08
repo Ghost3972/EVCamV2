@@ -97,7 +97,6 @@ internal class V2BlindSpotCorrectionSettingsSection(
                 paramsContainer.visibility = if (enabled) View.VISIBLE else View.GONE
                 V2CameraServiceCommands.refreshBlindSpot(activity)
         }
-        enableRow.setOnClickListener { enableSwitch.performClick() }
         enableRow.addView(enableSwitch)
         return enableRow
     }
@@ -142,11 +141,36 @@ internal class V2BlindSpotCorrectionSettingsSection(
                 V2CameraServiceCommands.showBlindSpotPreview(activity, side)
             }
         }
-        container.addView(sliderRow("缩放X", 0.1f, 3.0f, current.scaleX) { save(current.copy(scaleX = it)) })
-        container.addView(sliderRow("缩放Y", 0.1f, 3.0f, current.scaleY) { save(current.copy(scaleY = it)) })
-        container.addView(sliderRow("平移X", -1.0f, 1.0f, current.translateX) { save(current.copy(translateX = it)) })
-        container.addView(sliderRow("平移Y", -1.0f, 1.0f, current.translateY) { save(current.copy(translateY = it)) })
-        container.addView(sliderRow("旋转", 0f, 360f, current.rotation) { save(current.copy(rotation = it)) })
+        container.addView(sliderRow(
+            "缩放X",
+            V2BlindSpotSettings.MIN_CORRECTION_SCALE,
+            V2BlindSpotSettings.MAX_CORRECTION_SCALE,
+            current.scaleX,
+        ) { save(current.copy(scaleX = it)) })
+        container.addView(sliderRow(
+            "缩放Y",
+            V2BlindSpotSettings.MIN_CORRECTION_SCALE,
+            V2BlindSpotSettings.MAX_CORRECTION_SCALE,
+            current.scaleY,
+        ) { save(current.copy(scaleY = it)) })
+        container.addView(sliderRow(
+            "平移X",
+            V2BlindSpotSettings.MIN_CORRECTION_TRANSLATE,
+            V2BlindSpotSettings.MAX_CORRECTION_TRANSLATE,
+            current.translateX,
+        ) { save(current.copy(translateX = it)) })
+        container.addView(sliderRow(
+            "平移Y",
+            V2BlindSpotSettings.MIN_CORRECTION_TRANSLATE,
+            V2BlindSpotSettings.MAX_CORRECTION_TRANSLATE,
+            current.translateY,
+        ) { save(current.copy(translateY = it)) })
+        container.addView(sliderRow(
+            "旋转",
+            V2BlindSpotSettings.MIN_CORRECTION_ROTATION,
+            V2BlindSpotSettings.MAX_CORRECTION_ROTATION,
+            current.rotation,
+        ) { save(current.copy(rotation = it)) })
         container.addView(mirrorRow("水平镜像", current.mirrorH) { save(current.copy(mirrorH = it)) })
         container.addView(mirrorRow("垂直镜像", current.mirrorV) { save(current.copy(mirrorV = it)) })
         return container
@@ -160,7 +184,6 @@ internal class V2BlindSpotCorrectionSettingsSection(
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         val toggle = cards.settingSwitch(checked) { enabled -> onChanged(enabled) }
-        line.setOnClickListener { toggle.performClick() }
         line.addView(toggle)
         return line
     }
@@ -169,14 +192,15 @@ internal class V2BlindSpotCorrectionSettingsSection(
         val row = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, dp(2))
+            setPadding(0, dp(6), 0, dp(6))
         }
         val valueText = TextView(activity).apply {
             text = "$label ${formatParam(value)}"
-            textSize = 14f
+            textSize = 16f
+            includeFontPadding = false
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }
-        val seekBar = SeekBar(activity).apply {
+        val seekBar = cards.styleSlider(SeekBar(activity).apply {
             max = 1000
             progress = (((value - min) / (rangeMax - min)) * max).toInt().coerceIn(0, max)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -189,9 +213,11 @@ internal class V2BlindSpotCorrectionSettingsSection(
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
-        }
-        row.addView(valueText, LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.WRAP_CONTENT))
-        row.addView(seekBar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        })
+        row.addView(valueText, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            rightMargin = dp(14)
+        })
+        row.addView(seekBar, LinearLayout.LayoutParams(0, dp(40), 1f))
         return row
     }
 

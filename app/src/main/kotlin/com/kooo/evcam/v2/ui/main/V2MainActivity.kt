@@ -161,13 +161,6 @@ class V2MainActivity : AppCompatActivity() {
         val isRecording = cameraService.toggleRecording()
         V2AppLog.i("V2MainActivity", "toggle recording was=$wasRecording now=$isRecording")
         recordingUi.updateNormalRecording(isRecording)
-        val message = when {
-            !wasRecording && isRecording -> "开始录制"
-            wasRecording && !isRecording -> "停止录制"
-            !wasRecording && !isRecording -> "录制启动失败"
-            else -> if (isRecording) "正在录制" else "已停止录制"
-        }
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
     private fun ensurePermissions() {

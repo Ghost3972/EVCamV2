@@ -11,6 +11,7 @@ internal class V2CameraNativeRuntimeController(
     private val pipelineHandle: Long,
     private val recordingSize: Size,
     private val recordingFps: Int,
+    private val previewMaxFps: Int,
     private val slots: List<V2CameraSlot>,
 ) {
     fun configure(logPrefix: String, fisheye: V2SettingsSnapshot.Fisheye? = null) {
@@ -20,7 +21,7 @@ internal class V2CameraNativeRuntimeController(
             compositor = nativeCompositor,
             recordingSize = recordingSize,
             recordingFps = recordingFps,
-            previewMaxFps = PREVIEW_MAX_FPS,
+            previewMaxFps = previewMaxFps,
             sideLeftRotation = SIDE_LEFT_ROTATION,
             sideRightRotation = SIDE_RIGHT_ROTATION,
             layoutMode = DEFAULT_LAYOUT_MODE,
@@ -31,7 +32,6 @@ internal class V2CameraNativeRuntimeController(
     }
 
     private companion object {
-        private const val PREVIEW_MAX_FPS = 30
         private const val SIDE_LEFT_ROTATION = 270
         private const val SIDE_RIGHT_ROTATION = 90
         private const val DEFAULT_LAYOUT_MODE = 0

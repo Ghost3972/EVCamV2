@@ -42,9 +42,27 @@ object GlesNative {
         fisheyeEnabled: BooleanArray,
         k1: FloatArray,
         k2: FloatArray,
+        k3: FloatArray,
+        k4: FloatArray,
         zoom: FloatArray,
         centerX: FloatArray,
-        centerY: FloatArray
+        centerY: FloatArray,
+        fx: FloatArray,
+        fy: FloatArray,
+        sourceWidth: FloatArray,
+        sourceHeight: FloatArray,
+        blindSpotFisheyeEnabled: BooleanArray,
+        blindSpotK1: FloatArray,
+        blindSpotK2: FloatArray,
+        blindSpotK3: FloatArray,
+        blindSpotK4: FloatArray,
+        blindSpotZoom: FloatArray,
+        blindSpotCenterX: FloatArray,
+        blindSpotCenterY: FloatArray,
+        blindSpotFx: FloatArray,
+        blindSpotFy: FloatArray,
+        blindSpotSourceWidth: FloatArray,
+        blindSpotSourceHeight: FloatArray
     ): Boolean
     external fun setPreviewMaxFps(handle: Long, fps: Int): Boolean
     external fun startPreviewWorker(handle: Long, fps: Int): Boolean
@@ -88,7 +106,7 @@ object GlesNative {
     external fun createOesInput(handle: Long, index: Int, surfaceTexture: android.graphics.SurfaceTexture): Boolean
     external fun attachCompositePreviewSurface(handle: Long, surface: Surface): Boolean
     external fun detachCompositePreviewSurface(handle: Long): Boolean
-    external fun attachPreviewSurfaceWithMode(handle: Long, index: Int, surface: Surface, applyFisheye: Boolean, applyNativeTransform: Boolean): Boolean
+    external fun attachPreviewSurfaceWithMode(handle: Long, index: Int, surface: Surface, applyFisheye: Boolean, applyNativeTransform: Boolean, useBlindSpotFisheye: Boolean): Boolean
     external fun detachPreviewSurface(handle: Long, index: Int): Boolean
     external fun detachPreviewSurfaces(handle: Long, indexes: IntArray): Boolean
     external fun releaseCompositor(handle: Long)

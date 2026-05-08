@@ -23,7 +23,11 @@ internal class V2SettingsRuntimeCoordinator(
     fun onSettingsChanged(category: String?) {
         val normalized = category?.ifBlank { V2SettingsCategory.ALL } ?: V2SettingsCategory.ALL
         when (normalized) {
-            V2SettingsCategory.FISHEYE -> debounceFisheye()
+            V2SettingsCategory.FISHEYE -> {
+                pendingFisheye?.let { handler.removeCallbacks(it) }
+                pendingFisheye = null
+                applyFisheye(loadFisheye())
+            }
             V2SettingsCategory.BLIND_SPOT -> restartBlindSpot(loadBlindSpot())
             V2SettingsCategory.CUSTOM_KEY -> restartCustomKey(loadCustomKey())
             V2SettingsCategory.AVOIDANCE -> updateAvoidance(loadAvoidance())
@@ -42,15 +46,7 @@ internal class V2SettingsRuntimeCoordinator(
         V2AppLog.i(TAG, "settings changed category=$normalized")
     }
 
-    private fun debounceFisheye() {
-        pendingFisheye?.let { handler.removeCallbacks(it) }
-        val task = Runnable { applyFisheye(loadFisheye()) }
-        pendingFisheye = task
-        handler.postDelayed(task, FISHEYE_DEBOUNCE_MS)
-    }
-
     private companion object {
         private const val TAG = "V2SettingsRuntime"
-        private const val FISHEYE_DEBOUNCE_MS = 120L
     }
 }

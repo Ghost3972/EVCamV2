@@ -43,6 +43,8 @@ object V2SettingsRepository {
     fun fisheyeConfig(context: Context) = V2SettingsSnapshot.Fisheye(
         enabled = V2FisheyeSettings.isEnabled(context),
         params = List(V2_CAMERA_SLOT_COUNT) { V2FisheyeSettings.paramsForIndex(context, it) },
+        blindSpotEnabled = V2FisheyeSettings.isBlindSpotEnabled(context),
+        blindSpotParams = List(V2_CAMERA_SLOT_COUNT) { V2FisheyeSettings.blindSpotParamsForIndex(context, it) },
     )
 
     fun avoidanceConfig(context: Context) = V2SettingsSnapshot.Avoidance(

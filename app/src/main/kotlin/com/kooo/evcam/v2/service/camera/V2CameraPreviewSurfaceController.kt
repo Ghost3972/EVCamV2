@@ -75,7 +75,7 @@ internal class V2CameraPreviewSurfaceController(
         attachCompositePreviewSurface(surface)
     }
 
-    fun attachPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true) {
+    fun attachPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true, useBlindSpotFisheye: Boolean = false) {
         val slot = slots.getOrNull(index) ?: return
         if (released() || pipelineHandle == 0L) return
         if (!cameraAccessAllowed()) {
@@ -84,7 +84,7 @@ internal class V2CameraPreviewSurfaceController(
         }
 
         V2AppLog.d(TAG, "attach preview ${slot.spec.name}/${slot.spec.cameraId}")
-        if (!nativeCompositor.attachPreview(index, surface, applyFisheye, applyNativeTransform)) {
+        if (!nativeCompositor.attachPreview(index, surface, applyFisheye, applyNativeTransform, useBlindSpotFisheye)) {
             slot.previewAttached = false
             V2AppLog.e(TAG, "attach preview failed ${slot.spec.name}/${slot.spec.cameraId}: ${nativeCompositor.lastError()}")
             startPreviewWorkerIfNeeded()

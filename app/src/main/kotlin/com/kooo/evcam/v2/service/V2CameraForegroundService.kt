@@ -26,7 +26,7 @@ class V2CameraForegroundService : Service() {
         const val EXTRA_CAMERA_INDEX = "camera_index"
         const val EXTRA_SIDE = "side"
         const val EXTRA_SETTINGS_CATEGORY = "settings_category"
-        internal const val AUTO_START_RECORDING_DELAY_MS = 0L
+        internal const val AUTO_START_RECORDING_DELAY_MS = 3_000L
 
         @Volatile var isRunning = false
             private set

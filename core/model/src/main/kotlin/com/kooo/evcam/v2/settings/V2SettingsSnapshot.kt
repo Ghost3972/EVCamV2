@@ -34,9 +34,14 @@ data class V2SettingsSnapshot(
     data class Fisheye(
         val enabled: Boolean,
         val params: List<V2FisheyeParams>,
+        val blindSpotEnabled: Boolean,
+        val blindSpotParams: List<V2FisheyeParams>,
     ) {
         fun paramsForIndex(index: Int): V2FisheyeParams =
             params.getOrElse(index) { V2FisheyeParams.defaultForIndex(index) }
+
+        fun blindSpotParamsForIndex(index: Int): V2FisheyeParams =
+            blindSpotParams.getOrElse(index) { V2FisheyeParams.defaultForIndex(index) }
     }
 
     data class Avoidance(

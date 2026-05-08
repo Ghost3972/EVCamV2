@@ -12,6 +12,7 @@ import android.widget.LinearLayout
 import android.widget.ImageView
 import android.widget.PopupWindow
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.core.widget.TextViewCompat
@@ -77,8 +78,8 @@ class V2SettingsCardFactory(private val activity: V2SettingsActivity) {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(0, dp(6), 0, dp(6))
-        isClickable = enabled
-        isFocusable = enabled
+        isClickable = enabled && onClick != null
+        isFocusable = enabled && onClick != null
         if (onClick != null) setOnClickListener { if (enabled) onClick() }
     }
 
@@ -136,12 +137,9 @@ class V2SettingsCardFactory(private val activity: V2SettingsActivity) {
     ): View {
         val row = cardRow().apply {
             alpha = if (enabled) 1f else 0.5f
-            isClickable = enabled
-            isFocusable = enabled
         }
         val texts = cardTexts(title, subtitle)
         val switch = settingSwitch(checked, enabled, onCheckedChange)
-        row.setOnClickListener { if (enabled) switch.performClick() }
         row.addView(texts)
         row.addView(switch)
         return row
@@ -174,8 +172,19 @@ class V2SettingsCardFactory(private val activity: V2SettingsActivity) {
         minHeight = dp(48)
         minWidth = dp(48)
         buttonDrawable = ContextCompat.getDrawable(activity, R.drawable.v2_settings_checkbox_selector)
+        setCompoundDrawablePadding(dp(10))
         setTextColor(ContextCompat.getColor(activity, R.color.settings_title_primary))
         setPadding(dp(2), dp(8), dp(18), dp(8))
+    }
+
+    fun styleSlider(seekBar: SeekBar): SeekBar = seekBar.apply {
+        minHeight = dp(40)
+        maxHeight = dp(40)
+        progressDrawable = ContextCompat.getDrawable(activity, R.drawable.v2_settings_slider_progress)
+        thumb = ContextCompat.getDrawable(activity, R.drawable.v2_settings_slider_thumb)
+        splitTrack = false
+        thumbOffset = dp(9)
+        setPadding(0, 0, 0, 0)
     }
 
     fun header(title: String, onBackClick: () -> Unit): View = LinearLayout(activity).apply {

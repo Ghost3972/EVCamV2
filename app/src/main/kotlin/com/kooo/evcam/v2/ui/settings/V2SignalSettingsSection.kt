@@ -116,7 +116,6 @@ class V2SignalSettingsSection(
         }
         propEdit.setOnEditorActionListener { _, _, _ -> saveAndRefresh(true); true }
         propEdit.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) saveAndRefresh(false) }
-        row.setOnClickListener { switch.performClick() }
         row.addView(controls)
         if (extraView != null) row.addView(extraView)
         return row

@@ -15,7 +15,7 @@ object V2SettingsFormatter {
 
     fun fisheyeParamsSummary(context: Context): String {
         val fisheye = V2SettingsRepository.currentSnapshot(context).fisheye
-        return V2FisheyeParams.summary(fisheye.params)
+        return "预览/录制：${V2FisheyeParams.summary(fisheye.params)}\n补盲：${if (fisheye.blindSpotEnabled) "开" else "关"}；${V2FisheyeParams.summary(fisheye.blindSpotParams)}"
     }
 
     fun avoidanceTargetsSummary(context: Context): String {

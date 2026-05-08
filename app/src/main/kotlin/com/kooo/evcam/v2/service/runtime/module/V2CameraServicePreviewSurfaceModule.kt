@@ -15,8 +15,9 @@ internal object V2CameraServicePreviewSurfaceModule {
                 graph.engine.attachPreviewSurface(
                     index = index,
                     surface = surface,
-                    applyFisheye = owner != V2PreviewLeaseManager.Owner.BLIND_SPOT,
+                    applyFisheye = true,
                     applyNativeTransform = owner != V2PreviewLeaseManager.Owner.MAIN || index < 2,
+                    useBlindSpotFisheye = owner == V2PreviewLeaseManager.Owner.BLIND_SPOT,
                 )
             },
             detachNative = { index -> graph.engine.detachPreviewSurface(index) },

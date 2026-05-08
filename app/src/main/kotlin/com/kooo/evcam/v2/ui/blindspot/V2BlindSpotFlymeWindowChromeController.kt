@@ -1,6 +1,7 @@
 package com.kooo.evcam.v2.ui.blindspot
 
 import android.content.Context
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
@@ -8,8 +9,10 @@ import com.kooo.evcam.v2.log.V2AppLog
 
 internal class V2BlindSpotFlymeWindowChromeController(
     private val activity: AppCompatActivity,
+    private val onCloseRequested: (String) -> Unit,
 ) {
     private var actionListenerProxy: Any? = null
+    private var closeRequested = false
 
     fun disable(reason: String) {
         hideFlymeWindowActions(reason)
@@ -58,10 +61,16 @@ internal class V2BlindSpotFlymeWindowChromeController(
                     "toString" -> "EVCamBlindSpotFlymeActionBlocker"
                     "hashCode" -> System.identityHashCode(actionListenerProxy ?: this)
                     "equals" -> false
-                    else -> when (method.returnType) {
-                        Boolean::class.javaPrimitiveType -> !isFlymeCloseActionView(args?.firstOrNull() as? View)
-                        Int::class.javaPrimitiveType -> 0
-                        else -> null
+                    else -> {
+                        val view = args?.firstOrNull() as? View
+                        if (isFlymeCloseActionView(view)) {
+                            requestClose("action_listener:${method.name}")
+                        }
+                        when (method.returnType) {
+                            Boolean::class.javaPrimitiveType -> true
+                            Int::class.javaPrimitiveType -> 0
+                            else -> null
+                        }
                     }
                 }
             }
@@ -97,6 +106,7 @@ internal class V2BlindSpotFlymeWindowChromeController(
         val root = activity.window.decorView ?: return
         val hiddenTargets = linkedMapOf<String, View>()
         val touchOnlyTargets = linkedMapOf<String, View>()
+        val closeTargets = linkedMapOf<String, View>()
         FLYME_MINI_WINDOW_HIDDEN_VIEW_NAMES.forEach { name ->
             val id = flymeInternalResId(name) ?: return@forEach
             val view = root.findViewById<View>(id) ?: return@forEach
@@ -106,6 +116,11 @@ internal class V2BlindSpotFlymeWindowChromeController(
             val id = flymeInternalResId(name) ?: return@forEach
             val view = root.findViewById<View>(id) ?: return@forEach
             touchOnlyTargets["id:$name"] = view
+        }
+        FLYME_CLOSE_VIEW_NAMES.forEach { name ->
+            val id = flymeInternalResId(name) ?: return@forEach
+            val view = root.findViewById<View>(id) ?: return@forEach
+            closeTargets["id:$name"] = view
         }
         flymeCaptionContainers(root).forEach { container ->
             FLYME_HIDDEN_CAPTION_FIELD_NAMES.forEach { fieldName ->
@@ -126,6 +141,11 @@ internal class V2BlindSpotFlymeWindowChromeController(
                 val view = container.findViewById<View>(id) ?: return@forEach
                 touchOnlyTargets["captionId:$name"] = view
             }
+            FLYME_CLOSE_VIEW_NAMES.forEach { name ->
+                val id = flymeInternalResId(name) ?: return@forEach
+                val view = container.findViewById<View>(id) ?: return@forEach
+                closeTargets["captionId:$name"] = view
+            }
         }
         val hidden = hiddenTargets.mapNotNull { (name, view) ->
             if (view.javaClass.name == FLYME_DECOR_CAPTION_VIEW_CLASS) return@mapNotNull null
@@ -138,13 +158,48 @@ internal class V2BlindSpotFlymeWindowChromeController(
         }
         val touchOnly = touchOnlyTargets.mapNotNull { (name, view) ->
             if (view.javaClass.name == FLYME_DECOR_CAPTION_VIEW_CLASS) return@mapNotNull null
-            view.setOnTouchListener { _, _ -> true }
+            view.setOnTouchListener { _, event -> !isTouchInsideCloseTarget(event, closeTargets.values) }
             view.isLongClickable = false
             view.visibility = View.VISIBLE
             "$name/${view.javaClass.simpleName}"
         }
-        if (hidden.isNotEmpty() || touchOnly.isNotEmpty()) {
-            V2AppLog.i(TAG, "suppress flyme mini-window caption reason=$reason hidden=$hidden touchOnly=$touchOnly closeKept=true")
+        val close = closeTargets.mapNotNull { (name, view) ->
+            if (view.javaClass.name == FLYME_DECOR_CAPTION_VIEW_CLASS) return@mapNotNull null
+            view.setOnClickListener { requestClose("caption_click:$name") }
+            view.setOnTouchListener { touchView, event ->
+                if (event.action == MotionEvent.ACTION_UP) touchView.performClick()
+                true
+            }
+            view.isClickable = true
+            view.isEnabled = true
+            view.visibility = View.VISIBLE
+            view.alpha = 1f
+            view.bringToFront()
+            "$name/${view.javaClass.simpleName}"
+        }
+        if (hidden.isNotEmpty() || touchOnly.isNotEmpty() || close.isNotEmpty()) {
+            V2AppLog.i(TAG, "suppress flyme mini-window caption reason=$reason hidden=$hidden touchOnly=$touchOnly close=$close")
+        }
+    }
+
+    private fun requestClose(reason: String) {
+        if (closeRequested) return
+        closeRequested = true
+        V2AppLog.i(TAG, "flyme mini-window close requested reason=$reason")
+        activity.window.decorView.post { onCloseRequested(reason) }
+    }
+
+    private fun isTouchInsideCloseTarget(event: MotionEvent, closeTargets: Collection<View>): Boolean {
+        val location = IntArray(2)
+        return closeTargets.any { target ->
+            if (!target.isShown) return@any false
+            runCatching {
+                target.getLocationOnScreen(location)
+                event.rawX >= location[0] &&
+                    event.rawX <= location[0] + target.width &&
+                    event.rawY >= location[1] &&
+                    event.rawY <= location[1] + target.height
+            }.getOrDefault(false)
         }
     }
 

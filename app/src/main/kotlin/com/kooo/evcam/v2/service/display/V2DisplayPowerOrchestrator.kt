@@ -106,6 +106,6 @@ internal class V2DisplayPowerOrchestrator(
     companion object {
         val DISPLAY_ON_RECORDING_RESTORE_TOKEN: Any = "display_on_recording_restore"
         private const val TAG = "V2CameraService"
-        private const val DISPLAY_ON_RECORDING_RESTORE_DELAY_MS = 500L
+        private const val DISPLAY_ON_RECORDING_RESTORE_DELAY_MS = 3_000L
     }
 }

@@ -31,6 +31,7 @@ internal class V2CameraEngineComponentGraph(
     private val recordingSize = recordingConfig.size
     private val compositeOutputSize = recordingConfig.outputSize
     private val recordingFps = recordingConfig.fps
+    private val previewMaxFps = recordingFps.coerceIn(1, 120)
     private val segmentDurationMs = recordingConfig.segmentDurationMs
     private val recordingBitrate = recordingConfig.bitrate
     private val nativeCompositor = V2NativeCompositor.create(compositeOutputSize)
@@ -48,6 +49,7 @@ internal class V2CameraEngineComponentGraph(
         pipelineHandle = pipelineHandle,
         recordingSize = compositeOutputSize,
         recordingFps = recordingFps,
+        previewMaxFps = previewMaxFps,
         slots = slots,
     )
     private val previewSurfaceController = V2CameraPreviewSurfaceController(
@@ -56,7 +58,7 @@ internal class V2CameraEngineComponentGraph(
         slots = slots,
         statusFormatter = statusFormatter,
         renderHandler = renderHandler,
-        previewMaxFps = PREVIEW_MAX_FPS,
+        previewMaxFps = previewMaxFps,
         cameraAccessAllowed = { cameraAccessAllowed },
         released = { released },
         publishStatus = { publishStatus() },
@@ -72,7 +74,7 @@ internal class V2CameraEngineComponentGraph(
         bitrate = recordingBitrate,
         fps = recordingFps,
         segmentDurationMs = segmentDurationMs,
-        previewMaxFps = PREVIEW_MAX_FPS,
+        previewMaxFps = previewMaxFps,
         cameraAccessAllowed = { cameraAccessAllowed },
         released = { released },
         openCameraCount = { slots.count { it.nativeCameraHandle != 0L } },
@@ -101,7 +103,7 @@ internal class V2CameraEngineComponentGraph(
         cameraAccessAllowed = { cameraAccessAllowed },
         released = { released },
         cameraGeneration = { cameraGeneration },
-        targetPreviewFps = PREVIEW_MAX_FPS,
+        targetPreviewFps = previewMaxFps,
         publishStatus = { publishStatus() },
     )
     private val slotSetController = V2CameraSlotSetController(
@@ -129,7 +131,7 @@ internal class V2CameraEngineComponentGraph(
     )
 
     init {
-        V2AppLog.i("V2CameraEngine", "init model=${specSet.modelLabel} specs=${specs.joinToString { "${it.label}:${it.cameraId}/rot${it.rotation}" }} perCameraSize=${recordingSize.width}x${recordingSize.height} outputSize=${compositeOutputSize.width}x${compositeOutputSize.height} bitrate=$recordingBitrate fps=$recordingFps segmentMs=$segmentDurationMs codec=H.264 pipelineHandle=$pipelineHandle nativeLoaded=${V2NativeCompositor.isNativeLoaded()}")
+        V2AppLog.i("V2CameraEngine", "init model=${specSet.modelLabel} specs=${specs.joinToString { "${it.label}:${it.cameraId}/rot${it.rotation}" }} perCameraSize=${recordingSize.width}x${recordingSize.height} outputSize=${compositeOutputSize.width}x${compositeOutputSize.height} bitrate=$recordingBitrate fps=$recordingFps previewMaxFps=$previewMaxFps segmentMs=$segmentDurationMs codec=H.264 pipelineHandle=$pipelineHandle nativeLoaded=${V2NativeCompositor.isNativeLoaded()}")
         if (!nativeCompositor.isAvailable) V2AppLog.e("V2CameraEngine", "create compositor failed: ${V2NativeCompositor.nativeSummary()} lastError=${V2NativeCompositor.lastError()}")
         nativeRuntimeController.configure(logPrefix = "init")
         previewSurfaceController.startPreviewWorkerIfNeeded()
@@ -169,8 +171,8 @@ internal class V2CameraEngineComponentGraph(
         previewSurfaceController.reattachCompositePreviewSurface()
     }
 
-    fun attachPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true) {
-        previewSurfaceController.attachPreviewSurface(index, surface, applyFisheye, applyNativeTransform)
+    fun attachPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true, useBlindSpotFisheye: Boolean = false) {
+        previewSurfaceController.attachPreviewSurface(index, surface, applyFisheye, applyNativeTransform, useBlindSpotFisheye)
     }
 
     fun detachPreviewSurface(index: Int) {
@@ -258,7 +260,6 @@ internal class V2CameraEngineComponentGraph(
     }
 
     private companion object {
-        private const val PREVIEW_MAX_FPS = 30
         private const val STATUS_DEBUG_MIN_INTERVAL_MS = 1_000L
     }
 }

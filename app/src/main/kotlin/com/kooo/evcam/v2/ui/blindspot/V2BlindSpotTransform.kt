@@ -6,6 +6,7 @@ import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
+import com.kooo.evcam.v2.settings.V2BlindSpotSettings
 
 object V2BlindSpotTransform {
     fun apply(
@@ -51,11 +52,23 @@ object V2BlindSpotTransform {
         val centerX = width / 2f
         val centerY = height / 2f
         val baseRotation = normalizeRotation(overlayRotationDegrees.toFloat())
-        val correctionRotation = normalizeRotation(correction.rotation)
-        val scaleX = correction.scaleX.coerceIn(MIN_CORRECTION_SCALE, MAX_CORRECTION_SCALE)
-        val scaleY = correction.scaleY.coerceIn(MIN_CORRECTION_SCALE, MAX_CORRECTION_SCALE)
-        val translateX = correction.translateX.coerceIn(MIN_CORRECTION_TRANSLATE, MAX_CORRECTION_TRANSLATE)
-        val translateY = correction.translateY.coerceIn(MIN_CORRECTION_TRANSLATE, MAX_CORRECTION_TRANSLATE)
+        val correctionRotation = V2BlindSpotSettings.normalizeCorrectionRotation(correction.rotation)
+        val scaleX = correction.scaleX.coerceIn(
+            V2BlindSpotSettings.MIN_CORRECTION_SCALE,
+            V2BlindSpotSettings.MAX_CORRECTION_SCALE,
+        )
+        val scaleY = correction.scaleY.coerceIn(
+            V2BlindSpotSettings.MIN_CORRECTION_SCALE,
+            V2BlindSpotSettings.MAX_CORRECTION_SCALE,
+        )
+        val translateX = correction.translateX.coerceIn(
+            V2BlindSpotSettings.MIN_CORRECTION_TRANSLATE,
+            V2BlindSpotSettings.MAX_CORRECTION_TRANSLATE,
+        )
+        val translateY = correction.translateY.coerceIn(
+            V2BlindSpotSettings.MIN_CORRECTION_TRANSLATE,
+            V2BlindSpotSettings.MAX_CORRECTION_TRANSLATE,
+        )
         val mirrorX = if (correction.mirrorH) -1f else 1f
         val mirrorY = if (correction.mirrorV) -1f else 1f
         return Matrix().apply {
@@ -76,9 +89,4 @@ object V2BlindSpotTransform {
     }
 
     private fun normalizeRotation(rotation: Float): Float = ((rotation % 360f) + 360f) % 360f
-
-    private const val MIN_CORRECTION_SCALE = 0.1f
-    private const val MAX_CORRECTION_SCALE = 3.0f
-    private const val MIN_CORRECTION_TRANSLATE = -1.0f
-    private const val MAX_CORRECTION_TRANSLATE = 1.0f
 }

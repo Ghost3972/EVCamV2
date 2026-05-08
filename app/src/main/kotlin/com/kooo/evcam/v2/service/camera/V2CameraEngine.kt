@@ -45,8 +45,8 @@ class V2CameraEngine(context: Context, listener: Listener? = null) {
         graph.reattachCompositePreviewSurface()
     }
 
-    fun attachPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true) {
-        graph.attachPreviewSurface(index, surface, applyFisheye, applyNativeTransform)
+    fun attachPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true, useBlindSpotFisheye: Boolean = false) {
+        graph.attachPreviewSurface(index, surface, applyFisheye, applyNativeTransform, useBlindSpotFisheye)
     }
 
     fun detachPreviewSurface(index: Int) {

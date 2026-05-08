@@ -635,8 +635,8 @@ fn clearCurrent(p: *Pipe) void {
 
 const VERT = "attribute vec4 aPosition;attribute vec2 aTexCoord;varying vec2 vTexCoord;void main(){gl_Position=aPosition;vTexCoord=aTexCoord;}";
 const FRAG = "#extension GL_OES_EGL_image_external : require\n" ++
-    "precision mediump float;varying vec2 vTexCoord;uniform samplerExternalOES uTexture;uniform int uFisheyeEnabled;uniform float uK1;uniform float uK2;uniform float uZoom;uniform vec2 uCenter;" ++
-    "void main(){ if(uFisheyeEnabled==0){gl_FragColor=texture2D(uTexture,vTexCoord);return;} vec2 coord=(vTexCoord-uCenter)/uZoom; float r2=dot(coord,coord); float r4=r2*r2; float distortion=1.0+uK1*r2+uK2*r4; vec2 corrected=coord*distortion+uCenter; if(corrected.x<0.0||corrected.x>1.0||corrected.y<0.0||corrected.y>1.0){ gl_FragColor=vec4(0.0,0.0,0.0,1.0); }else{ gl_FragColor=texture2D(uTexture,corrected); }}";
+    "precision mediump float;varying vec2 vTexCoord;uniform samplerExternalOES uTexture;uniform int uFisheyeEnabled;uniform float uK1;uniform float uK2;uniform float uK3;uniform float uK4;uniform float uZoom;uniform vec2 uCenter;uniform vec4 uOpenCvIntrinsics;" ++
+    "void main(){ if(uFisheyeEnabled==0){gl_FragColor=texture2D(uTexture,vTexCoord);return;} vec4 intr=max(abs(uOpenCvIntrinsics),vec4(1.0)); vec2 delta=(vTexCoord-uCenter)/max(abs(uZoom),0.01); vec2 coord=vec2(delta.x*intr.z/intr.x,delta.y*intr.w/intr.y); float r2=dot(coord,coord); float r4=r2*r2; float r6=r4*r2; float r8=r4*r4; float distortion=1.0+uK1*r2+uK2*r4+uK3*r6+uK4*r8; vec2 distorted=coord*distortion; vec2 corrected=vec2(distorted.x*intr.x/intr.z,distorted.y*intr.y/intr.w)+uCenter; if(corrected.x<0.0||corrected.x>1.0||corrected.y<0.0||corrected.y>1.0){ gl_FragColor=vec4(0.0,0.0,0.0,1.0); }else{ gl_FragColor=texture2D(uTexture,corrected); }}";
 const OVERLAY_VERT = "attribute vec2 aPosition;void main(){gl_Position=vec4(aPosition,0.0,1.0);}";
 const OVERLAY_FRAG = "precision mediump float;uniform vec4 uColor;void main(){gl_FragColor=uColor;}";
 const OVERLAY_TEXT_VERT = "attribute vec2 aPosition;attribute vec2 aTexCoord;varying vec2 vTexCoord;void main(){gl_Position=vec4(aPosition,0.0,1.0);vTexCoord=aTexCoord;}";
@@ -859,8 +859,11 @@ fn initEgl(p: *Pipe) bool {
     p.fisheye_enabled_loc = c.glGetUniformLocation(p.program, "uFisheyeEnabled");
     p.k1_loc = c.glGetUniformLocation(p.program, "uK1");
     p.k2_loc = c.glGetUniformLocation(p.program, "uK2");
+    p.k3_loc = c.glGetUniformLocation(p.program, "uK3");
+    p.k4_loc = c.glGetUniformLocation(p.program, "uK4");
     p.zoom_loc = c.glGetUniformLocation(p.program, "uZoom");
     p.center_loc = c.glGetUniformLocation(p.program, "uCenter");
+    p.opencv_intrinsics_loc = c.glGetUniformLocation(p.program, "uOpenCvIntrinsics");
     if (p.program == 0 or p.pos_loc < 0 or p.tex_loc < 0 or p.sampler_loc < 0 or p.overlay_program == 0 or p.overlay_pos_loc < 0 or p.overlay_color_loc < 0 or p.overlay_text_program == 0 or p.overlay_text_pos_loc < 0 or p.overlay_text_tex_loc < 0 or p.overlay_text_sampler_loc < 0 or p.overlay_text_color_loc < 0 or p.texture_program == 0 or p.texture_pos_loc < 0 or p.texture_tex_loc < 0 or p.texture_sampler_loc < 0) {
         setError("GLES program locations unavailable", .{});
         return false;
@@ -1005,26 +1008,41 @@ fn beginDrawPass(p: *Pipe) void {
     c.glUniform1i(p.sampler_loc, 0);
 }
 
-fn drawQuadWithFisheye(p: *Pipe, index: usize, q: *const Quad, apply_fisheye: bool) void {
+fn drawQuadWithFisheye(p: *Pipe, index: usize, q: *const Quad, apply_fisheye: bool, use_blind_spot_fisheye: bool) void {
     if (index >= 4) return;
     const input = &p.input[index];
     if (input.texture == 0 or input.surface_texture_native == null or !input.has_latched_frame) return;
     c.glVertexAttribPointer(@intCast(p.pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &q.verts);
     c.glVertexAttribPointer(@intCast(p.tex_loc), 2, c.GL_FLOAT, c.GL_FALSE, 0, &q.tex);
     c.glBindTexture(GL_TEXTURE_EXTERNAL_OES, input.texture);
-    const fisheye_enabled = apply_fisheye and p.fisheye_enabled[index];
+    const source_enabled = if (use_blind_spot_fisheye) p.blind_spot_fisheye_enabled[index] else p.fisheye_enabled[index];
+    const fisheye_enabled = apply_fisheye and source_enabled;
     if (p.fisheye_enabled_loc >= 0) c.glUniform1i(p.fisheye_enabled_loc, if (fisheye_enabled) 1 else 0);
     if (fisheye_enabled) {
-        if (p.k1_loc >= 0) c.glUniform1f(p.k1_loc, p.fisheye_k1[index]);
-        if (p.k2_loc >= 0) c.glUniform1f(p.k2_loc, p.fisheye_k2[index]);
-        if (p.zoom_loc >= 0) c.glUniform1f(p.zoom_loc, p.fisheye_zoom[index]);
-        if (p.center_loc >= 0) c.glUniform2f(p.center_loc, p.fisheye_center_x[index], p.fisheye_center_y[index]);
+        const k1 = if (use_blind_spot_fisheye) p.blind_spot_fisheye_k1[index] else p.fisheye_k1[index];
+        const k2 = if (use_blind_spot_fisheye) p.blind_spot_fisheye_k2[index] else p.fisheye_k2[index];
+        const k3 = if (use_blind_spot_fisheye) p.blind_spot_fisheye_k3[index] else p.fisheye_k3[index];
+        const k4 = if (use_blind_spot_fisheye) p.blind_spot_fisheye_k4[index] else p.fisheye_k4[index];
+        const zoom = if (use_blind_spot_fisheye) p.blind_spot_fisheye_zoom[index] else p.fisheye_zoom[index];
+        const center_x = if (use_blind_spot_fisheye) p.blind_spot_fisheye_center_x[index] else p.fisheye_center_x[index];
+        const center_y = if (use_blind_spot_fisheye) p.blind_spot_fisheye_center_y[index] else p.fisheye_center_y[index];
+        const fx = if (use_blind_spot_fisheye) p.blind_spot_fisheye_fx[index] else p.fisheye_fx[index];
+        const fy = if (use_blind_spot_fisheye) p.blind_spot_fisheye_fy[index] else p.fisheye_fy[index];
+        const source_width = if (use_blind_spot_fisheye) p.blind_spot_fisheye_source_width[index] else p.fisheye_source_width[index];
+        const source_height = if (use_blind_spot_fisheye) p.blind_spot_fisheye_source_height[index] else p.fisheye_source_height[index];
+        if (p.k1_loc >= 0) c.glUniform1f(p.k1_loc, k1);
+        if (p.k2_loc >= 0) c.glUniform1f(p.k2_loc, k2);
+        if (p.k3_loc >= 0) c.glUniform1f(p.k3_loc, k3);
+        if (p.k4_loc >= 0) c.glUniform1f(p.k4_loc, k4);
+        if (p.zoom_loc >= 0) c.glUniform1f(p.zoom_loc, zoom);
+        if (p.center_loc >= 0) c.glUniform2f(p.center_loc, center_x, center_y);
+        if (p.opencv_intrinsics_loc >= 0) c.glUniform4f(p.opencv_intrinsics_loc, fx, fy, source_width, source_height);
     }
     c.glDrawArrays(c.GL_TRIANGLE_STRIP, 0, 4);
 }
 
 fn drawQuad(p: *Pipe, index: usize, q: *const Quad) void {
-    drawQuadWithFisheye(p, index, q, true);
+    drawQuadWithFisheye(p, index, q, true, false);
 }
 
 fn civilFromDays(days_since_epoch: i64) struct { year: i64, month: i64, day: i64 } {
@@ -1337,7 +1355,7 @@ fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
     c.glClearColor(0, 0, 0, 1);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     beginDrawPass(p);
-    drawQuadWithFisheye(p, i, &p.preview_quad[i], p.preview_apply_fisheye[i]);
+    drawQuadWithFisheye(p, i, &p.preview_quad[i], p.preview_apply_fisheye[i], p.preview_use_blind_spot_fisheye[i]);
     if (CHECK_RENDER_GL_ERROR) if (glError("renderPreview")) |e| {
         setErrorSlice(e);
         clearCurrent(p);
@@ -1379,7 +1397,7 @@ fn renderPreviewFromLatchedLocked(p: *Pipe, index: i32) bool {
     c.glClearColor(0, 0, 0, 1);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     beginDrawPass(p);
-    drawQuadWithFisheye(p, i, &p.preview_quad[i], p.preview_apply_fisheye[i]);
+    drawQuadWithFisheye(p, i, &p.preview_quad[i], p.preview_apply_fisheye[i], p.preview_use_blind_spot_fisheye[i]);
     if (CHECK_RENDER_GL_ERROR) if (glError("renderPreviewFromLatched")) |e| {
         setErrorSlice(e);
         clearCurrent(p);
@@ -2155,16 +2173,34 @@ fn applyRuntimeConfigLocked(p: *Pipe, runtime: *const RenderRuntimeConfig) void 
             p.fisheye_enabled[i] = runtime.fisheye_enabled[i];
             p.fisheye_k1[i] = runtime.fisheye_k1[i];
             p.fisheye_k2[i] = runtime.fisheye_k2[i];
+            p.fisheye_k3[i] = runtime.fisheye_k3[i];
+            p.fisheye_k4[i] = runtime.fisheye_k4[i];
             p.fisheye_zoom[i] = if (runtime.fisheye_zoom[i] <= 0.01) 1.0 else runtime.fisheye_zoom[i];
             p.fisheye_center_x[i] = runtime.fisheye_center_x[i];
             p.fisheye_center_y[i] = runtime.fisheye_center_y[i];
+            p.fisheye_fx[i] = if (runtime.fisheye_fx[i] <= 1.0) 1920.0 else runtime.fisheye_fx[i];
+            p.fisheye_fy[i] = if (runtime.fisheye_fy[i] <= 1.0) 1536.0 else runtime.fisheye_fy[i];
+            p.fisheye_source_width[i] = if (runtime.fisheye_source_width[i] <= 1.0) 1920.0 else runtime.fisheye_source_width[i];
+            p.fisheye_source_height[i] = if (runtime.fisheye_source_height[i] <= 1.0) 1536.0 else runtime.fisheye_source_height[i];
+            p.blind_spot_fisheye_enabled[i] = runtime.blind_spot_fisheye_enabled[i];
+            p.blind_spot_fisheye_k1[i] = runtime.blind_spot_fisheye_k1[i];
+            p.blind_spot_fisheye_k2[i] = runtime.blind_spot_fisheye_k2[i];
+            p.blind_spot_fisheye_k3[i] = runtime.blind_spot_fisheye_k3[i];
+            p.blind_spot_fisheye_k4[i] = runtime.blind_spot_fisheye_k4[i];
+            p.blind_spot_fisheye_zoom[i] = if (runtime.blind_spot_fisheye_zoom[i] <= 0.01) 1.0 else runtime.blind_spot_fisheye_zoom[i];
+            p.blind_spot_fisheye_center_x[i] = runtime.blind_spot_fisheye_center_x[i];
+            p.blind_spot_fisheye_center_y[i] = runtime.blind_spot_fisheye_center_y[i];
+            p.blind_spot_fisheye_fx[i] = if (runtime.blind_spot_fisheye_fx[i] <= 1.0) 1920.0 else runtime.blind_spot_fisheye_fx[i];
+            p.blind_spot_fisheye_fy[i] = if (runtime.blind_spot_fisheye_fy[i] <= 1.0) 1536.0 else runtime.blind_spot_fisheye_fy[i];
+            p.blind_spot_fisheye_source_width[i] = if (runtime.blind_spot_fisheye_source_width[i] <= 1.0) 1920.0 else runtime.blind_spot_fisheye_source_width[i];
+            p.blind_spot_fisheye_source_height[i] = if (runtime.blind_spot_fisheye_source_height[i] <= 1.0) 1536.0 else runtime.blind_spot_fisheye_source_height[i];
         }
     }
     updateEncoderLayout(p);
     for (0..4) |i| if (p.preview_window_width[i] > 0 and p.preview_window_height[i] > 0) updatePreviewLayout(p, @intCast(i), p.preview_window_width[i], p.preview_window_height[i]);
 }
 
-fn fillRuntimeConfigCommand(env: [*c]c.JNIEnv, out: *RenderCommand, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray) void {
+fn fillRuntimeConfigCommand(env: [*c]c.JNIEnv, out: *RenderCommand, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, k3: c.jfloatArray, k4: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray, fx: c.jfloatArray, fy: c.jfloatArray, source_width: c.jfloatArray, source_height: c.jfloatArray, blind_spot_enabled: c.jbooleanArray, blind_spot_k1: c.jfloatArray, blind_spot_k2: c.jfloatArray, blind_spot_k3: c.jfloatArray, blind_spot_k4: c.jfloatArray, blind_spot_zoom: c.jfloatArray, blind_spot_center_x: c.jfloatArray, blind_spot_center_y: c.jfloatArray, blind_spot_fx: c.jfloatArray, blind_spot_fy: c.jfloatArray, blind_spot_source_width: c.jfloatArray, blind_spot_source_height: c.jfloatArray) void {
     out.* = RenderCommand{
         .kind = .runtime_config,
         .runtime = .{
@@ -2177,30 +2213,84 @@ fn fillRuntimeConfigCommand(env: [*c]c.JNIEnv, out: *RenderCommand, width: c.jin
             .layout_mode = layout_mode,
         },
     };
-    if (fisheye_enabled != null and k1 != null and k2 != null and zoom != null and center_x != null and center_y != null and getArrayLen(env, fisheye_enabled) >= 4 and getArrayLen(env, k1) >= 4 and getArrayLen(env, k2) >= 4 and getArrayLen(env, zoom) >= 4 and getArrayLen(env, center_x) >= 4 and getArrayLen(env, center_y) >= 4) {
+    if (fisheye_enabled != null and k1 != null and k2 != null and k3 != null and k4 != null and zoom != null and center_x != null and center_y != null and fx != null and fy != null and source_width != null and source_height != null and blind_spot_enabled != null and blind_spot_k1 != null and blind_spot_k2 != null and blind_spot_k3 != null and blind_spot_k4 != null and blind_spot_zoom != null and blind_spot_center_x != null and blind_spot_center_y != null and blind_spot_fx != null and blind_spot_fy != null and blind_spot_source_width != null and blind_spot_source_height != null and getArrayLen(env, fisheye_enabled) >= 4 and getArrayLen(env, k1) >= 4 and getArrayLen(env, k2) >= 4 and getArrayLen(env, k3) >= 4 and getArrayLen(env, k4) >= 4 and getArrayLen(env, zoom) >= 4 and getArrayLen(env, center_x) >= 4 and getArrayLen(env, center_y) >= 4 and getArrayLen(env, fx) >= 4 and getArrayLen(env, fy) >= 4 and getArrayLen(env, source_width) >= 4 and getArrayLen(env, source_height) >= 4 and getArrayLen(env, blind_spot_enabled) >= 4 and getArrayLen(env, blind_spot_k1) >= 4 and getArrayLen(env, blind_spot_k2) >= 4 and getArrayLen(env, blind_spot_k3) >= 4 and getArrayLen(env, blind_spot_k4) >= 4 and getArrayLen(env, blind_spot_zoom) >= 4 and getArrayLen(env, blind_spot_center_x) >= 4 and getArrayLen(env, blind_spot_center_y) >= 4 and getArrayLen(env, blind_spot_fx) >= 4 and getArrayLen(env, blind_spot_fy) >= 4 and getArrayLen(env, blind_spot_source_width) >= 4 and getArrayLen(env, blind_spot_source_height) >= 4) {
         const enabled = env.*[0].GetBooleanArrayElements.?(env, fisheye_enabled, null);
         const k1v = env.*[0].GetFloatArrayElements.?(env, k1, null);
         const k2v = env.*[0].GetFloatArrayElements.?(env, k2, null);
+        const k3v = env.*[0].GetFloatArrayElements.?(env, k3, null);
+        const k4v = env.*[0].GetFloatArrayElements.?(env, k4, null);
         const zoomv = env.*[0].GetFloatArrayElements.?(env, zoom, null);
         const cx = env.*[0].GetFloatArrayElements.?(env, center_x, null);
         const cy = env.*[0].GetFloatArrayElements.?(env, center_y, null);
-        if (enabled != null and k1v != null and k2v != null and zoomv != null and cx != null and cy != null) {
+        const fxv = env.*[0].GetFloatArrayElements.?(env, fx, null);
+        const fyv = env.*[0].GetFloatArrayElements.?(env, fy, null);
+        const sw = env.*[0].GetFloatArrayElements.?(env, source_width, null);
+        const sh = env.*[0].GetFloatArrayElements.?(env, source_height, null);
+        const bs_enabled = env.*[0].GetBooleanArrayElements.?(env, blind_spot_enabled, null);
+        const bs_k1v = env.*[0].GetFloatArrayElements.?(env, blind_spot_k1, null);
+        const bs_k2v = env.*[0].GetFloatArrayElements.?(env, blind_spot_k2, null);
+        const bs_k3v = env.*[0].GetFloatArrayElements.?(env, blind_spot_k3, null);
+        const bs_k4v = env.*[0].GetFloatArrayElements.?(env, blind_spot_k4, null);
+        const bs_zoomv = env.*[0].GetFloatArrayElements.?(env, blind_spot_zoom, null);
+        const bs_cx = env.*[0].GetFloatArrayElements.?(env, blind_spot_center_x, null);
+        const bs_cy = env.*[0].GetFloatArrayElements.?(env, blind_spot_center_y, null);
+        const bs_fxv = env.*[0].GetFloatArrayElements.?(env, blind_spot_fx, null);
+        const bs_fyv = env.*[0].GetFloatArrayElements.?(env, blind_spot_fy, null);
+        const bs_sw = env.*[0].GetFloatArrayElements.?(env, blind_spot_source_width, null);
+        const bs_sh = env.*[0].GetFloatArrayElements.?(env, blind_spot_source_height, null);
+        if (enabled != null and k1v != null and k2v != null and k3v != null and k4v != null and zoomv != null and cx != null and cy != null and fxv != null and fyv != null and sw != null and sh != null and bs_enabled != null and bs_k1v != null and bs_k2v != null and bs_k3v != null and bs_k4v != null and bs_zoomv != null and bs_cx != null and bs_cy != null and bs_fxv != null and bs_fyv != null and bs_sw != null and bs_sh != null) {
             out.runtime.fisheye_valid = true;
             for (0..4) |i| {
                 out.runtime.fisheye_enabled[i] = enabled[i] == JNI_TRUE;
                 out.runtime.fisheye_k1[i] = k1v[i];
                 out.runtime.fisheye_k2[i] = k2v[i];
+                out.runtime.fisheye_k3[i] = k3v[i];
+                out.runtime.fisheye_k4[i] = k4v[i];
                 out.runtime.fisheye_zoom[i] = zoomv[i];
                 out.runtime.fisheye_center_x[i] = cx[i];
                 out.runtime.fisheye_center_y[i] = cy[i];
+                out.runtime.fisheye_fx[i] = fxv[i];
+                out.runtime.fisheye_fy[i] = fyv[i];
+                out.runtime.fisheye_source_width[i] = sw[i];
+                out.runtime.fisheye_source_height[i] = sh[i];
+                out.runtime.blind_spot_fisheye_enabled[i] = bs_enabled[i] == JNI_TRUE;
+                out.runtime.blind_spot_fisheye_k1[i] = bs_k1v[i];
+                out.runtime.blind_spot_fisheye_k2[i] = bs_k2v[i];
+                out.runtime.blind_spot_fisheye_k3[i] = bs_k3v[i];
+                out.runtime.blind_spot_fisheye_k4[i] = bs_k4v[i];
+                out.runtime.blind_spot_fisheye_zoom[i] = bs_zoomv[i];
+                out.runtime.blind_spot_fisheye_center_x[i] = bs_cx[i];
+                out.runtime.blind_spot_fisheye_center_y[i] = bs_cy[i];
+                out.runtime.blind_spot_fisheye_fx[i] = bs_fxv[i];
+                out.runtime.blind_spot_fisheye_fy[i] = bs_fyv[i];
+                out.runtime.blind_spot_fisheye_source_width[i] = bs_sw[i];
+                out.runtime.blind_spot_fisheye_source_height[i] = bs_sh[i];
             }
         }
         if (enabled != null) env.*[0].ReleaseBooleanArrayElements.?(env, fisheye_enabled, enabled, c.JNI_ABORT);
         if (k1v != null) env.*[0].ReleaseFloatArrayElements.?(env, k1, k1v, c.JNI_ABORT);
         if (k2v != null) env.*[0].ReleaseFloatArrayElements.?(env, k2, k2v, c.JNI_ABORT);
+        if (k3v != null) env.*[0].ReleaseFloatArrayElements.?(env, k3, k3v, c.JNI_ABORT);
+        if (k4v != null) env.*[0].ReleaseFloatArrayElements.?(env, k4, k4v, c.JNI_ABORT);
         if (zoomv != null) env.*[0].ReleaseFloatArrayElements.?(env, zoom, zoomv, c.JNI_ABORT);
         if (cx != null) env.*[0].ReleaseFloatArrayElements.?(env, center_x, cx, c.JNI_ABORT);
         if (cy != null) env.*[0].ReleaseFloatArrayElements.?(env, center_y, cy, c.JNI_ABORT);
+        if (fxv != null) env.*[0].ReleaseFloatArrayElements.?(env, fx, fxv, c.JNI_ABORT);
+        if (fyv != null) env.*[0].ReleaseFloatArrayElements.?(env, fy, fyv, c.JNI_ABORT);
+        if (sw != null) env.*[0].ReleaseFloatArrayElements.?(env, source_width, sw, c.JNI_ABORT);
+        if (sh != null) env.*[0].ReleaseFloatArrayElements.?(env, source_height, sh, c.JNI_ABORT);
+        if (bs_enabled != null) env.*[0].ReleaseBooleanArrayElements.?(env, blind_spot_enabled, bs_enabled, c.JNI_ABORT);
+        if (bs_k1v != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_k1, bs_k1v, c.JNI_ABORT);
+        if (bs_k2v != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_k2, bs_k2v, c.JNI_ABORT);
+        if (bs_k3v != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_k3, bs_k3v, c.JNI_ABORT);
+        if (bs_k4v != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_k4, bs_k4v, c.JNI_ABORT);
+        if (bs_zoomv != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_zoom, bs_zoomv, c.JNI_ABORT);
+        if (bs_cx != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_center_x, bs_cx, c.JNI_ABORT);
+        if (bs_cy != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_center_y, bs_cy, c.JNI_ABORT);
+        if (bs_fxv != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_fx, bs_fxv, c.JNI_ABORT);
+        if (bs_fyv != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_fy, bs_fyv, c.JNI_ABORT);
+        if (bs_sw != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_source_width, bs_sw, c.JNI_ABORT);
+        if (bs_sh != null) env.*[0].ReleaseFloatArrayElements.?(env, blind_spot_source_height, bs_sh, c.JNI_ABORT);
     }
 }
 
@@ -2208,9 +2298,9 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_getGlesSummary(env: [*c
     return newString(env, "GLES/OES Zig native compositor");
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeConfig(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray) callconv(.c) c.jboolean {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setCompositorRuntimeConfig(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, width: c.jint, height: c.jint, preview_fps: c.jint, encoder_fps: c.jint, side_left_rotation: c.jint, side_right_rotation: c.jint, layout_mode: c.jint, fisheye_enabled: c.jbooleanArray, k1: c.jfloatArray, k2: c.jfloatArray, k3: c.jfloatArray, k4: c.jfloatArray, zoom: c.jfloatArray, center_x: c.jfloatArray, center_y: c.jfloatArray, fx: c.jfloatArray, fy: c.jfloatArray, source_width: c.jfloatArray, source_height: c.jfloatArray, blind_spot_enabled: c.jbooleanArray, blind_spot_k1: c.jfloatArray, blind_spot_k2: c.jfloatArray, blind_spot_k3: c.jfloatArray, blind_spot_k4: c.jfloatArray, blind_spot_zoom: c.jfloatArray, blind_spot_center_x: c.jfloatArray, blind_spot_center_y: c.jfloatArray, blind_spot_fx: c.jfloatArray, blind_spot_fy: c.jfloatArray, blind_spot_source_width: c.jfloatArray, blind_spot_source_height: c.jfloatArray) callconv(.c) c.jboolean {
     var cmd = RenderCommand{};
-    fillRuntimeConfigCommand(env, &cmd, width, height, preview_fps, encoder_fps, side_left_rotation, side_right_rotation, layout_mode, fisheye_enabled, k1, k2, zoom, center_x, center_y);
+    fillRuntimeConfigCommand(env, &cmd, width, height, preview_fps, encoder_fps, side_left_rotation, side_right_rotation, layout_mode, fisheye_enabled, k1, k2, k3, k4, zoom, center_x, center_y, fx, fy, source_width, source_height, blind_spot_enabled, blind_spot_k1, blind_spot_k2, blind_spot_k3, blind_spot_k4, blind_spot_zoom, blind_spot_center_x, blind_spot_center_y, blind_spot_fx, blind_spot_fy, blind_spot_source_width, blind_spot_source_height);
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
     defer unlockPipe(p);
     if (renderWorkerAcceptsCommandsLocked(p)) {
@@ -3418,10 +3508,11 @@ fn detachPreviewSurfaceIndexLocked(p: *Pipe, i: usize) void {
     }
     p.preview_window_width[i] = 0;
     p.preview_window_height[i] = 0;
+    p.preview_use_blind_spot_fisheye[i] = false;
     p.input[i].preview_pending = false;
 }
 
-fn attachPreviewWindowLocked(p: *Pipe, index: c.jint, window: ?*c.ANativeWindow, apply_fisheye: bool, apply_native_transform: bool) c.jboolean {
+fn attachPreviewWindowLocked(p: *Pipe, index: c.jint, window: ?*c.ANativeWindow, apply_fisheye: bool, apply_native_transform: bool, use_blind_spot_fisheye: bool) c.jboolean {
     if (p.releasing or index < 0 or index >= 4 or window == null or !initEgl(p)) {
         if (window) |w| c.ANativeWindow_release(w);
         return JNI_FALSE;
@@ -3438,9 +3529,10 @@ fn attachPreviewWindowLocked(p: *Pipe, index: c.jint, window: ?*c.ANativeWindow,
     p.preview_surface[i] = new_surface;
     p.preview_apply_fisheye[i] = apply_fisheye;
     p.preview_apply_native_transform[i] = apply_native_transform;
+    p.preview_use_blind_spot_fisheye[i] = use_blind_spot_fisheye;
     const size = previewWindowSizeLocked(p, i, true);
     updatePreviewLayout(p, index, size.width, size.height);
-    logd("attached preview surface index={d} size={d}x{d} fisheye={d} nativeTransform={d}", .{ index, size.width, size.height, if (apply_fisheye) @as(i32, 1) else @as(i32, 0), if (apply_native_transform) @as(i32, 1) else @as(i32, 0) });
+    logd("attached preview surface index={d} size={d}x{d} fisheye={d} blindSpotFisheye={d} nativeTransform={d}", .{ index, size.width, size.height, if (apply_fisheye) @as(i32, 1) else @as(i32, 0), if (use_blind_spot_fisheye) @as(i32, 1) else @as(i32, 0), if (apply_native_transform) @as(i32, 1) else @as(i32, 0) });
     return JNI_TRUE;
 }
 
@@ -3497,7 +3589,7 @@ fn applyRenderCommandLocked(p: *Pipe, cmd: *RenderCommand) bool {
         .attach_preview => blk: {
             const window = cmd.window;
             cmd.window = null;
-            break :blk attachPreviewWindowLocked(p, cmd.index, window, cmd.apply_fisheye, cmd.apply_native_transform) == JNI_TRUE;
+            break :blk attachPreviewWindowLocked(p, cmd.index, window, cmd.apply_fisheye, cmd.apply_native_transform, cmd.use_blind_spot_fisheye) == JNI_TRUE;
         },
         .detach_preview => blk: {
             if (cmd.index >= 0 and cmd.index < 4) detachPreviewSurfaceIndexLocked(p, @intCast(cmd.index));
@@ -3571,7 +3663,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachCompositePreviewS
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurfaceWithMode(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean) callconv(.c) c.jboolean {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurfaceWithMode(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean, use_blind_spot_fisheye: c.jboolean) callconv(.c) c.jboolean {
     if (surface == null) return JNI_FALSE;
     var cmd = RenderCommand{
         .kind = .attach_preview,
@@ -3579,6 +3671,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurfaceWit
         .window = c.ANativeWindow_fromSurface(env, surface),
         .apply_fisheye = apply_fisheye == JNI_TRUE,
         .apply_native_transform = apply_native_transform == JNI_TRUE,
+        .use_blind_spot_fisheye = use_blind_spot_fisheye == JNI_TRUE,
     };
     if (cmd.window == null) {
         setError("preview window unavailable", .{});
@@ -3592,7 +3685,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachPreviewSurfaceWit
     }
     const window = cmd.window;
     cmd.window = null;
-    return attachPreviewWindowLocked(p, index, window, cmd.apply_fisheye, cmd.apply_native_transform);
+    return attachPreviewWindowLocked(p, index, window, cmd.apply_fisheye, cmd.apply_native_transform, cmd.use_blind_spot_fisheye);
 }
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean {
     const p = lockPipeForHandle(handle) orelse return JNI_FALSE;

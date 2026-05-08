@@ -41,7 +41,7 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
     private var correction = V2BlindSpotCorrection()
     private var firstFrameShown = false
     private var finishRequestedByService = false
-    private val flymeChrome = V2BlindSpotFlymeWindowChromeController(this)
+    private val flymeChrome = V2BlindSpotFlymeWindowChromeController(this) { reason -> closeFromUser(reason) }
 
     private val metricsRunnable = object : Runnable {
         override fun run() {
@@ -124,7 +124,7 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        closeFromUser()
+        closeFromUser("back")
     }
 
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
@@ -224,7 +224,8 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
         applyPreviewTransform()
     }
 
-    private fun closeFromUser() {
+    private fun closeFromUser(reason: String = "user") {
+        V2AppLog.i(TAG, "close from user reason=$reason")
         V2CameraServiceCommands.hideBlindSpotPreview(this)
         finish()
     }

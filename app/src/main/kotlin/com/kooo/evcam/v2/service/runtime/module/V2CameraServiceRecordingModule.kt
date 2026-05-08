@@ -14,9 +14,11 @@ internal object V2CameraServiceRecordingModule {
             },
             isDisplayPowerOn = { graph.isDisplayPowerOn() },
             isSystemInteractive = { graph.isSystemInteractive() },
+            isNormalRecording = { graph.engine.isNormalRecording() },
             isAvoidanceActive = { graph.avoidanceController.isActive },
             avoidanceTarget = { graph.avoidanceController.activeTarget },
             publishSnapshot = { reason -> graph.statusReporter.publishSnapshot(reason) },
+            showToast = { message -> graph.statusReporter.showToast(message) },
         )
     }
 }

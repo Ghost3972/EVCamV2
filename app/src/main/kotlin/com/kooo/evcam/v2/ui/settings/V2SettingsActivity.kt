@@ -127,8 +127,8 @@ class V2SettingsActivity : AppCompatActivity() {
         content.addView(storageCleanupCard())
         content.addView(signalSection.customKeyCard())
         content.addView(avoidanceBehaviorCard())
-        content.addView(signalSection.blindSpotCard())
         content.addView(fisheyeSwitchCard())
+        content.addView(signalSection.blindSpotCard())
         return scroll
     }
 

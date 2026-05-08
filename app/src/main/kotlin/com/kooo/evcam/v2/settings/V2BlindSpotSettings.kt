@@ -27,6 +27,12 @@ object V2BlindSpotSettings {
     const val RIGHT_VALUE = 2
     const val OFF_VALUE = 0
     const val HIDE_DELAY_MS = 1_000L
+    const val MIN_CORRECTION_SCALE = 0.05f
+    const val MAX_CORRECTION_SCALE = 6.0f
+    const val MIN_CORRECTION_TRANSLATE = -6.0f
+    const val MAX_CORRECTION_TRANSLATE = 6.0f
+    const val MIN_CORRECTION_ROTATION = -360.0f
+    const val MAX_CORRECTION_ROTATION = 360.0f
 
     fun isEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, false)
 
@@ -103,11 +109,15 @@ object V2BlindSpotSettings {
     }
 
     fun correction(context: Context, side: String): V2BlindSpotCorrection = V2BlindSpotCorrection(
-        scaleX = prefs(context).getFloat(correctionKey(side, "scale_x"), 1f),
-        scaleY = prefs(context).getFloat(correctionKey(side, "scale_y"), 1f),
-        translateX = prefs(context).getFloat(correctionKey(side, "translate_x"), 0f),
-        translateY = prefs(context).getFloat(correctionKey(side, "translate_y"), 0f),
-        rotation = prefs(context).getFloat(correctionKey(side, "rotation"), 0f),
+        scaleX = prefs(context).getFloat(correctionKey(side, "scale_x"), 1f)
+            .coerceIn(MIN_CORRECTION_SCALE, MAX_CORRECTION_SCALE),
+        scaleY = prefs(context).getFloat(correctionKey(side, "scale_y"), 1f)
+            .coerceIn(MIN_CORRECTION_SCALE, MAX_CORRECTION_SCALE),
+        translateX = prefs(context).getFloat(correctionKey(side, "translate_x"), 0f)
+            .coerceIn(MIN_CORRECTION_TRANSLATE, MAX_CORRECTION_TRANSLATE),
+        translateY = prefs(context).getFloat(correctionKey(side, "translate_y"), 0f)
+            .coerceIn(MIN_CORRECTION_TRANSLATE, MAX_CORRECTION_TRANSLATE),
+        rotation = normalizeCorrectionRotation(prefs(context).getFloat(correctionKey(side, "rotation"), 0f)),
         mirrorH = prefs(context).getBoolean(correctionKey(side, "mirror_h"), false),
         mirrorV = prefs(context).getBoolean(correctionKey(side, "mirror_v"), false),
     )
@@ -151,11 +161,23 @@ object V2BlindSpotSettings {
 
     fun setCorrection(context: Context, side: String, correction: V2BlindSpotCorrection) {
         prefs(context).edit()
-            .putFloat(correctionKey(side, "scale_x"), correction.scaleX.coerceIn(0.1f, 3f))
-            .putFloat(correctionKey(side, "scale_y"), correction.scaleY.coerceIn(0.1f, 3f))
-            .putFloat(correctionKey(side, "translate_x"), correction.translateX.coerceIn(-1f, 1f))
-            .putFloat(correctionKey(side, "translate_y"), correction.translateY.coerceIn(-1f, 1f))
-            .putFloat(correctionKey(side, "rotation"), normalizeRotation(correction.rotation))
+            .putFloat(
+                correctionKey(side, "scale_x"),
+                correction.scaleX.coerceIn(MIN_CORRECTION_SCALE, MAX_CORRECTION_SCALE),
+            )
+            .putFloat(
+                correctionKey(side, "scale_y"),
+                correction.scaleY.coerceIn(MIN_CORRECTION_SCALE, MAX_CORRECTION_SCALE),
+            )
+            .putFloat(
+                correctionKey(side, "translate_x"),
+                correction.translateX.coerceIn(MIN_CORRECTION_TRANSLATE, MAX_CORRECTION_TRANSLATE),
+            )
+            .putFloat(
+                correctionKey(side, "translate_y"),
+                correction.translateY.coerceIn(MIN_CORRECTION_TRANSLATE, MAX_CORRECTION_TRANSLATE),
+            )
+            .putFloat(correctionKey(side, "rotation"), normalizeCorrectionRotation(correction.rotation))
             .putBoolean(correctionKey(side, "mirror_h"), correction.mirrorH)
             .putBoolean(correctionKey(side, "mirror_v"), correction.mirrorV)
             .apply()
@@ -172,6 +194,12 @@ object V2BlindSpotSettings {
         V2AppLog.i("V2BlindSpotSettings", "reset all correction params")
     }
 
+    fun normalizeCorrectionRotation(rotation: Float): Float {
+        if (rotation in MIN_CORRECTION_ROTATION..MAX_CORRECTION_ROTATION) return rotation
+        val normalized = ((rotation % 360f) + 360f) % 360f
+        return if (normalized > MAX_CORRECTION_ROTATION) normalized - 360f else normalized
+    }
+
     private fun overlayRotationKey(side: String): String =
         if (side == "right") KEY_OVERLAY_ROTATION_RIGHT else KEY_OVERLAY_ROTATION_LEFT
 
@@ -179,8 +207,6 @@ object V2BlindSpotSettings {
         KEY_OVERLAY_PREFIX + if (side == "right") "right_$name" else "left_$name"
 
     private fun correctionKey(side: String, name: String): String = "blind_spot_correction_${side}_$name"
-
-    private fun normalizeRotation(rotation: Float): Float = ((rotation % 360f) + 360f) % 360f
 
     private fun normalizeWindowOrientation(orientation: String): String =
         if (orientation == WINDOW_ORIENTATION_LANDSCAPE) WINDOW_ORIENTATION_LANDSCAPE else WINDOW_ORIENTATION_PORTRAIT

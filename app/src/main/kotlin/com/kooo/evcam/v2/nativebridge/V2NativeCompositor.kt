@@ -19,9 +19,27 @@ class V2NativeCompositor private constructor(val handle: Long) {
         fisheyeEnabled: BooleanArray,
         k1: FloatArray,
         k2: FloatArray,
+        k3: FloatArray,
+        k4: FloatArray,
         zoom: FloatArray,
         centerX: FloatArray,
-        centerY: FloatArray
+        centerY: FloatArray,
+        fx: FloatArray,
+        fy: FloatArray,
+        sourceWidth: FloatArray,
+        sourceHeight: FloatArray,
+        blindSpotFisheyeEnabled: BooleanArray,
+        blindSpotK1: FloatArray,
+        blindSpotK2: FloatArray,
+        blindSpotK3: FloatArray,
+        blindSpotK4: FloatArray,
+        blindSpotZoom: FloatArray,
+        blindSpotCenterX: FloatArray,
+        blindSpotCenterY: FloatArray,
+        blindSpotFx: FloatArray,
+        blindSpotFy: FloatArray,
+        blindSpotSourceWidth: FloatArray,
+        blindSpotSourceHeight: FloatArray
     ): Boolean = isAvailable && GlesNative.setCompositorRuntimeConfig(
         handle,
         width,
@@ -34,13 +52,31 @@ class V2NativeCompositor private constructor(val handle: Long) {
         fisheyeEnabled,
         k1,
         k2,
+        k3,
+        k4,
         zoom,
         centerX,
-        centerY
+        centerY,
+        fx,
+        fy,
+        sourceWidth,
+        sourceHeight,
+        blindSpotFisheyeEnabled,
+        blindSpotK1,
+        blindSpotK2,
+        blindSpotK3,
+        blindSpotK4,
+        blindSpotZoom,
+        blindSpotCenterX,
+        blindSpotCenterY,
+        blindSpotFx,
+        blindSpotFy,
+        blindSpotSourceWidth,
+        blindSpotSourceHeight
     )
 
-    fun attachPreview(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true): Boolean =
-        isAvailable && GlesNative.attachPreviewSurfaceWithMode(handle, index, surface, applyFisheye, applyNativeTransform)
+    fun attachPreview(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true, useBlindSpotFisheye: Boolean = false): Boolean =
+        isAvailable && GlesNative.attachPreviewSurfaceWithMode(handle, index, surface, applyFisheye, applyNativeTransform, useBlindSpotFisheye)
     fun attachCompositePreview(surface: Surface): Boolean =
         isAvailable && GlesNative.attachCompositePreviewSurface(handle, surface)
     fun detachCompositePreview(): Boolean = isAvailable && GlesNative.detachCompositePreviewSurface(handle)

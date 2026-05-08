@@ -15,9 +15,10 @@ internal object V2CameraServiceDisplayPowerPolicyModule {
             avoidanceTarget = { graph.avoidanceController.activeTarget },
             stopRecordingAndReleaseCameras = { reason -> graph.engine.stopRecordingAndReleaseCameras(reason) },
             setCameraAccessAllowed = { allowed -> graph.engine.setCameraAccessAllowed(allowed) },
-            startRecording = { graph.engine.startRecording() },
+            startRecording = { graph.recordingOrchestrator.startAutoRecordingIfAllowed() },
             publishSnapshot = { reason -> graph.statusReporter.publishSnapshot(reason) },
             dispatchDelayed = { name, delayMs, block ->
+                graph.commandQueue.cancel(V2DisplayPowerOrchestrator.DISPLAY_ON_RECORDING_RESTORE_TOKEN)
                 graph.commandQueue.dispatchDelayed(
                     name,
                     delayMs,
