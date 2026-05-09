@@ -17,12 +17,16 @@ object V2BlindSpotSettings {
     private const val KEY_OVERLAY_ROTATION_RIGHT = "overlay_rotation_right"
     private const val KEY_CORRECTION_ENABLED = "blind_spot_correction_enabled"
     private const val KEY_WINDOW_ORIENTATION = "window_orientation"
+    private const val KEY_WINDOW_MODE = "window_mode"
 
     const val DEFAULT_TURN_SIGNAL_PROP_ID = 557875254
     private const val LEGACY_DEFAULT_TURN_SIGNAL_PROP_ID = 289408008
     const val WINDOW_ORIENTATION_PORTRAIT = "portrait"
     const val WINDOW_ORIENTATION_LANDSCAPE = "landscape"
     const val DEFAULT_WINDOW_ORIENTATION = WINDOW_ORIENTATION_PORTRAIT
+    const val WINDOW_MODE_SYSTEM_SMALL_WINDOW = "system_small_window"
+    const val WINDOW_MODE_FLOATING_OVERLAY = "floating_overlay"
+    const val DEFAULT_WINDOW_MODE = WINDOW_MODE_SYSTEM_SMALL_WINDOW
     const val LEFT_VALUE = 1
     const val RIGHT_VALUE = 2
     const val OFF_VALUE = 0
@@ -97,6 +101,17 @@ object V2BlindSpotSettings {
         val normalized = normalizeWindowOrientation(orientation)
         prefs(context).edit().putString(KEY_WINDOW_ORIENTATION, normalized).apply()
         V2AppLog.i("V2BlindSpotSettings", "windowOrientation=$normalized")
+    }
+
+    fun windowMode(context: Context): String {
+        val value = prefs(context).getString(KEY_WINDOW_MODE, DEFAULT_WINDOW_MODE)
+        return normalizeWindowMode(value)
+    }
+
+    fun setWindowMode(context: Context, mode: String) {
+        val normalized = normalizeWindowMode(mode)
+        prefs(context).edit().putString(KEY_WINDOW_MODE, normalized).apply()
+        V2AppLog.i("V2BlindSpotSettings", "windowMode=$normalized")
     }
 
     val DEFAULT_CORRECTION = V2BlindSpotCorrection()
@@ -210,6 +225,9 @@ object V2BlindSpotSettings {
 
     private fun normalizeWindowOrientation(orientation: String): String =
         if (orientation == WINDOW_ORIENTATION_LANDSCAPE) WINDOW_ORIENTATION_LANDSCAPE else WINDOW_ORIENTATION_PORTRAIT
+
+    private fun normalizeWindowMode(mode: String?): String =
+        if (mode == WINDOW_MODE_FLOATING_OVERLAY) WINDOW_MODE_FLOATING_OVERLAY else WINDOW_MODE_SYSTEM_SMALL_WINDOW
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

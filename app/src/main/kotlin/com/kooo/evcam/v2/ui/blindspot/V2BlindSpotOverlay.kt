@@ -48,7 +48,6 @@ class V2BlindSpotOverlay(
     private var dragHandleView: View? = null
     private var closeButtonView: View? = null
     private var resizeButtonView: View? = null
-    private var rotateButtonView: View? = null
     private var resizeCornerView: View? = null
     private var metricsView: TextView? = null
     private var currentSide: String = "left"
@@ -87,7 +86,6 @@ class V2BlindSpotOverlay(
             dragHandleTouchListener = gestureController.dragHandleTouchListener,
             resizeTouchListener = { gestureController.createResizeTouchListener() },
             closeAction = { hideFromCloseButton() },
-            rotateAction = { rotatePreview() },
             surfaceTextureListener = surfaceTextureListener(index),
         )
         textureView = overlayViews.textureView
@@ -95,7 +93,6 @@ class V2BlindSpotOverlay(
         dragHandleView = overlayViews.dragHandleView
         closeButtonView = overlayViews.closeButtonView
         resizeButtonView = overlayViews.resizeButtonView
-        rotateButtonView = overlayViews.rotateButtonView
         resizeCornerView = overlayViews.resizeCornerView
         metricsView = overlayViews.metricsView
         applyPreviewTransform(textureView)
@@ -124,7 +121,6 @@ class V2BlindSpotOverlay(
         dragHandleView = null
         closeButtonView = null
         resizeButtonView = null
-        rotateButtonView = null
         resizeCornerView = null
         metricsView = null
         windowLayout.clear()
@@ -181,19 +177,8 @@ class V2BlindSpotOverlay(
         overlayMetrics.updateText(windowLayout.currentParams, cameraIndex, metricsView, fps)
     }
 
-    private fun rotatePreview() {
-        transform = transformStore.rotateClockwise(currentSide, transform.rotationDegrees)
-        ensureWindowSizeMatchesRotationForUserRotate()
-        applyPreviewTransform(textureView)
-        V2AppLog.i("V2BlindSpotOverlay", "rotate preview side=$currentSide value=${transform.rotationDegrees}")
-    }
-
     private fun loadTransformForSide(side: String) {
         transform = transformStore.load(side)
-    }
-
-    private fun ensureWindowSizeMatchesRotationForUserRotate(updateLayout: Boolean = true) {
-        if (updateLayout) updateMetricsText()
     }
 
     private fun hideFromCloseButton() {
@@ -214,7 +199,6 @@ class V2BlindSpotOverlay(
             y,
             closeButtonView,
             resizeButtonView,
-            rotateButtonView,
             dragHandleView,
             metricsView,
             resizeCornerView,

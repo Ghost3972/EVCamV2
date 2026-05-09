@@ -104,6 +104,7 @@ object GlesNative {
     external fun nativeDeleteVideoAndSidecars(videoPath: String): Boolean
     external fun nativeDeleteVideosAndBuildPlaybackCache(videoPaths: Array<String>, scanDirs: Array<String>): String?
     external fun createOesInput(handle: Long, index: Int, surfaceTexture: android.graphics.SurfaceTexture): Boolean
+    external fun markOesFrameAvailable(handle: Long, index: Int): Boolean
     external fun attachCompositePreviewSurface(handle: Long, surface: Surface): Boolean
     external fun detachCompositePreviewSurface(handle: Long): Boolean
     external fun attachPreviewSurfaceWithMode(handle: Long, index: Int, surface: Surface, applyFisheye: Boolean, applyNativeTransform: Boolean, useBlindSpotFisheye: Boolean): Boolean

@@ -56,6 +56,7 @@ object V2SettingsRepository {
         enabled = V2BlindSpotSettings.isEnabled(context),
         turnSignalPropId = V2BlindSpotSettings.turnSignalPropId(context),
         correctionEnabled = V2BlindSpotSettings.isCorrectionEnabled(context),
+        windowMode = V2BlindSpotSettings.windowMode(context),
     )
 
     fun blindSpotOverlayConfig(

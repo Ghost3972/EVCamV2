@@ -141,6 +141,6 @@ internal class V2BlindSpotWindowLayoutController(
     }
 
     private companion object {
-        private const val LAYOUT_UPDATE_INTERVAL_MS = 80L
+        private const val LAYOUT_UPDATE_INTERVAL_MS = 16L
     }
 }

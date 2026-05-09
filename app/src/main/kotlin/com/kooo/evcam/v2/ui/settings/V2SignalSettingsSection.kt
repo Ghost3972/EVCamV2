@@ -19,12 +19,13 @@ class V2SignalSettingsSection(
     private val activity: V2SettingsActivity,
     private val cards: V2SettingsCardFactory,
 ) {
+    private val blindSpotFisheye = V2FisheyeSettingsSection(activity, cards)
     private val blindSpotCorrection = V2BlindSpotCorrectionSettingsSection(activity, cards)
 
     fun blindSpotCard(): View {
         val card = propIdSwitchCard(
             title = "转向补盲",
-            subtitle = "监听 VHAL 转向灯属性；左=${V2BlindSpotSettings.LEFT_VALUE} 右=${V2BlindSpotSettings.RIGHT_VALUE} 关=${V2BlindSpotSettings.OFF_VALUE}；归零稳定 ${V2BlindSpotSettings.HIDE_DELAY_MS / 1000} 秒后关闭悬浮窗",
+            subtitle = "监听 VHAL 转向灯属性；左=${V2BlindSpotSettings.LEFT_VALUE} 右=${V2BlindSpotSettings.RIGHT_VALUE} 关=${V2BlindSpotSettings.OFF_VALUE}；归零稳定 ${V2BlindSpotSettings.HIDE_DELAY_MS / 1000} 秒后关闭补盲窗口",
             propId = V2BlindSpotSettings.turnSignalPropId(activity),
             defaultPropId = V2BlindSpotSettings.DEFAULT_TURN_SIGNAL_PROP_ID,
             checked = V2BlindSpotSettings.isEnabled(activity),
@@ -36,7 +37,11 @@ class V2SignalSettingsSection(
             propIdWriter = { V2BlindSpotSettings.setTurnSignalPropId(activity, it) },
             enabledWriter = { V2BlindSpotSettings.setEnabled(activity, it) }
         ) { enabled ->
-            blindSpotCorrection.create(enabled)
+            LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(blindSpotFisheye.createBlindSpot(enabled))
+                addView(blindSpotCorrection.create(enabled))
+            }
         }
         return card
     }

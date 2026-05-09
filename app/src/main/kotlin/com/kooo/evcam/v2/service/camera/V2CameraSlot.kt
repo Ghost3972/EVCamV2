@@ -2,6 +2,7 @@ package com.kooo.evcam.v2.service.camera
 
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraManager
+import android.os.Handler
 import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
@@ -14,6 +15,7 @@ internal class V2CameraSlot(
     val spec: V2CameraSpec,
     private val nativeCompositor: V2NativeCompositor,
     private val fallbackInputSize: Size,
+    private val frameSignalHandler: Handler,
 ) {
     var nativeCameraHandle: Long = 0L
 
@@ -38,6 +40,7 @@ internal class V2CameraSlot(
             index = index,
             targetSize = fallbackInputSize,
             nativeCompositor = nativeCompositor,
+            frameSignalHandler = frameSignalHandler,
         ) ?: return
 
         inputSize = input.size
@@ -60,6 +63,7 @@ internal class V2CameraSlot(
             .onFailure { V2AppLog.w(TAG, "destroy OES input failed ${spec.name}/${spec.cameraId}", it) }
         inputSurface?.release()
         inputSurface = null
+        inputSurfaceTexture?.setOnFrameAvailableListener(null)
         inputSurfaceTexture?.release()
         inputSurfaceTexture = null
         inputSize = null

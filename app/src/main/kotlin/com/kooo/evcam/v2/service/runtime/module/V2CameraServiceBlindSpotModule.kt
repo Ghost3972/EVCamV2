@@ -14,9 +14,14 @@ internal object V2CameraServiceBlindSpotModule {
             avoidanceTarget = { graph.avoidanceController.activeTarget ?: graph.avoidanceController.currentTarget() },
             previewIndexForSide = { side -> graph.engine.previewIndexForPosition(side) },
             previewDescription = { index -> graph.engine.previewDescription(index) },
+            attachPreview = { index, surface -> graph.previewFacade.attachBlindSpotPreviewSurface(index, surface) },
+            detachPreview = { index -> graph.previewFacade.detachBlindSpotPreviewSurface(index) },
+            previewInputSize = { index -> graph.engine.previewInputSize(index) },
+            renderedFrames = { index -> graph.engine.previewRenderedFrames(index) },
             restoreMainPreview = { index -> graph.previewFacade.restoreMainPreviewSurface(index) },
             hideFisheyePreview = { graph.fisheyePreviewController.hide() },
             hideUi = { graph.uiVisibilityOrchestrator.hideForAvoidance() },
+            showToast = { graph.statusReporter.showToast(it) },
         )
     }
 }

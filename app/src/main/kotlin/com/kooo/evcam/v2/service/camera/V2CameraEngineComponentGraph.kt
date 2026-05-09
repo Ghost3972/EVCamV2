@@ -29,7 +29,7 @@ internal class V2CameraEngineComponentGraph(
     private val nativeCompositor = env.nativeCompositor
     private val pipelineHandle = env.pipelineHandle
     private val statusFormatter = V2CameraStatusFormatter(compositeOutputSize, recordingFps)
-    private val slots = specs.mapIndexed { index, spec -> V2CameraSlot(index, spec, nativeCompositor, recordingSize) }
+    private val slots = specs.mapIndexed { index, spec -> V2CameraSlot(index, spec, nativeCompositor, recordingSize, renderHandler) }
     private var lastPreviewDebugUpdateMs = 0L
     @Volatile private var cameraAccessAllowed = true
     @Volatile private var released = false

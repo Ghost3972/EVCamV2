@@ -23,7 +23,7 @@ class V2FisheyeSettingsSection(
         val row = cards.cardContainer()
         val header = cards.cardTexts(
             "鱼眼矫正",
-            controller.subtitle(),
+            controller.previewSubtitle(),
             0,
             useWeight = false
         )
@@ -34,13 +34,9 @@ class V2FisheyeSettingsSection(
             orientation = LinearLayout.VERTICAL
             visibility = if (controller.isPreviewEnabled()) View.VISIBLE else View.GONE
         }
-        val blindSpotContainer = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = if (controller.isBlindSpotEnabled()) View.VISIBLE else View.GONE
-        }
 
         fun updateSummary() {
-            summaryText.text = controller.subtitle()
+            summaryText.text = controller.previewSubtitle()
         }
 
         fun rebuildPreviewParams() {
@@ -48,14 +44,6 @@ class V2FisheyeSettingsSection(
             previewContainer.addView(importPreviewAvmButton { rebuildPreviewParams() })
             previewContainer.addView(resetPreviewButton { rebuildPreviewParams() })
             controller.previewIndices.forEach { index -> previewContainer.addView(previewParamRow(index) { updateSummary() }) }
-            updateSummary()
-        }
-
-        fun rebuildBlindSpotParams() {
-            blindSpotContainer.removeAllViews()
-            blindSpotContainer.addView(importBlindSpotAvmButton { rebuildBlindSpotParams() })
-            blindSpotContainer.addView(resetBlindSpotButton { rebuildBlindSpotParams() })
-            controller.blindSpotIndices.forEach { index -> blindSpotContainer.addView(blindSpotParamRow(index) { updateSummary() }) }
             updateSummary()
         }
 
@@ -67,26 +55,51 @@ class V2FisheyeSettingsSection(
             toastText = { enabled -> if (enabled) "预览/录制鱼眼已开启" else "预览/录制鱼眼已关闭" },
         ))
         row.addView(previewContainer)
-        row.addView(sectionTitle("补盲独立鱼眼"))
-        row.addView(enableRow(
+        rebuildPreviewParams()
+        return row
+    }
+
+    fun createBlindSpot(visible: Boolean): View {
+        val section = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(12), 0, 0)
+            visibility = if (visible) View.VISIBLE else View.GONE
+        }
+        val header = cards.cardTexts(
+            "补盲鱼眼矫正",
+            controller.blindSpotSubtitle(),
+            0,
+            useWeight = false
+        )
+        val summaryText = header.getChildAt(1) as TextView
+        val blindSpotContainer = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (controller.isBlindSpotEnabled()) View.VISIBLE else View.GONE
+        }
+
+        fun updateSummary() {
+            summaryText.text = controller.blindSpotSubtitle()
+        }
+
+        fun rebuildBlindSpotParams() {
+            blindSpotContainer.removeAllViews()
+            blindSpotContainer.addView(importBlindSpotAvmButton { rebuildBlindSpotParams() })
+            blindSpotContainer.addView(resetBlindSpotButton { rebuildBlindSpotParams() })
+            controller.blindSpotIndices.forEach { index -> blindSpotContainer.addView(blindSpotParamRow(index) { updateSummary() }) }
+            updateSummary()
+        }
+
+        section.addView(header)
+        section.addView(enableRow(
             label = "启用补盲鱼眼矫正",
             checked = controller.isBlindSpotEnabled(),
             paramsContainer = blindSpotContainer,
             onEnabled = { enabled -> controller.setBlindSpotEnabled(enabled) },
             toastText = { enabled -> if (enabled) "补盲鱼眼已开启" else "补盲鱼眼已关闭" },
         ))
-        row.addView(blindSpotContainer)
-        rebuildPreviewParams()
+        section.addView(blindSpotContainer)
         rebuildBlindSpotParams()
-        return row
-    }
-
-    private fun sectionTitle(textValue: String): View = TextView(activity).apply {
-        text = textValue
-        textSize = 16f
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
-        setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
-        setPadding(0, dp(18), 0, dp(6))
+        return section
     }
 
     private fun enableRow(

@@ -4,7 +4,7 @@ import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
 import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 import com.kooo.evcam.v2.settings.V2FisheyeParams
 import com.kooo.evcam.v2.settings.V2FisheyeSettings
-import com.kooo.evcam.v2.settings.V2SettingsFormatter
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 
 internal class V2FisheyeSettingsController(
     private val activity: V2SettingsActivity,
@@ -96,9 +96,18 @@ internal class V2FisheyeSettingsController(
         V2CameraServiceCommands.showBlindSpotPreview(activity, blindSpotSideForIndex(index))
     }
 
-    fun subtitle(): String =
-        "预览/录制鱼眼与补盲鱼眼独立；补盲画面顺序为补盲鱼眼矫正后再做补盲画面矫正\n" +
-            V2SettingsFormatter.fisheyeParamsSummary(activity)
+    fun previewSubtitle(): String {
+        val fisheye = V2SettingsRepository.currentSnapshot(activity).fisheye
+        return "预览/录制鱼眼矫正用于主预览和录像\n" +
+            V2FisheyeParams.summary(fisheye.params)
+    }
+
+    fun blindSpotSubtitle(): String {
+        val fisheye = V2SettingsRepository.currentSnapshot(activity).fisheye
+        val enabled = if (fisheye.blindSpotEnabled) "开" else "关"
+        return "开启后补盲画面先做鱼眼矫正，再做补盲画面矫正；关闭时补盲画面不做鱼眼矫正\n" +
+            "$enabled；${V2FisheyeParams.summary(fisheye.blindSpotParams)}"
+    }
 
     private fun refreshFisheye() {
         V2CameraServiceCommands.refreshFisheye(activity)
