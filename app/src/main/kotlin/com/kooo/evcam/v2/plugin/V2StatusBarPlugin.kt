@@ -18,7 +18,7 @@ import android.widget.TextView
 import com.flyme.auto.plugin.systemui.StatusBarPlugin
 import com.flyme.plugin.annotations.Requires
 import com.kooo.evcam.R
-import com.kooo.evcam.v2.service.V2CameraForegroundService
+import com.kooo.evcam.v2.service.commands.V2CameraServiceContract
 import com.kooo.evcam.v2.ui.main.V2MainActivity
 
 @Requires(target = StatusBarPlugin::class, version = StatusBarPlugin.VERSION)
@@ -89,7 +89,7 @@ class V2StatusBarPlugin : Service(), StatusBarPlugin, View.OnClickListener {
         when (view.id) {
             R.id.header_status_bar_recording, R.id.switch_status_bar_recording -> {
                 Log.i(TAG, "plugin menu click: toggle recording")
-                startServiceAction(V2CameraForegroundService.ACTION_TOGGLE_RECORDING_FROM_PLUGIN)
+                startServiceAction(V2CameraServiceContract.ACTION_TOGGLE_RECORDING_FROM_PLUGIN)
                 scheduleRefresh()
             }
             R.id.btn_status_bar_open -> {
