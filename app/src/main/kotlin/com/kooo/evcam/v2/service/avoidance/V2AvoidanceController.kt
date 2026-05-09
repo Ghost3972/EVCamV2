@@ -54,6 +54,7 @@ internal class V2AvoidanceController(
 
     val isActive: Boolean get() = snapshot != null
     val activeTarget: String? get() = target
+    val isMainPreviewPaused: Boolean get() = snapshot?.exitsForeground == true
 
     private val tick = object : Runnable {
         override fun run() {

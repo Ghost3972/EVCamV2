@@ -13,7 +13,7 @@ import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.databinding.ActivityV2MainA7Binding
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraForegroundService
+import com.kooo.evcam.v2.service.V2CameraServiceUiApi
 import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 import com.kooo.evcam.v2.ui.playback.V2VideoPlaybackActivity
 
@@ -33,7 +33,7 @@ class V2MainActivity : AppCompatActivity() {
     private lateinit var smallWindowGuard: V2MainSmallWindowGuard
     private val mainHandler = Handler(Looper.getMainLooper())
     private var startServiceWhenPermissionsGranted = false
-    private val service: V2CameraForegroundService?
+    private val service: V2CameraServiceUiApi?
         get() = if (::serviceBinder.isInitialized) serviceBinder.service else null
 
     private val dateTimeTicker = object : Runnable {
@@ -106,7 +106,7 @@ class V2MainActivity : AppCompatActivity() {
     override fun onPause() {
         V2AppLog.i("V2MainActivity", "onPause")
         service?.setUiStatusListener(null)
-        service?.setUiVisibility(false)
+        service?.setUiVisibility(false, null)
         if (::previewBinder.isInitialized) previewBinder.unbindPreviews()
         if (::serviceBinder.isInitialized) serviceBinder.unbind()
         super.onPause()
@@ -130,7 +130,7 @@ class V2MainActivity : AppCompatActivity() {
         finishAndRemoveTask()
     }
 
-    private fun handleCameraServiceConnected(cameraService: V2CameraForegroundService?) {
+    private fun handleCameraServiceConnected(cameraService: V2CameraServiceUiApi?) {
         cameraService?.ensureReadyAfterPermissions()
         cameraService?.setUiStatusListener { status ->
             binding.tvRecordingStats.post {

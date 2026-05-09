@@ -3,11 +3,11 @@ package com.kooo.evcam.v2.ui.main
 import android.content.Intent
 import android.os.Handler
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraForegroundService
+import com.kooo.evcam.v2.service.V2RecordingControlApi
 
 internal class V2MainBootAutoRecorder(
     private val mainHandler: Handler,
-    private val service: () -> V2CameraForegroundService?,
+    private val service: () -> V2RecordingControlApi?,
     private val isBound: () -> Boolean,
     private val recordingUi: V2MainRecordingUiController,
     private val moveTaskToBack: () -> Unit,

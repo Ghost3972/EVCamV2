@@ -7,14 +7,15 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.appcompat.app.AppCompatActivity
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.service.V2CameraServiceUiApi
 import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 
 internal class V2MainCameraServiceBinder(
     private val activity: AppCompatActivity,
-    private val onConnected: (V2CameraForegroundService?) -> Unit,
+    private val onConnected: (V2CameraServiceUiApi?) -> Unit,
 ) {
-    var service: V2CameraForegroundService? = null
+    var service: V2CameraServiceUiApi? = null
         private set
 
     var isBound: Boolean = false
@@ -24,7 +25,7 @@ internal class V2MainCameraServiceBinder(
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            service = (binder as? V2CameraForegroundService.LocalBinder)?.service()
+            service = (binder as? V2CameraForegroundService.LocalBinder)?.uiApi()
             isBound = true
             bindingService = false
             V2AppLog.i(TAG, "service connected name=$name serviceReady=${service != null}")

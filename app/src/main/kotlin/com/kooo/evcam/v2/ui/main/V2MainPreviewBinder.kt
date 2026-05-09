@@ -6,13 +6,13 @@ import android.view.SurfaceHolder
 import android.view.View
 import com.kooo.evcam.databinding.ActivityV2MainA7Binding
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
+import com.kooo.evcam.v2.service.V2MainPreviewServiceApi
 
 internal class V2MainPreviewBinder(
     private val binding: ActivityV2MainA7Binding,
     private val mainHandler: Handler,
-    private val service: () -> V2CameraForegroundService?,
+    private val service: () -> V2MainPreviewServiceApi?,
 ) {
     private val previewSizeLabels = Array(V2_CAMERA_SLOT_COUNT) { "--×--" }
     private val previewSurfaces = arrayOfNulls<Surface>(V2_CAMERA_SLOT_COUNT)

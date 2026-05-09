@@ -5,6 +5,7 @@ import android.util.Size
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.nativebridge.V2NativeCompositor
 import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
+import com.kooo.evcam.v2.settings.V2FisheyeParams
 import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 
@@ -31,39 +32,18 @@ object V2NativeRuntimeConfigurator {
         val params = List(V2_CAMERA_SLOT_COUNT) { fisheyeConfig.paramsForIndex(it) }
         val blindSpotEnabled = fisheyeConfig.blindSpotEnabled
         val blindSpotParams = List(V2_CAMERA_SLOT_COUNT) { fisheyeConfig.blindSpotParamsForIndex(it) }
-        val ok = compositor.configureRuntime(
-            recordingSize.width,
-            recordingSize.height,
-            previewMaxFps,
-            recordingFps,
-            sideLeftRotation,
-            sideRightRotation,
-            layoutMode,
-            BooleanArray(V2_CAMERA_SLOT_COUNT) { enabled },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k1 },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k2 },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k3 },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k4 },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].zoom },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].centerX },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].centerY },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].fx },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].fy },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].sourceWidth },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].sourceHeight },
-            BooleanArray(V2_CAMERA_SLOT_COUNT) { blindSpotEnabled },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].k1 },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].k2 },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].k3 },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].k4 },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].zoom },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].centerX },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].centerY },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].fx },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].fy },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].sourceWidth },
-            FloatArray(V2_CAMERA_SLOT_COUNT) { blindSpotParams[it].sourceHeight },
+        val runtimeConfig = V2NativeCompositor.RuntimeConfig(
+            width = recordingSize.width,
+            height = recordingSize.height,
+            previewFps = previewMaxFps,
+            encoderFps = recordingFps,
+            sideLeftRotation = sideLeftRotation,
+            sideRightRotation = sideRightRotation,
+            layoutMode = layoutMode,
+            fisheye = buildFisheyeRuntimeArrays(enabled, params),
+            blindSpotFisheye = buildFisheyeRuntimeArrays(blindSpotEnabled, blindSpotParams),
         )
+        val ok = compositor.configureRuntime(runtimeConfig)
         val summary = slots.joinToString { slot ->
             val p = fisheyeConfig.paramsForIndex(slot.index)
             "${slot.label}:${p.k1}/${p.k2}/${p.k3}/${p.k4}/${p.zoom}/${p.centerX}/${p.centerY}/${p.fx}/${p.fy}/${p.sourceWidth}x${p.sourceHeight}"
@@ -78,4 +58,22 @@ object V2NativeRuntimeConfigurator {
         )
         return ok
     }
+
+    private fun buildFisheyeRuntimeArrays(
+        enabled: Boolean,
+        params: List<V2FisheyeParams>,
+    ) = V2NativeCompositor.FisheyeRuntimeArrays(
+        enabled = BooleanArray(V2_CAMERA_SLOT_COUNT) { enabled },
+        k1 = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k1 },
+        k2 = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k2 },
+        k3 = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k3 },
+        k4 = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].k4 },
+        zoom = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].zoom },
+        centerX = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].centerX },
+        centerY = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].centerY },
+        fx = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].fx },
+        fy = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].fy },
+        sourceWidth = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].sourceWidth },
+        sourceHeight = FloatArray(V2_CAMERA_SLOT_COUNT) { params[it].sourceHeight },
+    )
 }

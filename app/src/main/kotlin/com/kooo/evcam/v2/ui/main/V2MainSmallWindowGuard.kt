@@ -8,11 +8,11 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraForegroundService
+import com.kooo.evcam.v2.service.V2UiVisibilityControlApi
 
 internal class V2MainSmallWindowGuard(
     private val activity: AppCompatActivity,
-    private val service: () -> V2CameraForegroundService?,
+    private val service: () -> V2UiVisibilityControlApi?,
 ) {
     fun closeIfLaunchedInSmallWindow(reason: String): Boolean {
         if (activity.isFinishing || activity.isDestroyed) return true
@@ -26,7 +26,7 @@ internal class V2MainSmallWindowGuard(
             "main preview launched in small window, closing task reason=$reason " +
                 "multiWindow=$multiWindow flymeSmallWindow=$flymeSmallWindow taskId=${activity.taskId}"
         )
-        service()?.setUiVisibility(false)
+        service()?.setUiVisibility(false, null)
         finishCurrentTaskFromSmallWindow()
         return true
     }

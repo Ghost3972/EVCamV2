@@ -23,6 +23,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.service.V2BlindSpotPreviewServiceApi
 import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
@@ -32,7 +33,7 @@ import java.lang.ref.WeakReference
 class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
     private val metrics = V2BlindSpotOverlayMetrics { index -> service?.previewRenderedFrames(index) ?: 0L }
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var service: V2CameraForegroundService? = null
+    private var service: V2BlindSpotPreviewServiceApi? = null
     private var surfaceController: V2BlindSpotPreviewSurfaceController? = null
     private var textureView: TextureView? = null
     private var side: String = "left"
@@ -57,7 +58,7 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val local = binder as? V2CameraForegroundService.LocalBinder
-            service = local?.service()
+            service = local?.blindSpotApi()
             surfaceController = V2BlindSpotPreviewSurfaceController(
                 attachPreview = { index, surface -> service?.attachBlindSpotPreviewSurface(index, surface) },
                 detachPreview = { index -> service?.detachBlindSpotPreviewSurface(index) },

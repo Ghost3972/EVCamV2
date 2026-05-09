@@ -10,7 +10,7 @@ import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.log.V2BroadcastLogger
 import com.kooo.evcam.v2.service.runtime.V2CameraServiceRuntime
 
-class V2CameraForegroundService : Service() {
+class V2CameraForegroundService : Service(), V2CameraServiceUiApi, V2BlindSpotPreviewServiceApi {
     companion object {
         const val ACTION_AUTO_START_RECORDING = "com.kooo.evcam.v2.action.AUTO_START_RECORDING"
         const val ACTION_REFRESH_CUSTOM_KEY = "com.kooo.evcam.v2.action.REFRESH_CUSTOM_KEY"
@@ -33,7 +33,8 @@ class V2CameraForegroundService : Service() {
     }
 
     inner class LocalBinder : Binder() {
-        fun service() = this@V2CameraForegroundService
+        fun uiApi(): V2CameraServiceUiApi = this@V2CameraForegroundService
+        fun blindSpotApi(): V2BlindSpotPreviewServiceApi = this@V2CameraForegroundService
     }
 
     private val binder = LocalBinder()
@@ -67,31 +68,31 @@ class V2CameraForegroundService : Service() {
         super.onTaskRemoved(rootIntent)
     }
 
-    fun toggleRecording(): Boolean = runtime.toggleRecording()
+    override fun toggleRecording(): Boolean = runtime.toggleRecording()
 
     fun isRecording(): Boolean = runtime.isRecording()
 
-    fun isNormalRecording(): Boolean = runtime.isNormalRecording()
+    override fun isNormalRecording(): Boolean = runtime.isNormalRecording()
 
     fun statusText(): String = runtime.statusText()
 
-    fun isPreviewPausedByAvoidance(): Boolean = runtime.isPreviewPausedByAvoidance()
+    override fun isPreviewPausedByAvoidance(): Boolean = runtime.isPreviewPausedByAvoidance()
 
-    fun ensureReadyAfterPermissions() {
+    override fun ensureReadyAfterPermissions() {
         runtime.ensureReadyAfterPermissions()
     }
 
     fun previewInputSizeLabel(index: Int): String = runtime.previewInputSizeLabel(index)
 
-    fun previewInputSize(index: Int): Size? = runtime.previewInputSize(index)
+    override fun previewInputSize(index: Int): Size? = runtime.previewInputSize(index)
 
-    fun compositePreviewSizeLabel(): String = runtime.compositePreviewSizeLabel()
+    override fun compositePreviewSizeLabel(): String = runtime.compositePreviewSizeLabel()
 
-    fun attachCompositePreviewSurface(surface: Surface) {
+    override fun attachCompositePreviewSurface(surface: Surface) {
         runtime.attachCompositePreviewSurface(surface)
     }
 
-    fun detachCompositePreviewSurface() {
+    override fun detachCompositePreviewSurface() {
         runtime.detachCompositePreviewSurface()
     }
 
@@ -113,39 +114,39 @@ class V2CameraForegroundService : Service() {
 
     internal fun canShowFisheyePreview(index: Int): Boolean = runtime.canShowFisheyePreview(index)
 
-    internal fun attachBlindSpotPreviewSurface(index: Int, surface: Surface) {
+    override fun attachBlindSpotPreviewSurface(index: Int, surface: Surface) {
         runtime.attachBlindSpotPreviewSurface(index, surface)
     }
 
-    internal fun detachBlindSpotPreviewSurface(index: Int) {
+    override fun detachBlindSpotPreviewSurface(index: Int) {
         runtime.detachBlindSpotPreviewSurface(index)
     }
 
-    internal fun previewIndexForPosition(position: String): Int? = runtime.previewIndexForPosition(position)
+    override fun previewIndexForPosition(position: String): Int? = runtime.previewIndexForPosition(position)
 
-    internal fun previewRenderedFrames(index: Int): Long = runtime.previewRenderedFrames(index)
+    override fun previewRenderedFrames(index: Int): Long = runtime.previewRenderedFrames(index)
 
-    fun compositePreviewRenderedFrames(): Long = runtime.compositePreviewRenderedFrames()
+    override fun compositePreviewRenderedFrames(): Long = runtime.compositePreviewRenderedFrames()
 
-    fun compositePreviewFpsMilli(): Long = runtime.compositePreviewFpsMilli()
+    override fun compositePreviewFpsMilli(): Long = runtime.compositePreviewFpsMilli()
 
-    fun startRecording() {
+    override fun startRecording() {
         runtime.startRecording()
     }
 
-    fun stopRecording() {
+    override fun stopRecording() {
         runtime.stopRecording()
     }
 
-    fun shutdownFromUi() {
+    override fun shutdownFromUi() {
         runtime.shutdownFromUi()
     }
 
-    fun setUiStatusListener(listener: ((String) -> Unit)?) {
+    override fun setUiStatusListener(listener: ((String) -> Unit)?) {
         runtime.setUiStatusListener(listener)
     }
 
-    fun setUiVisibility(visible: Boolean, hideListener: (() -> Unit)? = null) {
+    override fun setUiVisibility(visible: Boolean, hideListener: (() -> Unit)?) {
         runtime.setUiVisibility(visible, hideListener)
     }
 }

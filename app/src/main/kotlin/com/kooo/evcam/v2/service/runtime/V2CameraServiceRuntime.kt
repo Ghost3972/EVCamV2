@@ -67,7 +67,7 @@ internal class V2CameraServiceRuntime(
 
     fun statusText(): String = graph.stateStore.statusText
 
-    fun isPreviewPausedByAvoidance(): Boolean = false
+    fun isPreviewPausedByAvoidance(): Boolean = graph.avoidanceController.isMainPreviewPaused
 
     fun ensureReadyAfterPermissions() {
         graph.commandQueue.dispatch("ui:ensureReadyAfterPermissions") {
