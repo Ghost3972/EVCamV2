@@ -2,7 +2,7 @@
 
 EVCam 是面向吉利银河车机的 V2 行车记录仪应用。当前主线是 Kotlin V2 架构，通过前台服务驱动多路车载摄像头预览、录制、补盲小窗、鱼眼矫正、避让、开机自启和保活。
 
-> 旧版 Java 单 Activity / 远程机器人架构已经不是当前主线。请以 `app/src/main/kotlin/com/kooo/evcam/v2` 和 `core/model/src/main/kotlin/com/kooo/evcam/v2` 为准。
+请以 `app/src/main/kotlin/com/kooo/evcam/v2` 和 `core/model/src/main/kotlin/com/kooo/evcam/v2` 为准。
 
 ## 当前状态
 

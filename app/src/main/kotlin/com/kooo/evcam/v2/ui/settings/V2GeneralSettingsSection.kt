@@ -36,7 +36,7 @@ class V2GeneralSettingsSection(
 
     fun logExportCard(): View = cards.entryCard(
         title = "保存日志",
-        subtitle = "保存本次运行日志，路径沿用旧版 EVCam_Log 目录设计",
+        subtitle = "保存本次运行日志，便于排查预览、录制和车机事件问题",
         buttonText = "保存 →",
         onClick = { saveLogs() }
     )

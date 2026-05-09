@@ -19,7 +19,7 @@
     <!-- Android 11+ 所有文件访问权限（用于访问U盘公共目录） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
-    <!-- 网络权限（用于钉钉远程查看和扫码互传） -->
+    <!-- 网络权限（用于版本检查、更新下载和本地网络能力） -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -27,9 +27,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- 前台服务类型：摄像头（Android 10+） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
-    <!-- 前台服务类型：数据同步（Android 10+，用于 Telegram 服务） -->
+    <!-- 前台服务类型：数据同步（Android 10+，保留给更新/文件同步等后台任务） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!-- CPU唤醒锁（保持CPU运行，不亮屏，用于息屏状态下拍照/录制） -->
+    <!-- CPU唤醒锁（保持CPU运行，不亮屏，用于息屏状态下录制和保活） -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 悬浮窗权限（绕过后台启动Activity限制，需要用户手动授权） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />

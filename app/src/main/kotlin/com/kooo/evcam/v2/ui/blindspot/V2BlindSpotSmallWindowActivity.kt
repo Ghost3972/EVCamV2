@@ -123,7 +123,7 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
         V2AppLog.i(TAG, "onDestroy side=$side index=$cameraIndex serviceClose=$finishRequestedByService")
     }
 
-    @Deprecated("Deprecated in Java")
+    @Deprecated("Use OnBackPressedDispatcher when this activity is migrated.")
     override fun onBackPressed() {
         closeFromUser("back")
     }
