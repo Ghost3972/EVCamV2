@@ -11,6 +11,8 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
+import com.kooo.evcam.v2.settings.V2SettingsRepository
 
 class V2BlindSpotOverlay(
     private val context: Context,
@@ -22,7 +24,6 @@ class V2BlindSpotOverlay(
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val overlayStyle = V2BlindSpotOverlayStyle(context)
-    private val transformStore = V2BlindSpotOverlayTransformStore(context)
     private val overlayViewFactory = V2BlindSpotOverlayViewFactory(context, overlayStyle)
     private val previewSurfaceController = V2BlindSpotPreviewSurfaceController(
         attachPreview = attachPreview,
@@ -43,7 +44,7 @@ class V2BlindSpotOverlay(
     )
     private var root: FrameLayout? = null
     private var textureView: TextureView? = null
-    private var transform = V2BlindSpotOverlayTransform()
+    private var correction = V2BlindSpotCorrection()
     private var cameraIndex: Int = -1
     private var dragHandleView: View? = null
     private var closeButtonView: View? = null
@@ -178,7 +179,7 @@ class V2BlindSpotOverlay(
     }
 
     private fun loadTransformForSide(side: String) {
-        transform = transformStore.load(side)
+        correction = V2SettingsRepository.blindSpotOverlayConfig(context, side, 0, 0, 0, 0).correction
     }
 
     private fun hideFromCloseButton() {
@@ -188,8 +189,8 @@ class V2BlindSpotOverlay(
     private fun applyPreviewTransform(texture: TextureView?) {
         V2BlindSpotTransform.apply(
             texture = texture,
-            overlayRotationDegrees = transform.rotationDegrees,
-            correction = transform.correction,
+            baseRotationDegrees = 0,
+            correction = correction,
         )
     }
 

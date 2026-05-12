@@ -72,7 +72,6 @@ data class V2SettingsSnapshot(
         val y: Int,
         val width: Int,
         val height: Int,
-        val rotation: Int,
         val correction: V2BlindSpotCorrection,
     )
 

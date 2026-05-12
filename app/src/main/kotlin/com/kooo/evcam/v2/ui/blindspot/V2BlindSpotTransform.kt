@@ -11,7 +11,7 @@ import com.kooo.evcam.v2.settings.V2BlindSpotSettings
 object V2BlindSpotTransform {
     fun apply(
         texture: TextureView?,
-        overlayRotationDegrees: Int,
+        baseRotationDegrees: Int,
         correction: V2BlindSpotCorrection,
     ) {
         texture ?: return
@@ -25,7 +25,7 @@ object V2BlindSpotTransform {
             texture.scaleY = 1f
             texture.translationX = 0f
             texture.translationY = 0f
-            texture.setTransform(matrix(texture, overlayRotationDegrees, correction))
+            texture.setTransform(matrix(texture, baseRotationDegrees, correction))
         }
     }
 
@@ -44,14 +44,14 @@ object V2BlindSpotTransform {
 
     private fun matrix(
         texture: TextureView,
-        overlayRotationDegrees: Int,
+        baseRotationDegrees: Int,
         correction: V2BlindSpotCorrection,
     ): Matrix {
         val width = texture.width.coerceAtLeast(1).toFloat()
         val height = texture.height.coerceAtLeast(1).toFloat()
         val centerX = width / 2f
         val centerY = height / 2f
-        val baseRotation = normalizeRotation(overlayRotationDegrees.toFloat())
+        val baseRotation = normalizeRotation(baseRotationDegrees.toFloat())
         val correctionRotation = V2BlindSpotSettings.normalizeCorrectionRotation(correction.rotation)
         val scaleX = correction.scaleX.coerceIn(
             V2BlindSpotSettings.MIN_CORRECTION_SCALE,

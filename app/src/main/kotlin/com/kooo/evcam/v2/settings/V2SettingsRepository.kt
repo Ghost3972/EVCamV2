@@ -75,7 +75,6 @@ object V2SettingsRepository {
             y = V2BlindSpotSettings.overlayY(app, side, defaultY),
             width = V2BlindSpotSettings.overlayWidth(app, side, defaultWidth),
             height = V2BlindSpotSettings.overlayHeight(app, side, defaultHeight),
-            rotation = V2BlindSpotSettings.overlayRotation(app, side),
             correction = if (correctionEnabled) V2BlindSpotSettings.correction(app, side) else V2BlindSpotCorrection(),
         )
     }

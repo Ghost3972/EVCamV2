@@ -52,7 +52,6 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        applyWindowOrientationSetting("create")
         super.onCreate(savedInstanceState)
         activeActivity = WeakReference(this)
         V2BlindSpotSmallWindowTaskCleaner.removeOtherFlymeSmallWindowTasks(this)
@@ -70,7 +69,6 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        applyWindowOrientationSetting("new_intent")
         applyIntent(intent)
         attachPreviewIfReady()
         flymeChrome.disable("new_intent")
@@ -182,15 +180,10 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
         finish()
     }
 
-    private fun applyWindowOrientationSetting(reason: String) {
-        requestedOrientation = transformStore.requestedOrientation()
-        V2AppLog.i(TAG, "apply blind spot window orientation reason=$reason requested=$requestedOrientation")
-    }
-
     private fun applyPreviewTransform() {
         V2BlindSpotTransform.apply(
             texture = textureView,
-            overlayRotationDegrees = transform.rotationDegrees,
+            baseRotationDegrees = transform.rotationDegrees,
             correction = transform.correction,
         )
     }
