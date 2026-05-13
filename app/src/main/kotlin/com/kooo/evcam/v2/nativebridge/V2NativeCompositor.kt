@@ -82,6 +82,7 @@ class V2NativeCompositor private constructor(val handle: Long) {
     fun stopPreviewWorker(timeoutMs: Long = 1_000L): Boolean = isAvailable && GlesNative.stopPreviewWorker(handle, timeoutMs)
     fun createOesTexture(index: Int): Int = if (isAvailable) GlesNative.createOesTexture(handle, index) else 0
     fun createOesInput(index: Int, surfaceTexture: SurfaceTexture): Boolean = isAvailable && GlesNative.createOesInput(handle, index, surfaceTexture)
+    fun markOesFrameAvailable(index: Int): Boolean = isAvailable && GlesNative.markOesFrameAvailable(handle, index)
     fun destroyOesInput(index: Int): Boolean = isAvailable && GlesNative.destroyOesInput(handle, index)
     fun release() { if (isAvailable) GlesNative.releaseCompositor(handle) }
     fun lastError(): String = GlesNative.getLastError()

@@ -2,6 +2,8 @@ package com.kooo.evcam.v2.service.preview
 
 import android.content.Context
 import android.os.Handler
+import android.util.Size
+import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.settings.V2SettingsSnapshot
@@ -15,9 +17,14 @@ class V2BlindSpotController(
     avoidanceTarget: () -> String?,
     previewIndexForSide: (String) -> Int?,
     previewDescription: (Int) -> String,
+    attachPreview: (Int, Surface) -> Unit,
+    detachPreview: (Int) -> Unit,
+    previewInputSize: (Int) -> Size?,
+    renderedFrames: (Int) -> Long,
     restoreMainPreview: (Int) -> Unit,
     hideFisheyePreview: () -> Unit,
     hideUi: () -> Unit,
+    showToast: (String) -> Unit,
 ) {
     @Volatile private var config: V2SettingsSnapshot.BlindSpot = V2SettingsRepository.blindSpotConfig(context)
     private val windowCoordinator = V2BlindSpotWindowCoordinator(
@@ -27,11 +34,17 @@ class V2BlindSpotController(
         isUiVisible = isUiVisible,
         shouldAvoidWindow = shouldAvoidWindow,
         avoidanceTarget = avoidanceTarget,
+        windowMode = { config.windowMode },
         previewIndexForSide = previewIndexForSide,
         previewDescription = previewDescription,
+        attachPreview = attachPreview,
+        detachPreview = detachPreview,
+        previewInputSize = previewInputSize,
+        renderedFrames = renderedFrames,
         restoreMainPreview = restoreMainPreview,
         hideFisheyePreview = hideFisheyePreview,
         hideUi = hideUi,
+        showToast = showToast,
     )
     private val signalObserver = V2BlindSpotSignalObserver { side, on -> handleTurnSignal(side, on) }
 
@@ -47,7 +60,7 @@ class V2BlindSpotController(
         config = next
         if (!next.enabled) hide()
         if (old != next) {
-            V2AppLog.i(TAG, "blind spot config updated enabled=${next.enabled} propId=${next.turnSignalPropId} correction=${next.correctionEnabled}")
+            V2AppLog.i(TAG, "blind spot config updated enabled=${next.enabled} propId=${next.turnSignalPropId} correction=${next.correctionEnabled} windowMode=${next.windowMode}")
         }
     }
 

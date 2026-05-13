@@ -2,16 +2,13 @@ package com.kooo.evcam.v2.service.recording
 
 import android.os.Handler
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2CameraForegroundService
 
 internal class V2AutoRecordingController(
-    private val service: V2CameraForegroundService,
     private val handler: Handler,
     private val isDisplayPowerOn: () -> Boolean,
     private val isAutoStartEnabled: () -> Boolean,
     private val isRecording: () -> Boolean,
     private val startRecording: () -> Unit,
-    private val showToast: (String) -> Unit,
 ) {
     fun scheduleIfEnabled() {
         cancelPending()
@@ -23,17 +20,17 @@ internal class V2AutoRecordingController(
             V2AppLog.i("V2CameraService", "auto recording skipped: display off")
             return
         }
-        handler.removeCallbacksAndMessages(V2CameraForegroundService.ACTION_AUTO_START_RECORDING)
-        if (V2CameraForegroundService.AUTO_START_RECORDING_DELAY_MS <= 0L) {
+        handler.removeCallbacksAndMessages(AUTO_START_RECORDING_TOKEN)
+        if (AUTO_START_RECORDING_DELAY_MS <= 0L) {
             attemptStart()
             return
         }
-        V2AppLog.i("V2CameraService", "auto recording scheduled delay=${V2CameraForegroundService.AUTO_START_RECORDING_DELAY_MS}ms")
-        handler.postDelayed({ attemptStart() }, V2CameraForegroundService.ACTION_AUTO_START_RECORDING, V2CameraForegroundService.AUTO_START_RECORDING_DELAY_MS)
+        V2AppLog.i("V2CameraService", "auto recording scheduled delay=${AUTO_START_RECORDING_DELAY_MS}ms")
+        handler.postDelayed({ attemptStart() }, AUTO_START_RECORDING_TOKEN, AUTO_START_RECORDING_DELAY_MS)
     }
 
     fun cancelPending() {
-        handler.removeCallbacksAndMessages(V2CameraForegroundService.ACTION_AUTO_START_RECORDING)
+        handler.removeCallbacksAndMessages(AUTO_START_RECORDING_TOKEN)
     }
 
     private fun attemptStart() {
@@ -51,5 +48,10 @@ internal class V2AutoRecordingController(
         } else {
             V2AppLog.i("V2CameraService", "auto recording skipped: already recording")
         }
+    }
+
+    private companion object {
+        private const val AUTO_START_RECORDING_DELAY_MS = 3_000L
+        private const val AUTO_START_RECORDING_TOKEN = "auto_start_recording"
     }
 }

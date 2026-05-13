@@ -5,6 +5,7 @@ import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.service.V2CameraForegroundService
 import com.kooo.evcam.v2.service.camera.V2CameraEngine
+import com.kooo.evcam.v2.service.commands.V2CameraServiceActionParser
 import com.kooo.evcam.v2.service.runtime.module.*
 
 internal class V2CameraServiceRuntime(
@@ -41,7 +42,7 @@ internal class V2CameraServiceRuntime(
     }
 
     fun route(intent: Intent?) {
-        graph.actionRouter.route(intent)
+        graph.actionRouter.route(V2CameraServiceActionParser.fromIntent(intent))
     }
 
     fun destroy() {

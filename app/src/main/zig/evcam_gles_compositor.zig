@@ -920,6 +920,18 @@ fn updateSurfaceTexture(st: ?*c.ASurfaceTexture) bool {
     return true;
 }
 
+fn inputNeedsLatch(inp: *const Input) bool {
+    return inp.surface_texture_native != null and (inp.dirty or !inp.has_latched_frame);
+}
+
+fn pendingInputUpdateMask(p: *const Pipe) u8 {
+    var mask: u8 = 0;
+    for (&p.input, 0..) |*inp, i| {
+        if (inputNeedsLatch(inp)) mask |= (@as(u8, 1) << @intCast(i));
+    }
+    return mask;
+}
+
 fn fillTexCoords(q: *Quad, rotation: f32) void {
     const r0 = [_]c.GLfloat{ 0, 0, 1, 0, 0, 1, 1, 1 };
     const r90 = [_]c.GLfloat{ 0, 1, 0, 0, 1, 1, 1, 0 };
@@ -1347,7 +1359,7 @@ fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
     }
     p.input[i].preview_generation = p.input[i].frame_generation;
     if (!p.input[i].has_latched_frame) return true;
-    const size = previewWindowSizeLocked(p, i, @mod(p.input[i].preview_render_count, 120) == 0);
+    const size = previewWindowSizeLocked(p, i, true);
     const vw = size.width;
     const vh = size.height;
     if (p.preview_quad_width[i] != vw or p.preview_quad_height[i] != vh) updatePreviewLayout(p, index, vw, vh);
@@ -1389,7 +1401,7 @@ fn renderPreviewFromLatchedLocked(p: *Pipe, index: i32) bool {
     if (!makeCurrent(p, p.preview_surface[i])) return false;
     setPreviewSwapInterval(p);
     p.input[i].preview_generation = p.input[i].frame_generation;
-    const size = previewWindowSizeLocked(p, i, @mod(p.input[i].preview_render_count, 120) == 0);
+    const size = previewWindowSizeLocked(p, i, true);
     const vw = size.width;
     const vh = size.height;
     if (p.preview_quad_width[i] != vw or p.preview_quad_height[i] != vh) updatePreviewLayout(p, index, vw, vh);
@@ -1422,6 +1434,7 @@ fn renderPreviewFromLatchedLocked(p: *Pipe, index: i32) bool {
 fn latchAllInputsLocked(p: *Pipe) bool {
     for (&p.input) |*inp| {
         if (inp.surface_texture_native == null) continue;
+        if (!inputNeedsLatch(inp)) continue;
         if (!latchInputTextureLocked(inp)) return false;
         inp.encoder_generation = inp.frame_generation;
         inp.preview_generation = inp.frame_generation;
@@ -1753,6 +1766,36 @@ fn renderCompositePreviewLocked(_: [*c]c.JNIEnv, p: *Pipe, update_inputs: bool) 
     const steady_ms = start;
     const capture_for_recording = recordingFrameCaptureDueLocked(p, steady_ms);
     const wall_clock_ms = if (capture_for_recording) wallClockMs() else 0;
+
+    if (!capture_for_recording) {
+        if (!makeCurrent(p, p.composite_preview_surface)) return false;
+        setPreviewSwapInterval(p);
+        if (update_inputs and !latchAllInputsLocked(p)) {
+            clearCurrent(p);
+            return false;
+        }
+        drawCompositeSceneLocked(p, vw, vh, false);
+        if (CHECK_RENDER_GL_ERROR) if (glError("renderCompositePreviewDirect")) |e| {
+            setErrorSlice(e);
+            clearCurrent(p);
+            return false;
+        };
+        if (c.eglSwapBuffers(p.display, p.composite_preview_surface) == c.EGL_FALSE) {
+            setErrorSlice(eglError("eglSwapBuffers composite preview direct failed"));
+            clearCurrent(p);
+            p.encoder_drop_count += 1;
+            return false;
+        }
+        p.preview_render_count += 1;
+        const end = nowMs();
+        recordCompositePreviewFrameLocked(p, end);
+        p.last_render_ms = end - start;
+        if (p.last_render_ms >= 24 or @mod(p.preview_render_count, 120) == 0) {
+            logi("composite preview perf totalMs={d} renders={d} drops={d}", .{ p.last_render_ms, p.preview_render_count, p.dropped_count });
+        }
+        return true;
+    }
+
     if (!makePbufferCurrent(p)) return false;
     if (update_inputs and !latchAllInputsLocked(p)) {
         c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
@@ -1831,7 +1874,9 @@ fn requestEncoderRenderLocked(p: *Pipe) bool {
     return true;
 }
 fn hasDirtyInput(p: *const Pipe) bool {
-    for (p.input) |inp| if (inp.surface_texture_native != null and inp.encoder_generation != inp.frame_generation) return true;
+    for (&p.input) |*inp| {
+        if (inp.surface_texture_native != null and (inp.dirty or inp.encoder_generation != inp.frame_generation)) return true;
+    }
     return false;
 }
 fn updateDirtyInputsLocked(env: [*c]c.JNIEnv, p: *Pipe) bool {
@@ -2556,6 +2601,14 @@ fn activePreviewCount(p: *const Pipe) usize {
     return count;
 }
 
+fn activeInputCount(p: *const Pipe) usize {
+    var count: usize = 0;
+    for (p.input) |inp| {
+        if (inp.surface_texture_native != null) count += 1;
+    }
+    return count;
+}
+
 fn nextPreviewIndex(p: *const Pipe, start_index: usize) ?usize {
     var step: usize = 0;
     while (step < 4) : (step += 1) {
@@ -2563,6 +2616,46 @@ fn nextPreviewIndex(p: *const Pipe, start_index: usize) ?usize {
         if (p.preview_surface[idx] != c.EGL_NO_SURFACE and p.input[idx].surface_texture_native != null) return idx;
     }
     return null;
+}
+
+fn nextPendingPreviewIndex(p: *const Pipe, start_index: usize) ?usize {
+    var step: usize = 0;
+    while (step < 4) : (step += 1) {
+        const idx = (start_index + step) % 4;
+        if (p.preview_surface[idx] != c.EGL_NO_SURFACE and inputNeedsLatch(&p.input[idx])) return idx;
+    }
+    return null;
+}
+
+fn nextPreviewIndexInMask(p: *const Pipe, start_index: usize, mask: u8) ?usize {
+    var step: usize = 0;
+    while (step < 4) : (step += 1) {
+        const idx = (start_index + step) % 4;
+        if ((mask & (@as(u8, 1) << @intCast(idx))) != 0 and p.preview_surface[idx] != c.EGL_NO_SURFACE and p.input[idx].surface_texture_native != null) return idx;
+    }
+    return null;
+}
+
+fn consumePendingFrameSignalsLocked(p: *Pipe) void {
+    const mask = @atomicRmw(u32, &p.pending_frame_mask, .Xchg, 0, .acquire);
+    if (mask == 0) return;
+    for (0..4) |i| {
+        if ((mask & (@as(u32, 1) << @intCast(i))) == 0) continue;
+        const signals = @atomicRmw(i64, &p.pending_frame_signal_counts[i], .Xchg, 0, .acquire);
+        if (p.input[i].surface_texture_native == null) continue;
+        const safe_signals = @max(signals, 1);
+        p.input[i].dirty = true;
+        p.input[i].frame_signal_count += safe_signals;
+        if (p.preview_surface[i] != c.EGL_NO_SURFACE and p.preview_worker_running and !p.preview_worker_stop) {
+            if (p.input[i].preview_pending) {
+                p.input[i].preview_coalesced_count += safe_signals;
+            } else {
+                p.input[i].preview_pending = true;
+                p.input[i].preview_scheduled_count += 1;
+                if (safe_signals > 1) p.input[i].preview_coalesced_count += safe_signals - 1;
+            }
+        }
+    }
 }
 
 fn recordingSchedulerActiveLocked(p: *const Pipe) bool {
@@ -2633,6 +2726,7 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
             continue;
         }
         applyPendingRenderCommandsLocked(worker_pipe);
+        consumePendingFrameSignalsLocked(worker_pipe);
         if (!worker_pipe.preview_worker_running or worker_pipe.preview_worker_generation != generation or worker_pipe.preview_worker_stop) {
             dropPendingRenderCommandsLocked(worker_pipe);
             clearCurrent(worker_pipe);
@@ -2647,15 +2741,17 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
             interval_ms = recordingTickIntervalMs(&worker_pipe.recording);
         }
 
+        const input_update_mask = pendingInputUpdateMask(worker_pipe);
+        const input_update_pending = input_update_mask != 0;
+        const recording_capture_due = recording_active and recordingFrameCaptureDueLocked(worker_pipe, nowMs());
         const has_composite_preview = preview_enabled and worker_pipe.composite_preview_surface != c.EGL_NO_SURFACE and worker_pipe.composite_preview_window != null;
         if (preview_enabled and has_composite_preview) {
             interval_ms = @max(worker_pipe.preview_min_interval_ms, 1);
-            const active_count = activePreviewCount(worker_pipe);
-            const latched_once = active_count > 0;
-            if (latched_once and (!makePbufferCurrent(worker_pipe) or !latchAllInputsLocked(worker_pipe))) {
+            const has_active_inputs = activeInputCount(worker_pipe) > 0;
+            if (has_active_inputs and (input_update_pending or recording_capture_due) and (!makePbufferCurrent(worker_pipe) or !latchAllInputsLocked(worker_pipe))) {
                 worker_pipe.dropped_count += 1;
-            } else if (latched_once) {
-                if (nextPreviewIndex(worker_pipe, next_index)) |idx| {
+            } else if (has_active_inputs and (input_update_pending or recording_capture_due)) {
+                if (nextPreviewIndexInMask(worker_pipe, next_index, input_update_mask) orelse nextPreviewIndex(worker_pipe, next_index)) |idx| {
                     if (renderPreviewFromLatchedLocked(worker_pipe, @intCast(idx))) rendered_any = true;
                     worker_pipe.input[idx].preview_pending = false;
                     next_index = (idx + 1) % 4;
@@ -2665,9 +2761,9 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
                 } else {
                     worker_pipe.dropped_count += 1;
                 }
-            } else if (renderCompositePreviewLocked(env, worker_pipe, true)) {
+            } else if (!has_active_inputs and recording_capture_due and renderCompositePreviewLocked(env, worker_pipe, true)) {
                 rendered_any = true;
-            } else {
+            } else if (!has_active_inputs and recording_capture_due) {
                 worker_pipe.dropped_count += 1;
             }
         } else if (preview_enabled) {
@@ -2675,7 +2771,7 @@ fn previewWorkerLoop(handle: c.jlong, generation: c.jlong) void {
             if (active_count > 0) {
                 const base_interval_ms = @max(worker_pipe.preview_min_interval_ms, 1);
                 interval_ms = @max(@divTrunc(base_interval_ms, @as(i64, @intCast(active_count))), 1);
-                if (nextPreviewIndex(worker_pipe, next_index)) |idx| {
+                if (nextPendingPreviewIndex(worker_pipe, next_index)) |idx| {
                     if (renderPreviewLocked(env, worker_pipe, @intCast(idx))) rendered_any = true;
                     worker_pipe.input[idx].preview_pending = false;
                     next_index = (idx + 1) % 4;
@@ -3495,6 +3591,21 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_createOesInput(env: [*c
     logd("created OES input index={d}", .{index});
     return JNI_TRUE;
 }
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_markOesFrameAvailable(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean {
+    if (handle == 0 or index < 0 or index >= 4) return JNI_FALSE;
+    const i: usize = @intCast(index);
+    lockGlobal();
+    const p = getPipe(handle) orelse {
+        unlockGlobal();
+        return JNI_FALSE;
+    };
+    _ = @atomicRmw(i64, &p.pending_frame_signal_counts[i], .Add, 1, .monotonic);
+    _ = @atomicRmw(u32, &p.pending_frame_mask, .Or, @as(u32, 1) << @intCast(i), .release);
+    unlockGlobal();
+    return JNI_TRUE;
+}
+
 fn detachPreviewSurfaceIndexLocked(p: *Pipe, i: usize) void {
     if (i >= 4) return;
     if (p.preview_surface[i] != c.EGL_NO_SURFACE) {

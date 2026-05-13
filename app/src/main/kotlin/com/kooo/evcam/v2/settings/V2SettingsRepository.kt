@@ -56,6 +56,7 @@ object V2SettingsRepository {
         enabled = V2BlindSpotSettings.isEnabled(context),
         turnSignalPropId = V2BlindSpotSettings.turnSignalPropId(context),
         correctionEnabled = V2BlindSpotSettings.isCorrectionEnabled(context),
+        windowMode = V2BlindSpotSettings.windowMode(context),
     )
 
     fun blindSpotOverlayConfig(
@@ -74,7 +75,6 @@ object V2SettingsRepository {
             y = V2BlindSpotSettings.overlayY(app, side, defaultY),
             width = V2BlindSpotSettings.overlayWidth(app, side, defaultWidth),
             height = V2BlindSpotSettings.overlayHeight(app, side, defaultHeight),
-            rotation = V2BlindSpotSettings.overlayRotation(app, side),
             correction = if (correctionEnabled) V2BlindSpotSettings.correction(app, side) else V2BlindSpotCorrection(),
         )
     }

@@ -28,7 +28,7 @@ internal class V2BlindSpotCorrectionSettingsSection(
         }
         card.addView(cards.cardTexts(
             title = "补盲画面矫正",
-            subtitle = "窗口方向可选；左右独立缩放、平移、镜像；点击预览后拖动参数可实时查看效果",
+            subtitle = "悬浮窗可拖拽缩放；左右独立缩放、平移、旋转、镜像；点击预览后拖动参数可实时查看效果",
             useWeight = false
         ))
         val paramsContainer = LinearLayout(activity).apply {
@@ -41,16 +41,16 @@ internal class V2BlindSpotCorrectionSettingsSection(
             paramsContainer.addView(sideSection("left", "左侧摄像头"))
             paramsContainer.addView(sideSection("right", "右侧摄像头"))
         }
-        card.addView(windowOrientationRow())
+        card.addView(windowModeRow())
         card.addView(enableRow(paramsContainer))
         card.addView(paramsContainer)
         rebuildParams()
         return card
     }
 
-    private fun windowOrientationRow(): View {
-        val labels = listOf("竖向窗口", "横向窗口")
-        val selected = if (V2BlindSpotSettings.windowOrientation(activity) == V2BlindSpotSettings.WINDOW_ORIENTATION_LANDSCAPE) 1 else 0
+    private fun windowModeRow(): View {
+        val labels = listOf("系统小窗", "悬浮窗")
+        val selected = if (V2BlindSpotSettings.windowMode(activity) == V2BlindSpotSettings.WINDOW_MODE_FLOATING_OVERLAY) 1 else 0
         val row = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -59,7 +59,7 @@ internal class V2BlindSpotCorrectionSettingsSection(
             setPadding(0, dp(8), 0, dp(8))
         }
         row.addView(TextView(activity).apply {
-            text = "窗口方向"
+            text = "窗口类型"
             textSize = 16f
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -68,14 +68,15 @@ internal class V2BlindSpotCorrectionSettingsSection(
             selectedIndex = selected,
             onSelected = { },
             canSelect = { position ->
-                val orientation = if (position == 1) {
-                    V2BlindSpotSettings.WINDOW_ORIENTATION_LANDSCAPE
+                val mode = if (position == 1) {
+                    V2BlindSpotSettings.WINDOW_MODE_FLOATING_OVERLAY
                 } else {
-                    V2BlindSpotSettings.WINDOW_ORIENTATION_PORTRAIT
+                    V2BlindSpotSettings.WINDOW_MODE_SYSTEM_SMALL_WINDOW
                 }
-                V2BlindSpotSettings.setWindowOrientation(activity, orientation)
+                V2BlindSpotSettings.setWindowMode(activity, mode)
+                V2CameraServiceCommands.refreshBlindSpot(activity)
                 previewSide?.let { side -> V2CameraServiceCommands.showBlindSpotPreview(activity, side) }
-                Toast.makeText(activity, "补盲窗口方向已切换为${labels[position]}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(activity, "补盲窗口已切换为${labels[position]}", Toast.LENGTH_SHORT).show()
                 true
             },
             widthDp = 240,

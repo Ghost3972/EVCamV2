@@ -2,14 +2,12 @@
 
 EVCam 是面向吉利银河车机的 V2 行车记录仪应用。当前主线是 Kotlin V2 架构，通过前台服务驱动多路车载摄像头预览、录制、补盲小窗、鱼眼矫正、避让、开机自启和保活。
 
-请以 `app/src/main/kotlin/com/kooo/evcam/v2` 和 `core/model/src/main/kotlin/com/kooo/evcam/v2` 为准。
-
 ## 当前状态
 
 - App namespace: `com.kooo.evcam`
 - 安装包名: `com.kooo.evcam.v2`
 - 模块: `:app`、`:core:model`
-- 当前版本: `2.0.0-test-05091501`
+- 当前版本: `2.0.0-test-05091630`
 - 最低 SDK: 28
 - target / compile SDK: 36
 - Native ABI: `arm64-v8a`
@@ -123,11 +121,13 @@ flowchart TD
     UI["V2MainActivity / 设置页 / 补盲小窗"] --> Binder["LocalBinder 窄接口"]
     Binder --> Service["V2CameraForegroundService"]
     Service --> Runtime["V2CameraServiceRuntime"]
+    Runtime --> Actions["V2CameraServiceActionParser / Router"]
     Runtime --> Queue["V2ServiceCommandQueue"]
     Runtime --> Graph["V2CameraServiceRuntimeGraph"]
     Graph --> Modules["runtime/module 安装器"]
     Modules --> Engine["V2CameraEngine"]
-    Engine --> EngineGraph["V2CameraEngineComponentGraph"]
+    Engine --> EngineEnv["V2CameraEngineEnvironment"]
+    EngineEnv --> EngineGraph["V2CameraEngineComponentGraph"]
     EngineGraph --> NativeBridge["V2NativeCompositor / GlesNative"]
     NativeBridge --> Zig["Zig GLES 合成器 + native camera + writer"]
 ```
@@ -136,11 +136,15 @@ flowchart TD
 
 - `V2CameraForegroundService`: Android 前台服务外壳和 Binder 入口。
 - `V2CameraServiceApi`: UI 面向的窄接口，包括录制、可见性、主预览、补盲预览。
+- `V2CameraServiceContract` / `V2CameraServiceActionParser`: Service action/extra 契约和 Intent 到业务 action 的解析层。
 - `V2CameraServiceRuntime`: Service 操作入口，负责把操作派发到 runtime graph。
 - `V2ServiceCommandQueue`: 串行化相机、录制、屏幕电源、设置等状态迁移。
 - `V2CameraServiceRuntimeGraph`: Service 组件注册表，由 `service/runtime/module/*` 负责安装。
 - `V2CameraEngine`: 相机 slots、native 合成器、预览 Surface、录制控制、状态的门面。
+- `V2CameraEngineEnvironment`: 相机规格、线程、录制配置和 native compositor 的初始化环境。
 - `V2NativeCompositor` / `GlesNative`: Kotlin 到 Zig 合成器和录制 worker 的 JNI 桥。
+- `V2StartupLaunchCoordinator`: 开机、保活、worker 的启动策略和 foreground-service fallback 入口。
+- `V2FisheyeSettingsController`: 鱼眼设置页的参数保存、导入、重置和服务刷新业务层。
 
 ## 预览与录制链路
 
@@ -164,6 +168,7 @@ VHAL 转向灯事件
   -> V2BlindSpotController
   -> V2BlindSpotWindowCoordinator
   -> V2BlindSpotSmallWindowActivity
+  -> V2BlindSpotSmallWindowServiceBinder / Intents / RevealController
   -> V2BlindSpotPreviewServiceApi.attachBlindSpotPreviewSurface
   -> V2PreviewLeaseManager owner=BLIND_SPOT
   -> native preview surface 使用补盲鱼眼参数
@@ -196,6 +201,7 @@ app/src/main/kotlin/com/kooo/evcam/v2/
     runtime/
     runtime/module/
     camera/
+    commands/
     recording/
     preview/
     display/
@@ -246,6 +252,8 @@ V2 设置页由 `V2SettingsActivity` 和 `ui/settings` 下的 section 类实现�
 - 补盲：转向灯属性、补盲画面校正、小窗行为。
 
 设置变化通过 `V2CameraServiceCommands` 发送，由运行中的 `V2SettingsRuntimeCoordinator` 应用。
+
+鱼眼设置页的业务动作集中在 `V2FisheyeSettingsController`，UI section 只负责控件创建和事件绑定。补盲小窗的 Service 绑定、Intent 目标解析、窗口 reveal、Flyme 小窗 task 清理和变换读取分别由 `V2BlindSpotSmallWindowServiceBinder`、`V2BlindSpotSmallWindowIntents`、`V2BlindSpotSmallWindowRevealController`、`V2BlindSpotSmallWindowTaskCleaner`、`V2BlindSpotSmallWindowTransformStore` 承担。
 
 ## 权限与系统集成
 

@@ -10,22 +10,20 @@ import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.log.V2AppLog
-import com.kooo.evcam.v2.service.V2_CAMERA_SLOT_COUNT
-import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 import com.kooo.evcam.v2.settings.V2FisheyeParams
-import com.kooo.evcam.v2.settings.V2FisheyeSettings
-import com.kooo.evcam.v2.settings.V2SettingsFormatter
 import java.util.Locale
 
 class V2FisheyeSettingsSection(
     private val activity: V2SettingsActivity,
     private val cards: V2SettingsCardFactory,
 ) {
+    private val controller = V2FisheyeSettingsController(activity)
+
     fun create(): View {
         val row = cards.cardContainer()
         val header = cards.cardTexts(
             "鱼眼矫正",
-            fisheyeSubtitle(),
+            controller.previewSubtitle(),
             0,
             useWeight = false
         )
@@ -34,61 +32,74 @@ class V2FisheyeSettingsSection(
 
         val previewContainer = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            visibility = if (V2FisheyeSettings.isEnabled(activity)) View.VISIBLE else View.GONE
-        }
-        val blindSpotContainer = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = if (V2FisheyeSettings.isBlindSpotEnabled(activity)) View.VISIBLE else View.GONE
+            visibility = if (controller.isPreviewEnabled()) View.VISIBLE else View.GONE
         }
 
         fun updateSummary() {
-            summaryText.text = fisheyeSubtitle()
+            summaryText.text = controller.previewSubtitle()
         }
 
         fun rebuildPreviewParams() {
             previewContainer.removeAllViews()
             previewContainer.addView(importPreviewAvmButton { rebuildPreviewParams() })
             previewContainer.addView(resetPreviewButton { rebuildPreviewParams() })
-            repeat(V2_CAMERA_SLOT_COUNT) { index -> previewContainer.addView(previewParamRow(index) { updateSummary() }) }
+            controller.previewIndices.forEach { index -> previewContainer.addView(previewParamRow(index) { updateSummary() }) }
             updateSummary()
+        }
+
+        row.addView(enableRow(
+            label = "启用预览/录制鱼眼矫正",
+            checked = controller.isPreviewEnabled(),
+            paramsContainer = previewContainer,
+            onEnabled = { enabled -> controller.setPreviewEnabled(enabled) },
+            toastText = { enabled -> if (enabled) "预览/录制鱼眼已开启" else "预览/录制鱼眼已关闭" },
+        ))
+        row.addView(previewContainer)
+        rebuildPreviewParams()
+        return row
+    }
+
+    fun createBlindSpot(visible: Boolean): View {
+        val section = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(12), 0, 0)
+            visibility = if (visible) View.VISIBLE else View.GONE
+        }
+        val header = cards.cardTexts(
+            "补盲鱼眼矫正",
+            controller.blindSpotSubtitle(),
+            0,
+            useWeight = false
+        )
+        val summaryText = header.getChildAt(1) as TextView
+        val blindSpotContainer = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (controller.isBlindSpotEnabled()) View.VISIBLE else View.GONE
+        }
+
+        fun updateSummary() {
+            summaryText.text = controller.blindSpotSubtitle()
         }
 
         fun rebuildBlindSpotParams() {
             blindSpotContainer.removeAllViews()
             blindSpotContainer.addView(importBlindSpotAvmButton { rebuildBlindSpotParams() })
             blindSpotContainer.addView(resetBlindSpotButton { rebuildBlindSpotParams() })
-            BLIND_SPOT_INDICES.forEach { index -> blindSpotContainer.addView(blindSpotParamRow(index) { updateSummary() }) }
+            controller.blindSpotIndices.forEach { index -> blindSpotContainer.addView(blindSpotParamRow(index) { updateSummary() }) }
             updateSummary()
         }
 
-        row.addView(enableRow(
-            label = "启用预览/录制鱼眼矫正",
-            checked = V2FisheyeSettings.isEnabled(activity),
-            paramsContainer = previewContainer,
-            onEnabled = { enabled -> V2FisheyeSettings.setEnabled(activity, enabled) },
-            toastText = { enabled -> if (enabled) "预览/录制鱼眼已开启" else "预览/录制鱼眼已关闭" },
-        ))
-        row.addView(previewContainer)
-        row.addView(sectionTitle("补盲独立鱼眼"))
-        row.addView(enableRow(
+        section.addView(header)
+        section.addView(enableRow(
             label = "启用补盲鱼眼矫正",
-            checked = V2FisheyeSettings.isBlindSpotEnabled(activity),
+            checked = controller.isBlindSpotEnabled(),
             paramsContainer = blindSpotContainer,
-            onEnabled = { enabled -> V2FisheyeSettings.setBlindSpotEnabled(activity, enabled) },
+            onEnabled = { enabled -> controller.setBlindSpotEnabled(enabled) },
             toastText = { enabled -> if (enabled) "补盲鱼眼已开启" else "补盲鱼眼已关闭" },
         ))
-        row.addView(blindSpotContainer)
-        rebuildPreviewParams()
+        section.addView(blindSpotContainer)
         rebuildBlindSpotParams()
-        return row
-    }
-
-    private fun sectionTitle(textValue: String): View = TextView(activity).apply {
-        text = textValue
-        textSize = 16f
-        typeface = android.graphics.Typeface.DEFAULT_BOLD
-        setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
-        setPadding(0, dp(18), 0, dp(6))
+        return section
     }
 
     private fun enableRow(
@@ -107,7 +118,6 @@ class V2FisheyeSettingsSection(
         val enableSwitch = cards.settingSwitch(checked) { enabled ->
             onEnabled(enabled)
             paramsContainer.visibility = if (enabled) View.VISIBLE else View.GONE
-            V2CameraServiceCommands.refreshFisheye(activity)
             Toast.makeText(activity, toastText(enabled), Toast.LENGTH_SHORT).show()
         }
         enableRow.addView(enableSwitch)
@@ -115,29 +125,25 @@ class V2FisheyeSettingsSection(
     }
 
     private fun resetPreviewButton(onReset: () -> Unit): View = actionButton("恢复预览/录制默认参数", {
-        V2FisheyeSettings.resetAllParams(activity)
-        V2CameraServiceCommands.refreshFisheye(activity)
+        controller.resetPreviewParams()
         Toast.makeText(activity, "预览/录制鱼眼参数已恢复默认", Toast.LENGTH_SHORT).show()
         onReset()
     })
 
     private fun importPreviewAvmButton(onImport: () -> Unit): View = actionButton("导入预览/录制 AVM 960 内参", {
-        V2FisheyeSettings.applyAvm960Params(activity)
-        V2CameraServiceCommands.refreshFisheye(activity)
+        controller.importPreviewAvm960Params()
         Toast.makeText(activity, "预览/录制 AVM 960 内参已导入", Toast.LENGTH_SHORT).show()
         onImport()
     })
 
     private fun resetBlindSpotButton(onReset: () -> Unit): View = actionButton("恢复补盲鱼眼默认参数", {
-        V2FisheyeSettings.resetBlindSpotParams(activity)
-        V2CameraServiceCommands.refreshFisheye(activity)
+        controller.resetBlindSpotParams()
         Toast.makeText(activity, "补盲鱼眼参数已恢复默认", Toast.LENGTH_SHORT).show()
         onReset()
     })
 
     private fun importBlindSpotAvmButton(onImport: () -> Unit): View = actionButton("导入补盲 AVM 960 内参", {
-        V2FisheyeSettings.applyBlindSpotAvm960Params(activity)
-        V2CameraServiceCommands.refreshFisheye(activity)
+        controller.importBlindSpotAvm960Params()
         Toast.makeText(activity, "补盲 AVM 960 内参已导入", Toast.LENGTH_SHORT).show()
         onImport()
     })
@@ -150,23 +156,22 @@ class V2FisheyeSettingsSection(
         }
 
     private fun previewParamRow(index: Int, onChanged: () -> Unit): View {
-        val params = V2FisheyeSettings.paramsForIndex(activity, index)
+        val params = controller.previewParams(index)
         return paramRow(
             params = params,
-            onPreview = { V2CameraServiceCommands.showFisheyePreview(activity, index) },
-            onSave = { updated -> savePreviewParams(index, updated) },
+            onPreview = { controller.showPreview(index) },
+            onSave = { updated -> controller.savePreviewParams(index, updated) },
             onChanged = onChanged,
             logPrefix = "fisheye",
         )
     }
 
     private fun blindSpotParamRow(index: Int, onChanged: () -> Unit): View {
-        val params = V2FisheyeSettings.blindSpotParamsForIndex(activity, index)
-        val side = blindSpotSideForIndex(index)
+        val params = controller.blindSpotParams(index)
         return paramRow(
             params = params,
-            onPreview = { V2CameraServiceCommands.showBlindSpotPreview(activity, side) },
-            onSave = { updated -> saveBlindSpotParams(index, updated) },
+            onPreview = { controller.showBlindSpotPreview(index) },
+            onSave = { updated -> controller.saveBlindSpotParams(index, updated) },
             onChanged = onChanged,
             logPrefix = "blindSpotFisheye",
         )
@@ -214,7 +219,6 @@ class V2FisheyeSettingsSection(
                 centerY = currentCenterY,
             )
             onSave(updated)
-            V2CameraServiceCommands.refreshFisheye(activity)
             V2AppLog.i(TAG, "$logPrefix slider label=${params.label} k1=$currentK1 k2=$currentK2 k3=$currentK3 k4=$currentK4 zoom=$currentZoom center=$currentCenterX,$currentCenterY")
             onChanged()
         }
@@ -227,42 +231,6 @@ class V2FisheyeSettingsSection(
         line.addView(sliderRow("centerX", 0.35f, 0.65f, currentCenterX) { currentCenterX = it; saveAndRefresh() })
         line.addView(sliderRow("centerY", 0.35f, 0.65f, currentCenterY) { currentCenterY = it; saveAndRefresh() })
         return line
-    }
-
-    private fun savePreviewParams(index: Int, params: V2FisheyeParams) {
-        V2FisheyeSettings.setParams(
-            context = activity,
-            index = index,
-            k1 = params.k1,
-            k2 = params.k2,
-            k3 = params.k3,
-            k4 = params.k4,
-            zoom = params.zoom,
-            centerX = params.centerX,
-            centerY = params.centerY,
-            fx = params.fx,
-            fy = params.fy,
-            sourceWidth = params.sourceWidth,
-            sourceHeight = params.sourceHeight,
-        )
-    }
-
-    private fun saveBlindSpotParams(index: Int, params: V2FisheyeParams) {
-        V2FisheyeSettings.setBlindSpotParams(
-            context = activity,
-            index = index,
-            k1 = params.k1,
-            k2 = params.k2,
-            k3 = params.k3,
-            k4 = params.k4,
-            zoom = params.zoom,
-            centerX = params.centerX,
-            centerY = params.centerY,
-            fx = params.fx,
-            fy = params.fy,
-            sourceWidth = params.sourceWidth,
-            sourceHeight = params.sourceHeight,
-        )
     }
 
     private fun sliderRow(label: String, min: Float, rangeMax: Float, value: Float, onChanged: (Float) -> Unit): View {
@@ -299,19 +267,11 @@ class V2FisheyeSettingsSection(
         return row
     }
 
-    private fun blindSpotSideForIndex(index: Int): String = if (index == RIGHT_INDEX) "right" else "left"
-
     private fun formatParam(value: Float): String = String.format(Locale.US, "%.2f", value)
-
-    private fun fisheyeSubtitle(): String =
-        "预览/录制鱼眼与补盲鱼眼独立；补盲画面顺序为补盲鱼眼矫正后再做补盲画面矫正\n${V2SettingsFormatter.fisheyeParamsSummary(activity)}"
 
     private fun dp(value: Int): Int = cards.dp(value)
 
     private companion object {
         const val TAG = "V2SettingsActivity"
-        const val LEFT_INDEX = 2
-        const val RIGHT_INDEX = 3
-        val BLIND_SPOT_INDICES = intArrayOf(LEFT_INDEX, RIGHT_INDEX)
     }
 }

@@ -59,6 +59,7 @@ data class V2SettingsSnapshot(
         val enabled: Boolean,
         val turnSignalPropId: Int,
         val correctionEnabled: Boolean,
+        val windowMode: String,
         val leftValue: Int = 1,
         val rightValue: Int = 2,
         val offValue: Int = 0,
@@ -71,7 +72,6 @@ data class V2SettingsSnapshot(
         val y: Int,
         val width: Int,
         val height: Int,
-        val rotation: Int,
         val correction: V2BlindSpotCorrection,
     )
 

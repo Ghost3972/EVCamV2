@@ -6,11 +6,12 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.kooo.evcam.v2.service.V2CameraForegroundService
+import com.kooo.evcam.v2.service.commands.V2CameraServiceContract
 
 class V2StatusBarPluginReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action
-        if (action != V2CameraForegroundService.ACTION_TOGGLE_RECORDING_FROM_PLUGIN) return
+        if (action != V2CameraServiceContract.ACTION_TOGGLE_RECORDING_FROM_PLUGIN) return
 
         Log.i(TAG, "plugin command received action=$action")
         val serviceIntent = Intent(context, V2CameraForegroundService::class.java).setAction(action)

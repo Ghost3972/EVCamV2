@@ -12,7 +12,6 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
-import com.kooo.evcam.v2.settings.V2BlindSpotSettings
 import com.kooo.evcam.v2.settings.V2SettingsRepository
 
 class V2BlindSpotOverlay(
@@ -45,16 +44,14 @@ class V2BlindSpotOverlay(
     )
     private var root: FrameLayout? = null
     private var textureView: TextureView? = null
-    private var rotationDegrees = 0
+    private var correction = V2BlindSpotCorrection()
     private var cameraIndex: Int = -1
     private var dragHandleView: View? = null
     private var closeButtonView: View? = null
     private var resizeButtonView: View? = null
-    private var rotateButtonView: View? = null
     private var resizeCornerView: View? = null
     private var metricsView: TextView? = null
     private var currentSide: String = "left"
-    private var correction = V2BlindSpotCorrection()
     private val overlayMetrics = V2BlindSpotOverlayMetrics(renderedFrames)
 
     private val metricsRunnable = object : Runnable {
@@ -90,7 +87,6 @@ class V2BlindSpotOverlay(
             dragHandleTouchListener = gestureController.dragHandleTouchListener,
             resizeTouchListener = { gestureController.createResizeTouchListener() },
             closeAction = { hideFromCloseButton() },
-            rotateAction = { rotatePreview() },
             surfaceTextureListener = surfaceTextureListener(index),
         )
         textureView = overlayViews.textureView
@@ -98,7 +94,6 @@ class V2BlindSpotOverlay(
         dragHandleView = overlayViews.dragHandleView
         closeButtonView = overlayViews.closeButtonView
         resizeButtonView = overlayViews.resizeButtonView
-        rotateButtonView = overlayViews.rotateButtonView
         resizeCornerView = overlayViews.resizeCornerView
         metricsView = overlayViews.metricsView
         applyPreviewTransform(textureView)
@@ -127,7 +122,6 @@ class V2BlindSpotOverlay(
         dragHandleView = null
         closeButtonView = null
         resizeButtonView = null
-        rotateButtonView = null
         resizeCornerView = null
         metricsView = null
         windowLayout.clear()
@@ -184,22 +178,8 @@ class V2BlindSpotOverlay(
         overlayMetrics.updateText(windowLayout.currentParams, cameraIndex, metricsView, fps)
     }
 
-    private fun rotatePreview() {
-        rotationDegrees = (rotationDegrees + 90) % 360
-        V2BlindSpotSettings.setOverlayRotation(context, currentSide, rotationDegrees)
-        ensureWindowSizeMatchesRotationForUserRotate()
-        applyPreviewTransform(textureView)
-        V2AppLog.i("V2BlindSpotOverlay", "rotate preview side=$currentSide value=$rotationDegrees")
-    }
-
     private fun loadTransformForSide(side: String) {
-        val config = V2SettingsRepository.blindSpotOverlayConfig(context, side, 0, 0, 0, 0)
-        rotationDegrees = config.rotation
-        correction = config.correction
-    }
-
-    private fun ensureWindowSizeMatchesRotationForUserRotate(updateLayout: Boolean = true) {
-        if (updateLayout) updateMetricsText()
+        correction = V2SettingsRepository.blindSpotOverlayConfig(context, side, 0, 0, 0, 0).correction
     }
 
     private fun hideFromCloseButton() {
@@ -209,7 +189,7 @@ class V2BlindSpotOverlay(
     private fun applyPreviewTransform(texture: TextureView?) {
         V2BlindSpotTransform.apply(
             texture = texture,
-            overlayRotationDegrees = rotationDegrees,
+            baseRotationDegrees = 0,
             correction = correction,
         )
     }
@@ -220,7 +200,6 @@ class V2BlindSpotOverlay(
             y,
             closeButtonView,
             resizeButtonView,
-            rotateButtonView,
             dragHandleView,
             metricsView,
             resizeCornerView,

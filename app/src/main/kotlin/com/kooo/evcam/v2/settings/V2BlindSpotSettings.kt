@@ -12,17 +12,14 @@ object V2BlindSpotSettings {
     private const val KEY_OVERLAY_WIDTH = "overlay_width"
     private const val KEY_OVERLAY_HEIGHT = "overlay_height"
     private const val KEY_OVERLAY_PREFIX = "overlay_"
-    private const val KEY_OVERLAY_ROTATION = "overlay_rotation"
-    private const val KEY_OVERLAY_ROTATION_LEFT = "overlay_rotation_left"
-    private const val KEY_OVERLAY_ROTATION_RIGHT = "overlay_rotation_right"
     private const val KEY_CORRECTION_ENABLED = "blind_spot_correction_enabled"
-    private const val KEY_WINDOW_ORIENTATION = "window_orientation"
+    private const val KEY_WINDOW_MODE = "window_mode"
 
     const val DEFAULT_TURN_SIGNAL_PROP_ID = 557875254
     private const val LEGACY_DEFAULT_TURN_SIGNAL_PROP_ID = 289408008
-    const val WINDOW_ORIENTATION_PORTRAIT = "portrait"
-    const val WINDOW_ORIENTATION_LANDSCAPE = "landscape"
-    const val DEFAULT_WINDOW_ORIENTATION = WINDOW_ORIENTATION_PORTRAIT
+    const val WINDOW_MODE_SYSTEM_SMALL_WINDOW = "system_small_window"
+    const val WINDOW_MODE_FLOATING_OVERLAY = "floating_overlay"
+    const val DEFAULT_WINDOW_MODE = WINDOW_MODE_SYSTEM_SMALL_WINDOW
     const val LEFT_VALUE = 1
     const val RIGHT_VALUE = 2
     const val OFF_VALUE = 0
@@ -77,26 +74,15 @@ object V2BlindSpotSettings {
     fun overlayHeight(context: Context, side: String, defaultValue: Int): Int =
         prefs(context).getInt(overlayKey(side, "height"), overlayHeight(context, defaultValue))
 
-    fun overlayRotation(context: Context): Int = prefs(context).getInt(KEY_OVERLAY_ROTATION, 0)
-
-    fun overlayRotation(context: Context, side: String): Int {
-        val key = overlayRotationKey(side)
-        return prefs(context).getInt(key, overlayRotation(context))
+    fun windowMode(context: Context): String {
+        val value = prefs(context).getString(KEY_WINDOW_MODE, DEFAULT_WINDOW_MODE)
+        return normalizeWindowMode(value)
     }
 
-    fun windowOrientation(context: Context): String {
-        val value = prefs(context).getString(KEY_WINDOW_ORIENTATION, DEFAULT_WINDOW_ORIENTATION)
-        return if (value == WINDOW_ORIENTATION_LANDSCAPE) {
-            WINDOW_ORIENTATION_LANDSCAPE
-        } else {
-            WINDOW_ORIENTATION_PORTRAIT
-        }
-    }
-
-    fun setWindowOrientation(context: Context, orientation: String) {
-        val normalized = normalizeWindowOrientation(orientation)
-        prefs(context).edit().putString(KEY_WINDOW_ORIENTATION, normalized).apply()
-        V2AppLog.i("V2BlindSpotSettings", "windowOrientation=$normalized")
+    fun setWindowMode(context: Context, mode: String) {
+        val normalized = normalizeWindowMode(mode)
+        prefs(context).edit().putString(KEY_WINDOW_MODE, normalized).apply()
+        V2AppLog.i("V2BlindSpotSettings", "windowMode=$normalized")
     }
 
     val DEFAULT_CORRECTION = V2BlindSpotCorrection()
@@ -147,18 +133,6 @@ object V2BlindSpotSettings {
         V2AppLog.i("V2BlindSpotSettings", "overlayBounds side=$side $x,$y ${width}x$height")
     }
 
-    fun setOverlayRotation(context: Context, rotation: Int) {
-        val normalized = ((rotation % 360) + 360) % 360
-        prefs(context).edit().putInt(KEY_OVERLAY_ROTATION, normalized).apply()
-        V2AppLog.i("V2BlindSpotSettings", "overlayRotation=$normalized")
-    }
-
-    fun setOverlayRotation(context: Context, side: String, rotation: Int) {
-        val normalized = ((rotation % 360) + 360) % 360
-        prefs(context).edit().putInt(overlayRotationKey(side), normalized).apply()
-        V2AppLog.i("V2BlindSpotSettings", "overlayRotation side=$side value=$normalized")
-    }
-
     fun setCorrection(context: Context, side: String, correction: V2BlindSpotCorrection) {
         prefs(context).edit()
             .putFloat(
@@ -200,16 +174,13 @@ object V2BlindSpotSettings {
         return if (normalized > MAX_CORRECTION_ROTATION) normalized - 360f else normalized
     }
 
-    private fun overlayRotationKey(side: String): String =
-        if (side == "right") KEY_OVERLAY_ROTATION_RIGHT else KEY_OVERLAY_ROTATION_LEFT
-
     private fun overlayKey(side: String, name: String): String =
         KEY_OVERLAY_PREFIX + if (side == "right") "right_$name" else "left_$name"
 
     private fun correctionKey(side: String, name: String): String = "blind_spot_correction_${side}_$name"
 
-    private fun normalizeWindowOrientation(orientation: String): String =
-        if (orientation == WINDOW_ORIENTATION_LANDSCAPE) WINDOW_ORIENTATION_LANDSCAPE else WINDOW_ORIENTATION_PORTRAIT
+    private fun normalizeWindowMode(mode: String?): String =
+        if (mode == WINDOW_MODE_FLOATING_OVERLAY) WINDOW_MODE_FLOATING_OVERLAY else WINDOW_MODE_SYSTEM_SMALL_WINDOW
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

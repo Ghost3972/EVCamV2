@@ -1,18 +1,12 @@
 package com.kooo.evcam.v2.service.camera
 
 import android.content.Context
-import android.hardware.camera2.CameraManager
-import android.os.Handler
-import android.os.HandlerThread
-import android.os.Looper
-import android.os.Process
 import android.os.SystemClock
 import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.nativebridge.V2NativeCompositor
 import com.kooo.evcam.v2.service.V2CameraHealthSnapshot
-import com.kooo.evcam.v2.service.recording.V2RecordingConfigProvider
 import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 import com.kooo.evcam.v2.storage.V2StoragePathHelper
 
@@ -20,24 +14,22 @@ internal class V2CameraEngineComponentGraph(
     private val context: Context,
     private val listener: V2CameraEngine.Listener?,
 ) {
-    private val specSet = V2CameraSpecProvider.current(context)
-    private val specs = specSet.specs
-    private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val renderThread = HandlerThread("V2GlesComposite", Process.THREAD_PRIORITY_DISPLAY).also { it.start() }
-    private val renderHandler = Handler(renderThread.looper)
-    private val screenSize = V2CameraDeviceCapabilities.detectScreenSize(context)
-    private val recordingConfig = V2RecordingConfigProvider.current(context, screenSize)
-    private val recordingSize = recordingConfig.size
-    private val compositeOutputSize = recordingConfig.outputSize
-    private val recordingFps = recordingConfig.fps
-    private val previewMaxFps = recordingFps.coerceIn(1, 120)
-    private val segmentDurationMs = recordingConfig.segmentDurationMs
-    private val recordingBitrate = recordingConfig.bitrate
-    private val nativeCompositor = V2NativeCompositor.create(compositeOutputSize)
-    private val pipelineHandle = nativeCompositor.handle
+    private val env = V2CameraEngineEnvironment.create(context)
+    private val specSet = env.specSet
+    private val specs = env.specs
+    private val cameraManager = env.cameraManager
+    private val mainHandler = env.mainHandler
+    private val renderHandler = env.renderHandler
+    private val recordingSize = env.recordingSize
+    private val compositeOutputSize = env.compositeOutputSize
+    private val recordingFps = env.recordingFps
+    private val previewMaxFps = env.previewMaxFps
+    private val segmentDurationMs = env.segmentDurationMs
+    private val recordingBitrate = env.recordingBitrate
+    private val nativeCompositor = env.nativeCompositor
+    private val pipelineHandle = env.pipelineHandle
     private val statusFormatter = V2CameraStatusFormatter(compositeOutputSize, recordingFps)
-    private val slots = specs.mapIndexed { index, spec -> V2CameraSlot(index, spec, nativeCompositor, recordingSize) }
+    private val slots = specs.mapIndexed { index, spec -> V2CameraSlot(index, spec, nativeCompositor, recordingSize, renderHandler) }
     private var lastPreviewDebugUpdateMs = 0L
     @Volatile private var cameraAccessAllowed = true
     @Volatile private var released = false
@@ -230,7 +222,7 @@ internal class V2CameraEngineComponentGraph(
         previewSurfaceController.stopPreviewWorkerForRelease()
         slots.forEach { it.close() }
         runCatching { nativeCompositor.release() }
-        runCatching { renderThread.quitSafely() }
+        env.quitRenderThread()
     }
 
     private fun outputDir() = V2StoragePathHelper.outputDir(context)

@@ -2,6 +2,7 @@ package com.kooo.evcam.v2.service.camera
 
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraManager
+import android.os.Handler
 import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
@@ -21,6 +22,7 @@ object V2CameraInputSurfaceFactory {
         index: Int,
         targetSize: Size,
         nativeCompositor: V2NativeCompositor,
+        frameSignalHandler: Handler,
     ): V2CameraInputSurface? {
         val textureId = nativeCompositor.createOesTexture(index)
         if (textureId <= 0) {
@@ -49,6 +51,10 @@ object V2CameraInputSurfaceFactory {
             texture.release()
             return null
         }
+        texture.setOnFrameAvailableListener(
+            { nativeCompositor.markOesFrameAvailable(index) },
+            frameSignalHandler,
+        )
 
         return V2CameraInputSurface(texture, surface, size)
     }

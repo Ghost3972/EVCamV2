@@ -17,7 +17,6 @@ internal data class V2BlindSpotOverlayViews(
     val dragHandleView: View,
     val closeButtonView: View,
     val resizeButtonView: View,
-    val rotateButtonView: View,
     val resizeCornerView: View,
     val metricsView: TextView,
 )
@@ -31,7 +30,6 @@ internal class V2BlindSpotOverlayViewFactory(
         dragHandleTouchListener: View.OnTouchListener,
         resizeTouchListener: () -> View.OnTouchListener,
         closeAction: () -> Unit,
-        rotateAction: () -> Unit,
         surfaceTextureListener: TextureView.SurfaceTextureListener,
     ): V2BlindSpotOverlayViews {
         val texture = TextureView(context).apply {
@@ -53,13 +51,6 @@ internal class V2BlindSpotOverlayViewFactory(
             backgroundAlpha = 0.42f,
             onTouchListener = resizeTouchListener(),
         )
-        val rotateButton = overlayStyle.controlButton(
-            iconRes = R.drawable.ic_blind_spot_rotate,
-            size = overlayStyle.controlButtonSize(),
-            iconSize = overlayStyle.dp(23f),
-            backgroundAlpha = 0.34f,
-            onClick = rotateAction,
-        )
         val metrics = metricsView()
         val resizeCorner = resizeCorner(resizeTouchListener())
         val root = FrameLayout(context).apply {
@@ -79,10 +70,6 @@ internal class V2BlindSpotOverlayViewFactory(
                 rightMargin = overlayStyle.edgeControlMargin()
                 topMargin = overlayStyle.topControlMargin()
             })
-            addView(rotateButton, FrameLayout.LayoutParams(overlayStyle.controlButtonSize(), overlayStyle.controlButtonSize(), Gravity.BOTTOM or Gravity.START).apply {
-                leftMargin = overlayStyle.edgeControlMargin()
-                bottomMargin = overlayStyle.bottomControlMargin()
-            })
             addView(metrics, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, overlayStyle.dp(74f), Gravity.BOTTOM or Gravity.END).apply {
                 rightMargin = overlayStyle.edgeControlMargin()
                 bottomMargin = overlayStyle.bottomControlMargin()
@@ -98,7 +85,6 @@ internal class V2BlindSpotOverlayViewFactory(
             dragHandleView = dragHandle,
             closeButtonView = closeButton,
             resizeButtonView = resizeButton,
-            rotateButtonView = rotateButton,
             resizeCornerView = resizeCorner,
             metricsView = metrics,
         )
