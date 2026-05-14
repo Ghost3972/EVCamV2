@@ -1025,10 +1025,39 @@ fn updatePreviewLayoutTarget(p: *Pipe, index: i32, target: usize, width: i32, he
         if (index == 3) rotation = @floatFromInt(p.side_right_rotation);
     }
     // Combine camera rotation with per-target display rotation (e.g. 180° for inverted secondary display)
-    const display_rot: f32 = @floatFromInt(p.preview_rotation[i][target]);
+    const display_rot_i = p.preview_rotation[i][target];
+    const display_rot: f32 = @floatFromInt(display_rot_i);
     rotation = @mod(rotation + display_rot, 360.0);
     buildQuadForCanvas(&p.preview_quad[i][target], 0, 0, @floatFromInt(width), @floatFromInt(height), rotation, @floatFromInt(width), @floatFromInt(height));
-    applyPreviewCorrectionToQuad(&p.preview_quad[i][target], &p.preview_correction[i][target]);
+    // Transform correction parameters to compensate for display rotation so that
+    // the visual effect matches the primary display (which has no display rotation).
+    var corr = p.preview_correction[i][target];
+    const norm_rot = @mod(@as(i32, @intCast(@mod(@as(i64, display_rot_i), 360) + 360)), 360);
+    if (norm_rot == 180) {
+        corr.translate_x = -corr.translate_x;
+        corr.translate_y = -corr.translate_y;
+        corr.rotation = -corr.rotation;
+        const tmp_m = corr.mirror_h;
+        corr.mirror_h = corr.mirror_v;
+        corr.mirror_v = tmp_m;
+    } else if (norm_rot == 90) {
+        const old_tx = corr.translate_x;
+        corr.translate_x = corr.translate_y;
+        corr.translate_y = -old_tx;
+        corr.rotation = -corr.rotation;
+        const tmp_m = corr.mirror_h;
+        corr.mirror_h = corr.mirror_v;
+        corr.mirror_v = tmp_m;
+    } else if (norm_rot == 270) {
+        const old_tx = corr.translate_x;
+        corr.translate_x = -corr.translate_y;
+        corr.translate_y = old_tx;
+        corr.rotation = -corr.rotation;
+        const tmp_m = corr.mirror_h;
+        corr.mirror_h = corr.mirror_v;
+        corr.mirror_v = tmp_m;
+    }
+    applyPreviewCorrectionToQuad(&p.preview_quad[i][target], &corr);
     p.preview_quad_width[i][target] = width;
     p.preview_quad_height[i][target] = height;
 }
