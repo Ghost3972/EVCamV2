@@ -17,6 +17,16 @@ internal object V2CameraServiceBlindSpotModule {
             restoreMainPreview = { index -> graph.previewFacade.restoreMainPreviewSurface(index) },
             hideFisheyePreview = { graph.fisheyePreviewController.hide() },
             hideUi = { graph.uiVisibilityOrchestrator.hideForAvoidance() },
+            attachSecondaryPreview = { index, surface ->
+                graph.engine.attachSecondaryPreviewSurface(
+                    index = index,
+                    surface = surface,
+                    applyFisheye = true,
+                    applyNativeTransform = true,
+                    useBlindSpotFisheye = true,
+                )
+            },
+            detachSecondaryPreview = { index -> graph.engine.detachSecondaryPreviewSurface(index) },
         )
     }
 }
