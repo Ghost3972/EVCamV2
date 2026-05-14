@@ -1030,9 +1030,21 @@ fn updatePreviewLayoutTarget(p: *Pipe, index: i32, target: usize, width: i32, he
     const display_rot: f32 = @floatFromInt(display_rot_i);
     rotation = @mod(rotation + display_rot, 360.0);
     buildQuadForCanvas(&p.preview_quad[i][target], 0, 0, @floatFromInt(width), @floatFromInt(height), rotation, @floatFromInt(width), @floatFromInt(height));
-    // Transform correction parameters to compensate for display rotation so that
-    // the visual effect matches the primary display (which has no display rotation).
+    // Transform correction parameters so the visual effect matches the primary display.
     var corr = p.preview_correction[i][target];
+
+    // Step 1: Mirror compensation (must precede display rotation compensation).
+    // Primary overlay applies mirror via vertex postScale which reverses translate
+    // direction (postScale(-1,1) negates x, postScale(1,-1) negates y).
+    // Our native mirror is texcoord-based and does NOT affect vertex positions.
+    // Compensate by negating the affected translate axis.
+    if (corr.mirror_h) corr.translate_x = -corr.translate_x;
+    if (corr.mirror_v) corr.translate_y = -corr.translate_y;
+    // Single-axis vertex mirror also reverses visual rotation direction;
+    // both mirrors cancel out (double negation).
+    if (corr.mirror_h != corr.mirror_v) corr.rotation = -corr.rotation;
+
+    // Step 2: Display rotation compensation.
     const norm_rot = @mod(@as(i32, @intCast(@mod(@as(i64, display_rot_i), 360) + 360)), 360);
     if (norm_rot == 180) {
         corr.translate_x = -corr.translate_x;
