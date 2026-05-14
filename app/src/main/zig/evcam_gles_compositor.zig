@@ -965,7 +965,8 @@ fn updateEncoderLayout(p: *Pipe) void {
 }
 
 fn applyPreviewCorrectionToQuad(q: *Quad, corr: *const PreviewCorrection) void {
-    // Scale vertices around center (0,0) in NDC
+    // Order must match primary overlay Matrix: scale → rotate → translate → mirror
+    // 1. Scale vertices around center (0,0) in NDC
     if (corr.scale_x != 1.0 or corr.scale_y != 1.0) {
         var vi: usize = 0;
         while (vi < 4) : (vi += 1) {
@@ -973,17 +974,7 @@ fn applyPreviewCorrectionToQuad(q: *Quad, corr: *const PreviewCorrection) void {
             q.verts[vi * 2 + 1] *= corr.scale_y;
         }
     }
-    // Translate (correction values are -1..1 proportion; NDC is -1..1 so multiply by 2)
-    if (corr.translate_x != 0.0 or corr.translate_y != 0.0) {
-        const tx = corr.translate_x * 2.0;
-        const ty = -(corr.translate_y * 2.0);
-        var vi: usize = 0;
-        while (vi < 4) : (vi += 1) {
-            q.verts[vi * 2] += tx;
-            q.verts[vi * 2 + 1] += ty;
-        }
-    }
-    // Fine rotation (arbitrary angle in degrees) around center
+    // 2. Fine rotation (arbitrary angle in degrees) around center
     if (corr.rotation != 0.0) {
         const angle_rad = corr.rotation * (std.math.pi / 180.0);
         const cos_a = @cos(angle_rad);
@@ -996,7 +987,17 @@ fn applyPreviewCorrectionToQuad(q: *Quad, corr: *const PreviewCorrection) void {
             q.verts[vi * 2 + 1] = x * sin_a + y * cos_a;
         }
     }
-    // Mirror: flip texture coordinates
+    // 3. Translate (after rotation so direction is screen-aligned, matching primary overlay)
+    if (corr.translate_x != 0.0 or corr.translate_y != 0.0) {
+        const tx = corr.translate_x * 2.0;
+        const ty = -(corr.translate_y * 2.0);
+        var vi: usize = 0;
+        while (vi < 4) : (vi += 1) {
+            q.verts[vi * 2] += tx;
+            q.verts[vi * 2 + 1] += ty;
+        }
+    }
+    // 4. Mirror: flip texture coordinates
     if (corr.mirror_h) {
         var vi: usize = 0;
         while (vi < 4) : (vi += 1) {
