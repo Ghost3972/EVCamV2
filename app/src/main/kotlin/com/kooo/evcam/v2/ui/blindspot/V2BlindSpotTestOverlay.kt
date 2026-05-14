@@ -103,7 +103,7 @@ class V2BlindSpotTestOverlay(private val appContext: Context) {
                         }
                     }
                 }
-                false
+                true
             }
             setOnClickListener { onClick() }
         }

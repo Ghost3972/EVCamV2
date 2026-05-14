@@ -6,6 +6,7 @@ import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -18,10 +19,10 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var windowManager: WindowManager? = null
     private var rootView: FrameLayout? = null
-    private var surfaceView: SurfaceView? = null
     @Volatile private var showing = false
     private var onSurfaceReady: ((Surface) -> Unit)? = null
     private var onSurfaceDestroyed: (() -> Unit)? = null
+    private var generation = 0
 
     fun show(
         displayId: Int,
@@ -34,20 +35,31 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
         onSurfaceReady: (Surface) -> Unit,
         onSurfaceDestroyed: () -> Unit,
     ) {
-        this.onSurfaceReady = onSurfaceReady
-        this.onSurfaceDestroyed = onSurfaceDestroyed
-        mainHandler.post { showOnMainThread(displayId, x, y, width, height, rotation, showBorder) }
+        mainHandler.post {
+            generation++
+            val gen = generation
+
+            // Tear down old overlay — fires old onSurfaceDestroyed to detach native
+            tearDown()
+
+            // Set new callbacks for the new overlay
+            this.onSurfaceReady = onSurfaceReady
+            this.onSurfaceDestroyed = onSurfaceDestroyed
+
+            createOverlay(gen, displayId, x, y, width, height, rotation, showBorder)
+        }
     }
 
     fun hide() {
-        mainHandler.post { hideOnMainThread() }
+        mainHandler.post {
+            generation++
+            tearDown()
+        }
     }
 
     fun isShowing(): Boolean = showing
 
-    private fun showOnMainThread(displayId: Int, x: Int, y: Int, width: Int, height: Int, rotation: Int, showBorder: Boolean) {
-        hideOnMainThread()
-
+    private fun createOverlay(gen: Int, displayId: Int, x: Int, y: Int, width: Int, height: Int, rotation: Int, showBorder: Boolean) {
         val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val display = displayManager.getDisplay(displayId)
         if (display == null) {
@@ -58,12 +70,34 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
         val displayContext = appContext.createDisplayContext(display)
         val wm = displayContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        val container = FrameLayout(displayContext)
-        val sv = SurfaceView(displayContext).apply {
-            this.rotation = rotation.toFloat()
+        // Get display real size for coordinate transformation
+        @Suppress("DEPRECATION")
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        display.getRealMetrics(metrics)
+        val displayWidth = metrics.widthPixels
+        val displayHeight = metrics.heightPixels
+
+        // Transform XY coordinates based on display rotation
+        val adjustedX: Int
+        val adjustedY: Int
+        when (rotation) {
+            180 -> {
+                adjustedX = displayWidth - x - width
+                adjustedY = displayHeight - y - height
+            }
+            else -> {
+                adjustedX = x
+                adjustedY = y
+            }
         }
+
+        val container = FrameLayout(displayContext)
+        // Rotation is handled at the native GL level, not via View.rotation
+        val sv = SurfaceView(displayContext)
         sv.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(holder: SurfaceHolder) {
+                if (gen != generation) return
                 val surface = holder.surface
                 if (surface.isValid) {
                     V2AppLog.i(TAG, "secondary display surface created")
@@ -76,6 +110,7 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
             }
 
             override fun surfaceDestroyed(holder: SurfaceHolder) {
+                if (gen != generation) return
                 V2AppLog.i(TAG, "secondary display surface destroyed")
                 onSurfaceDestroyed?.invoke()
             }
@@ -103,8 +138,8 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            this.x = x
-            this.y = y
+            this.x = adjustedX
+            this.y = adjustedY
         }
 
         runCatching { wm.addView(container, params) }.onFailure {
@@ -114,19 +149,18 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
 
         windowManager = wm
         rootView = container
-        surfaceView = sv
         showing = true
-        V2AppLog.i(TAG, "secondary display overlay shown id=$displayId ${width}x$height at $x,$y rotation=$rotation border=$showBorder")
+        V2AppLog.i(TAG, "secondary display overlay shown id=$displayId ${width}x$height at $adjustedX,$adjustedY (user=$x,$y) rotation=$rotation display=${displayWidth}x$displayHeight border=$showBorder")
     }
 
-    private fun hideOnMainThread() {
+    private fun tearDown() {
         val wm = windowManager ?: return
         val view = rootView ?: return
+        // Detach native preview for the old surface
         onSurfaceDestroyed?.invoke()
         runCatching { wm.removeViewImmediate(view) }.onFailure {
             V2AppLog.w(TAG, "failed to remove secondary display overlay", it)
         }
-        surfaceView = null
         rootView = null
         windowManager = null
         onSurfaceReady = null

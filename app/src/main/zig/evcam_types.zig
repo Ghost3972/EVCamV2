@@ -136,6 +136,16 @@ pub const Quad = struct {
     tex: [8]c.GLfloat = [_]c.GLfloat{ 0, 0, 1, 0, 0, 1, 1, 1 },
 };
 
+pub const PreviewCorrection = struct {
+    scale_x: f32 = 1.0,
+    scale_y: f32 = 1.0,
+    translate_x: f32 = 0.0,
+    translate_y: f32 = 0.0,
+    rotation: f32 = 0.0,
+    mirror_h: bool = false,
+    mirror_v: bool = false,
+};
+
 pub const OverlayBatch = struct {
     verts: [2048]c.GLfloat = [_]c.GLfloat{0} ** 2048,
     len: usize = 0,
@@ -235,6 +245,7 @@ pub const RenderCommandKind = enum(u8) {
     detach_composite_preview,
     attach_secondary_preview,
     detach_secondary_preview,
+    set_secondary_correction,
     update_watermark,
     clear_watermark,
 };
@@ -284,6 +295,8 @@ pub const RenderCommand = struct {
     apply_fisheye: bool = true,
     apply_native_transform: bool = true,
     use_blind_spot_fisheye: bool = false,
+    rotation: i32 = 0,
+    correction: PreviewCorrection = PreviewCorrection{},
     watermark_pixels: ?*anyopaque = null,
     watermark_bytes: usize = 0,
     watermark_width: c.jint = 0,
@@ -332,6 +345,8 @@ pub const Pipe = struct {
     preview_quad_height: [4][MAX_PREVIEW_TARGETS]i32 = [_][MAX_PREVIEW_TARGETS]i32{[_]i32{0} ** MAX_PREVIEW_TARGETS} ** 4,
     preview_window_width: [4][MAX_PREVIEW_TARGETS]i32 = [_][MAX_PREVIEW_TARGETS]i32{[_]i32{0} ** MAX_PREVIEW_TARGETS} ** 4,
     preview_window_height: [4][MAX_PREVIEW_TARGETS]i32 = [_][MAX_PREVIEW_TARGETS]i32{[_]i32{0} ** MAX_PREVIEW_TARGETS} ** 4,
+    preview_rotation: [4][MAX_PREVIEW_TARGETS]i32 = [_][MAX_PREVIEW_TARGETS]i32{[_]i32{0} ** MAX_PREVIEW_TARGETS} ** 4,
+    preview_correction: [4][MAX_PREVIEW_TARGETS]PreviewCorrection = [_][MAX_PREVIEW_TARGETS]PreviewCorrection{[_]PreviewCorrection{PreviewCorrection{}} ** MAX_PREVIEW_TARGETS} ** 4,
     composite_preview_width: i32 = 0,
     composite_preview_height: i32 = 0,
     config_version: i64 = 0,

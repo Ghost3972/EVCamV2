@@ -1,5 +1,6 @@
 package com.kooo.evcam.v2.ui.settings
 
+import android.app.AlertDialog
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -147,24 +148,46 @@ class V2SignalSettingsSection(
             setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
         }
         container.addView(label)
+        val minDelay = V2BlindSpotSettings.MIN_HIDE_DELAY_SECONDS
+        val maxDelay = V2BlindSpotSettings.MAX_HIDE_DELAY_SECONDS
         val slider = SeekBar(activity).apply {
-            max = V2BlindSpotSettings.MAX_HIDE_DELAY_SECONDS - V2BlindSpotSettings.MIN_HIDE_DELAY_SECONDS
-            progress = current - V2BlindSpotSettings.MIN_HIDE_DELAY_SECONDS
+            max = maxDelay - minDelay
+            progress = current - minDelay
             setPadding(0, dp(8), 0, dp(8))
         }
         cards.styleSlider(slider)
         slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
-                val seconds = progress + V2BlindSpotSettings.MIN_HIDE_DELAY_SECONDS
+                val seconds = progress + minDelay
                 label.text = "关闭延迟：${seconds} 秒"
             }
             override fun onStartTrackingTouch(seekBar: SeekBar) {}
             override fun onStopTrackingTouch(seekBar: SeekBar) {
-                val seconds = seekBar.progress + V2BlindSpotSettings.MIN_HIDE_DELAY_SECONDS
+                val seconds = seekBar.progress + minDelay
                 V2BlindSpotSettings.setHideDelaySeconds(activity, seconds)
                 V2CameraServiceCommands.notifySettingsChanged(activity, V2SettingsCategory.BLIND_SPOT)
             }
         })
+        label.setOnClickListener {
+            val input = EditText(activity).apply {
+                inputType = InputType.TYPE_CLASS_NUMBER
+                setText((slider.progress + minDelay).toString())
+                selectAll()
+            }
+            AlertDialog.Builder(activity)
+                .setTitle("关闭延迟（秒）")
+                .setView(input)
+                .setPositiveButton("确定") { _, _ ->
+                    val v = input.text.toString().toIntOrNull() ?: return@setPositiveButton
+                    val clamped = v.coerceIn(minDelay, maxDelay)
+                    slider.progress = clamped - minDelay
+                    label.text = "关闭延迟：${clamped} 秒"
+                    V2BlindSpotSettings.setHideDelaySeconds(activity, clamped)
+                    V2CameraServiceCommands.notifySettingsChanged(activity, V2SettingsCategory.BLIND_SPOT)
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
         container.addView(slider, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
         ))

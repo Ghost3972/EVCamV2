@@ -5,6 +5,8 @@ import android.os.Handler
 import android.util.Size
 import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
+import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
+import com.kooo.evcam.v2.settings.V2BlindSpotSettings
 import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.settings.V2SettingsSnapshot
 import com.kooo.evcam.v2.ui.blindspot.V2BlindSpotSecondaryDisplayOverlay
@@ -26,12 +28,14 @@ class V2BlindSpotController(
     hideFisheyePreview: () -> Unit,
     hideUi: () -> Unit,
     showToast: (String) -> Unit,
-    private val attachSecondaryPreview: (Int, Surface) -> Boolean,
+    private val attachSecondaryPreview: (Int, Surface, Int) -> Boolean,
     private val detachSecondaryPreview: (Int) -> Boolean,
+    private val setSecondaryPreviewCorrection: (Int, V2BlindSpotCorrection) -> Boolean,
 ) {
     @Volatile private var config: V2SettingsSnapshot.BlindSpot = V2SettingsRepository.blindSpotConfig(context)
     private val secondaryOverlay = V2BlindSpotSecondaryDisplayOverlay(context.applicationContext)
     private var secondaryCameraIndex: Int = -1
+    private var secondaryActiveSide: String? = null
     private val windowCoordinator = V2BlindSpotWindowCoordinator(
         context = context,
         handler = handler,
@@ -68,6 +72,12 @@ class V2BlindSpotController(
         config = next
         if (!next.enabled) hide()
         if (!next.enabled || !next.secondaryDisplay.enabled) hideSecondaryDisplay()
+        // Re-apply correction to secondary display when config changes
+        val idx = secondaryCameraIndex
+        val side = secondaryActiveSide
+        if (idx >= 0 && side != null && secondaryOverlay.isShowing()) {
+            applySecondaryCorrectionIfNeeded(idx, side)
+        }
         if (old != next) {
             V2AppLog.i(TAG, "blind spot config updated enabled=${next.enabled} propId=${next.turnSignalPropId} correction=${next.correctionEnabled} windowMode=${next.windowMode} secondaryDisplay=${next.secondaryDisplay.enabled}")
         }
@@ -103,6 +113,7 @@ class V2BlindSpotController(
         val cameraIndex = windowCoordinator.activeCameraIndex
         if (cameraIndex < 0) return
         secondaryCameraIndex = cameraIndex
+        secondaryActiveSide = side
         secondaryOverlay.show(
             displayId = sd.displayId,
             x = sd.x,
@@ -115,8 +126,9 @@ class V2BlindSpotController(
                 handler.post {
                     val idx = secondaryCameraIndex
                     if (idx >= 0 && secondaryOverlay.isShowing()) {
-                        attachSecondaryPreview(idx, surface)
-                        V2AppLog.i(TAG, "secondary preview attached index=$idx")
+                        attachSecondaryPreview(idx, surface, sd.rotation)
+                        applySecondaryCorrectionIfNeeded(idx, side)
+                        V2AppLog.i(TAG, "secondary preview attached index=$idx rotation=${sd.rotation}")
                     }
                 }
             },
@@ -139,7 +151,15 @@ class V2BlindSpotController(
             detachSecondaryPreview(idx)
             secondaryCameraIndex = -1
         }
+        secondaryActiveSide = null
         secondaryOverlay.hide()
+    }
+
+    private fun applySecondaryCorrectionIfNeeded(index: Int, side: String) {
+        if (!config.correctionEnabled) return
+        val correction = V2BlindSpotSettings.correction(context, side)
+        setSecondaryPreviewCorrection(index, correction)
+        V2AppLog.i(TAG, "secondary correction applied index=$index side=$side correction=$correction")
     }
 
     private fun handleTurnSignal(side: String, on: Boolean) {

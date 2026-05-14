@@ -44,6 +44,7 @@ const EglPresentationTimeAndroidFn = types.EglPresentationTimeAndroidFn;
 const NativeCameraPreview = types.NativeCameraPreview;
 const Input = types.Input;
 const Quad = types.Quad;
+const PreviewCorrection = types.PreviewCorrection;
 const OverlayBatch = types.OverlayBatch;
 const TexturedOverlayBatch = types.TexturedOverlayBatch;
 const RECORDING_FRAME_QUEUE_CAPACITY = types.RECORDING_FRAME_QUEUE_CAPACITY;
@@ -936,8 +937,9 @@ fn pendingInputUpdateMask(p: *const Pipe) u8 {
 fn fillTexCoords(q: *Quad, rotation: f32) void {
     const r0 = [_]c.GLfloat{ 0, 0, 1, 0, 0, 1, 1, 1 };
     const r90 = [_]c.GLfloat{ 0, 1, 0, 0, 1, 1, 1, 0 };
+    const r180 = [_]c.GLfloat{ 1, 1, 0, 1, 1, 0, 0, 0 };
     const r270 = [_]c.GLfloat{ 1, 0, 1, 1, 0, 0, 0, 1 };
-    const src = if (rotation == 90.0) &r90 else if (rotation == 270.0) &r270 else &r0;
+    const src = if (rotation == 90.0) &r90 else if (rotation == 180.0) &r180 else if (rotation == 270.0) &r270 else &r0;
     q.tex = src.*;
 }
 
@@ -962,6 +964,53 @@ fn updateEncoderLayout(p: *Pipe) void {
     p.config_version += 1;
 }
 
+fn applyPreviewCorrectionToQuad(q: *Quad, corr: *const PreviewCorrection) void {
+    // Scale vertices around center (0,0) in NDC
+    if (corr.scale_x != 1.0 or corr.scale_y != 1.0) {
+        var vi: usize = 0;
+        while (vi < 4) : (vi += 1) {
+            q.verts[vi * 2] *= corr.scale_x;
+            q.verts[vi * 2 + 1] *= corr.scale_y;
+        }
+    }
+    // Translate (correction values are -1..1 proportion; NDC is -1..1 so multiply by 2)
+    if (corr.translate_x != 0.0 or corr.translate_y != 0.0) {
+        const tx = corr.translate_x * 2.0;
+        const ty = -(corr.translate_y * 2.0);
+        var vi: usize = 0;
+        while (vi < 4) : (vi += 1) {
+            q.verts[vi * 2] += tx;
+            q.verts[vi * 2 + 1] += ty;
+        }
+    }
+    // Fine rotation (arbitrary angle in degrees) around center
+    if (corr.rotation != 0.0) {
+        const angle_rad = corr.rotation * (std.math.pi / 180.0);
+        const cos_a = @cos(angle_rad);
+        const sin_a = @sin(angle_rad);
+        var vi: usize = 0;
+        while (vi < 4) : (vi += 1) {
+            const x = q.verts[vi * 2];
+            const y = q.verts[vi * 2 + 1];
+            q.verts[vi * 2] = x * cos_a - y * sin_a;
+            q.verts[vi * 2 + 1] = x * sin_a + y * cos_a;
+        }
+    }
+    // Mirror: flip texture coordinates
+    if (corr.mirror_h) {
+        var vi: usize = 0;
+        while (vi < 4) : (vi += 1) {
+            q.tex[vi * 2] = 1.0 - q.tex[vi * 2];
+        }
+    }
+    if (corr.mirror_v) {
+        var vi: usize = 0;
+        while (vi < 4) : (vi += 1) {
+            q.tex[vi * 2 + 1] = 1.0 - q.tex[vi * 2 + 1];
+        }
+    }
+}
+
 fn updatePreviewLayout(p: *Pipe, index: i32, width: i32, height: i32) void {
     updatePreviewLayoutTarget(p, index, 0, width, height);
 }
@@ -975,7 +1024,11 @@ fn updatePreviewLayoutTarget(p: *Pipe, index: i32, target: usize, width: i32, he
         if (index == 2) rotation = @floatFromInt(p.side_left_rotation);
         if (index == 3) rotation = @floatFromInt(p.side_right_rotation);
     }
+    // Combine camera rotation with per-target display rotation (e.g. 180° for inverted secondary display)
+    const display_rot: f32 = @floatFromInt(p.preview_rotation[i][target]);
+    rotation = @mod(rotation + display_rot, 360.0);
     buildQuadForCanvas(&p.preview_quad[i][target], 0, 0, @floatFromInt(width), @floatFromInt(height), rotation, @floatFromInt(width), @floatFromInt(height));
+    applyPreviewCorrectionToQuad(&p.preview_quad[i][target], &p.preview_correction[i][target]);
     p.preview_quad_width[i][target] = width;
     p.preview_quad_height[i][target] = height;
 }
@@ -3659,13 +3712,15 @@ fn detachPreviewSurfaceTargetLocked(p: *Pipe, i: usize, target: usize) void {
     p.preview_window_width[i][target] = 0;
     p.preview_window_height[i][target] = 0;
     p.preview_use_blind_spot_fisheye[i][target] = false;
+    p.preview_rotation[i][target] = 0;
+    p.preview_correction[i][target] = PreviewCorrection{};
 }
 
 fn attachPreviewWindowLocked(p: *Pipe, index: c.jint, window: ?*c.ANativeWindow, apply_fisheye: bool, apply_native_transform: bool, use_blind_spot_fisheye: bool) c.jboolean {
-    return attachPreviewWindowTargetLocked(p, index, 0, window, apply_fisheye, apply_native_transform, use_blind_spot_fisheye);
+    return attachPreviewWindowTargetLocked(p, index, 0, window, apply_fisheye, apply_native_transform, use_blind_spot_fisheye, 0);
 }
 
-fn attachPreviewWindowTargetLocked(p: *Pipe, index: c.jint, target: usize, window: ?*c.ANativeWindow, apply_fisheye: bool, apply_native_transform: bool, use_blind_spot_fisheye: bool) c.jboolean {
+fn attachPreviewWindowTargetLocked(p: *Pipe, index: c.jint, target: usize, window: ?*c.ANativeWindow, apply_fisheye: bool, apply_native_transform: bool, use_blind_spot_fisheye: bool, rotation: i32) c.jboolean {
     if (p.releasing or index < 0 or index >= 4 or target >= MAX_PREVIEW_TARGETS or window == null or !initEgl(p)) {
         if (window) |w| c.ANativeWindow_release(w);
         return JNI_FALSE;
@@ -3683,9 +3738,10 @@ fn attachPreviewWindowTargetLocked(p: *Pipe, index: c.jint, target: usize, windo
     p.preview_apply_fisheye[i][target] = apply_fisheye;
     p.preview_apply_native_transform[i][target] = apply_native_transform;
     p.preview_use_blind_spot_fisheye[i][target] = use_blind_spot_fisheye;
+    p.preview_rotation[i][target] = rotation;
     const size = previewWindowSizeTargetLocked(p, i, target, true);
     updatePreviewLayoutTarget(p, index, target, size.width, size.height);
-    logd("attached preview surface index={d} target={d} size={d}x{d} fisheye={d} blindSpotFisheye={d} nativeTransform={d}", .{ index, @as(i32, @intCast(target)), size.width, size.height, if (apply_fisheye) @as(i32, 1) else @as(i32, 0), if (use_blind_spot_fisheye) @as(i32, 1) else @as(i32, 0), if (apply_native_transform) @as(i32, 1) else @as(i32, 0) });
+    logd("attached preview surface index={d} target={d} size={d}x{d} fisheye={d} blindSpotFisheye={d} nativeTransform={d} rotation={d}", .{ index, @as(i32, @intCast(target)), size.width, size.height, if (apply_fisheye) @as(i32, 1) else @as(i32, 0), if (use_blind_spot_fisheye) @as(i32, 1) else @as(i32, 0), if (apply_native_transform) @as(i32, 1) else @as(i32, 0), rotation });
     return JNI_TRUE;
 }
 
@@ -3766,10 +3822,20 @@ fn applyRenderCommandLocked(p: *Pipe, cmd: *RenderCommand) bool {
         .attach_secondary_preview => blk: {
             const window = cmd.window;
             cmd.window = null;
-            break :blk attachPreviewWindowTargetLocked(p, cmd.index, 1, window, cmd.apply_fisheye, cmd.apply_native_transform, cmd.use_blind_spot_fisheye) == JNI_TRUE;
+            break :blk attachPreviewWindowTargetLocked(p, cmd.index, 1, window, cmd.apply_fisheye, cmd.apply_native_transform, cmd.use_blind_spot_fisheye, cmd.rotation) == JNI_TRUE;
         },
         .detach_secondary_preview => blk: {
             if (cmd.index >= 0 and cmd.index < 4) detachPreviewSurfaceTargetLocked(p, @intCast(cmd.index), 1);
+            break :blk true;
+        },
+        .set_secondary_correction => blk: {
+            if (cmd.index >= 0 and cmd.index < 4) {
+                const i: usize = @intCast(cmd.index);
+                p.preview_correction[i][1] = cmd.correction;
+                // Force quad rebuild with new correction
+                p.preview_quad_width[i][1] = 0;
+                p.preview_quad_height[i][1] = 0;
+            }
             break :blk true;
         },
         .update_watermark => uploadWatermarkPixelsLocked(p, cmd.watermark_pixels, cmd.watermark_width, cmd.watermark_height, cmd.watermark_x, cmd.watermark_y),
@@ -3883,7 +3949,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachPreviewSurfaces(e
     return JNI_TRUE;
 }
 
-export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachSecondaryPreviewSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean, use_blind_spot_fisheye: c.jboolean) callconv(.c) c.jboolean {
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachSecondaryPreviewSurface(env: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, surface: c.jobject, apply_fisheye: c.jboolean, apply_native_transform: c.jboolean, use_blind_spot_fisheye: c.jboolean, rotation: c.jint) callconv(.c) c.jboolean {
     if (surface == null) return JNI_FALSE;
     var cmd = RenderCommand{
         .kind = .attach_secondary_preview,
@@ -3893,6 +3959,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachSecondaryPreviewS
         .apply_fisheye = apply_fisheye == JNI_TRUE,
         .apply_native_transform = apply_native_transform == JNI_TRUE,
         .use_blind_spot_fisheye = use_blind_spot_fisheye == JNI_TRUE,
+        .rotation = rotation,
     };
     if (cmd.window == null) {
         setError("secondary preview window unavailable", .{});
@@ -3906,7 +3973,7 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_attachSecondaryPreviewS
     }
     const window = cmd.window;
     cmd.window = null;
-    return attachPreviewWindowTargetLocked(p, index, 1, window, cmd.apply_fisheye, cmd.apply_native_transform, cmd.use_blind_spot_fisheye);
+    return attachPreviewWindowTargetLocked(p, index, 1, window, cmd.apply_fisheye, cmd.apply_native_transform, cmd.use_blind_spot_fisheye, rotation);
 }
 
 export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachSecondaryPreviewSurface(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint) callconv(.c) c.jboolean {
@@ -3918,6 +3985,33 @@ export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_detachSecondaryPreviewS
         return if (enqueueRenderCommandLocked(p, &cmd)) JNI_TRUE else JNI_FALSE;
     }
     detachPreviewSurfaceTargetLocked(p, @intCast(index), 1);
+    return JNI_TRUE;
+}
+
+export fn Java_com_kooo_evcam_v2_nativebridge_GlesNative_setSecondaryPreviewCorrection(_: [*c]c.JNIEnv, _: c.jobject, handle: c.jlong, index: c.jint, scale_x: c.jfloat, scale_y: c.jfloat, translate_x: c.jfloat, translate_y: c.jfloat, rotation: c.jfloat, mirror_h: c.jboolean, mirror_v: c.jboolean) callconv(.c) c.jboolean {
+    if (index < 0 or index >= 4) return JNI_FALSE;
+    var cmd = RenderCommand{
+        .kind = .set_secondary_correction,
+        .index = index,
+        .correction = PreviewCorrection{
+            .scale_x = scale_x,
+            .scale_y = scale_y,
+            .translate_x = translate_x,
+            .translate_y = translate_y,
+            .rotation = rotation,
+            .mirror_h = mirror_h == JNI_TRUE,
+            .mirror_v = mirror_v == JNI_TRUE,
+        },
+    };
+    const p = lockPipeForHandle(handle) orelse return JNI_FALSE;
+    defer unlockPipe(p);
+    if (renderWorkerAcceptsCommandsLocked(p)) {
+        return if (enqueueRenderCommandLocked(p, &cmd)) JNI_TRUE else JNI_FALSE;
+    }
+    const i: usize = @intCast(index);
+    p.preview_correction[i][1] = cmd.correction;
+    p.preview_quad_width[i][1] = 0;
+    p.preview_quad_height[i][1] = 0;
     return JNI_TRUE;
 }
 

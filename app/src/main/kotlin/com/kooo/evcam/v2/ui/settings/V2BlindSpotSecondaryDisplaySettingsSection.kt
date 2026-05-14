@@ -1,15 +1,21 @@
 package com.kooo.evcam.v2.ui.settings
 
+import android.app.AlertDialog
+import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
+import android.util.Size
+import android.view.Display
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
-import androidx.core.widget.doAfterTextChanged
 import com.kooo.evcam.R
 import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 import com.kooo.evcam.v2.settings.V2BlindSpotSettings
@@ -19,6 +25,11 @@ internal class V2BlindSpotSecondaryDisplaySettingsSection(
     private val activity: V2SettingsActivity,
     private val cards: V2SettingsCardFactory,
 ) {
+    private var displaySize = Size(1920, 1080)
+    private var paramsContainer: LinearLayout? = null
+    private val debounceHandler = Handler(Looper.getMainLooper())
+    private val debounceToken = Any()
+
     fun create(visible: Boolean): View {
         val card = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -31,14 +42,15 @@ internal class V2BlindSpotSecondaryDisplaySettingsSection(
             useWeight = false,
         ))
 
-        val paramsContainer = LinearLayout(activity).apply {
+        val container = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             visibility = if (V2BlindSpotSettings.isSecondaryDisplayEnabled(activity)) View.VISIBLE else View.GONE
         }
+        paramsContainer = container
 
-        card.addView(enableRow(paramsContainer))
-        buildParams(paramsContainer)
-        card.addView(paramsContainer)
+        card.addView(enableRow(container))
+        rebuildParams(container)
+        card.addView(container)
         return card
     }
 
@@ -58,29 +70,75 @@ internal class V2BlindSpotSecondaryDisplaySettingsSection(
         return row
     }
 
-    private fun buildParams(container: LinearLayout) {
-        container.addView(intInputRow("副屏 Display ID", V2BlindSpotSettings.secondaryDisplayId(activity)) { value ->
-            V2BlindSpotSettings.setSecondaryDisplayId(activity, value)
-            notifyChanged()
-        })
+    private fun rebuildParams(container: LinearLayout) {
+        container.removeAllViews()
 
+        val savedDisplayId = V2BlindSpotSettings.secondaryDisplayId(activity)
+        updateDisplaySize(savedDisplayId)
+
+        container.addView(displayIdRow(container))
         container.addView(rotationRow())
-
-        container.addView(intInputRow("位置 X", V2BlindSpotSettings.secondaryDisplayX(activity)) { value ->
+        container.addView(sliderRow("位置 X", 0, displaySize.width, V2BlindSpotSettings.secondaryDisplayX(activity)) { value ->
             saveBounds(x = value)
         })
-        container.addView(intInputRow("位置 Y", V2BlindSpotSettings.secondaryDisplayY(activity)) { value ->
+        container.addView(sliderRow("位置 Y", 0, displaySize.height, V2BlindSpotSettings.secondaryDisplayY(activity)) { value ->
             saveBounds(y = value)
         })
-        container.addView(intInputRow("宽度", V2BlindSpotSettings.secondaryDisplayWidth(activity)) { value ->
+        container.addView(sliderRow("宽度", 1, displaySize.width, V2BlindSpotSettings.secondaryDisplayWidth(activity)) { value ->
             saveBounds(width = value)
         })
-        container.addView(intInputRow("高度", V2BlindSpotSettings.secondaryDisplayHeight(activity)) { value ->
+        container.addView(sliderRow("高度", 1, displaySize.height, V2BlindSpotSettings.secondaryDisplayHeight(activity)) { value ->
             saveBounds(height = value)
         })
-
         container.addView(borderRow())
         container.addView(previewButton())
+    }
+
+    private fun displayIdRow(container: LinearLayout): View {
+        val displays = detectDisplays()
+        val savedId = V2BlindSpotSettings.secondaryDisplayId(activity)
+        val labels = displays.map { it.label }
+        val selectedIndex = displays.indexOfFirst { it.id == savedId }.coerceAtLeast(0)
+
+        if (displays.isNotEmpty() && savedId < 0) {
+            val firstId = displays[0].id
+            V2BlindSpotSettings.setSecondaryDisplayId(activity, firstId)
+            updateDisplaySize(firstId)
+        }
+
+        val row = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        row.addView(TextView(activity).apply {
+            text = "副屏"
+            textSize = 16f
+            setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        if (labels.isEmpty()) {
+            row.addView(TextView(activity).apply {
+                text = "未检测到副屏"
+                textSize = 16f
+                setTextColor(ContextCompat.getColor(activity, R.color.text_secondary))
+            })
+        } else {
+            val dropdown = cards.dropdownField(
+                labels = labels,
+                selectedIndex = selectedIndex,
+                onSelected = { position ->
+                    val selected = displays[position]
+                    V2BlindSpotSettings.setSecondaryDisplayId(activity, selected.id)
+                    updateDisplaySize(selected.id)
+                    rebuildParams(container)
+                    notifyChanged()
+                },
+                widthDp = 280,
+            )
+            row.addView(dropdown, LinearLayout.LayoutParams(dp(280), ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        return row
     }
 
     private fun rotationRow(): View {
@@ -113,6 +171,62 @@ internal class V2BlindSpotSecondaryDisplaySettingsSection(
         return row
     }
 
+    private fun sliderRow(label: String, min: Int, max: Int, value: Int, onChanged: (Int) -> Unit): View {
+        val clampedMax = max.coerceAtLeast(min + 1)
+        val clampedValue = value.coerceIn(min, clampedMax)
+        val row = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        val valueLabel = TextView(activity).apply {
+            text = "$label  $clampedValue"
+            textSize = 16f
+            includeFontPadding = false
+            setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
+        }
+        val seekBar = cards.styleSlider(SeekBar(activity).apply {
+            this.max = clampedMax - min
+            progress = clampedValue - min
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    val current = progress + min
+                    valueLabel.text = "$label  $current"
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar) {
+                    val current = seekBar.progress + min
+                    onChanged(current)
+                }
+            })
+        })
+        valueLabel.setOnClickListener {
+            val input = EditText(activity).apply {
+                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+                setText((seekBar.progress + min).toString())
+                selectAll()
+            }
+            AlertDialog.Builder(activity)
+                .setTitle(label)
+                .setView(input)
+                .setPositiveButton("确定") { _, _ ->
+                    val v = input.text.toString().toIntOrNull() ?: return@setPositiveButton
+                    val clamped = v.coerceIn(min, clampedMax)
+                    seekBar.progress = clamped - min
+                    valueLabel.text = "$label  $clamped"
+                    onChanged(clamped)
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+        row.addView(valueLabel, LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            marginEnd = dp(10)
+        })
+        row.addView(seekBar, LinearLayout.LayoutParams(0, dp(40), 1f))
+        return row
+    }
+
     private fun borderRow(): View {
         val row = cards.switchRow()
         row.addView(TextView(activity).apply {
@@ -137,34 +251,34 @@ internal class V2BlindSpotSecondaryDisplaySettingsSection(
         }
     }
 
-    private fun intInputRow(label: String, currentValue: Int, onChanged: (Int) -> Unit): View {
-        val row = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(6), 0, dp(6))
-        }
-        row.addView(TextView(activity).apply {
-            text = label
-            textSize = 16f
-            setTextColor(ContextCompat.getColor(activity, R.color.text_primary))
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    private data class DisplayInfo(val id: Int, val label: String, val width: Int, val height: Int)
 
-        val input = EditText(activity).apply {
-            setText(currentValue.toString())
-            textSize = 16f
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
-            gravity = Gravity.CENTER
-            setBackgroundResource(R.drawable.v2_settings_field_bg)
-            setTextColor(ContextCompat.getColor(activity, R.color.settings_title_primary))
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            layoutParams = LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT)
-        }
-        input.doAfterTextChanged {
-            val value = it?.toString()?.toIntOrNull() ?: return@doAfterTextChanged
-            onChanged(value)
-        }
-        row.addView(input)
-        return row
+    private fun detectDisplays(): List<DisplayInfo> {
+        val dm = activity.getSystemService(DisplayManager::class.java) ?: return emptyList()
+        return dm.displays
+            .filter { it.displayId != Display.DEFAULT_DISPLAY }
+            .map { display ->
+                val size = displayRealSize(display)
+                DisplayInfo(
+                    id = display.displayId,
+                    label = "Display ${display.displayId}  (${size.width}×${size.height})",
+                    width = size.width,
+                    height = size.height,
+                )
+            }
+    }
+
+    private fun updateDisplaySize(displayId: Int) {
+        val dm = activity.getSystemService(DisplayManager::class.java) ?: return
+        val display = dm.getDisplay(displayId) ?: return
+        displaySize = displayRealSize(display)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun displayRealSize(display: Display): Size {
+        val metrics = android.util.DisplayMetrics()
+        display.getRealMetrics(metrics)
+        return Size(metrics.widthPixels, metrics.heightPixels)
     }
 
     private fun saveBounds(
@@ -178,8 +292,15 @@ internal class V2BlindSpotSecondaryDisplaySettingsSection(
     }
 
     private fun notifyChanged() {
-        V2CameraServiceCommands.notifySettingsChanged(activity, V2SettingsCategory.BLIND_SPOT)
+        debounceHandler.removeCallbacksAndMessages(debounceToken)
+        debounceHandler.postDelayed({
+            V2CameraServiceCommands.notifySettingsChanged(activity, V2SettingsCategory.BLIND_SPOT)
+        }, debounceToken, NOTIFY_DEBOUNCE_MS)
     }
 
     private fun dp(value: Int): Int = cards.dp(value)
+
+    private companion object {
+        private const val NOTIFY_DEBOUNCE_MS = 300L
+    }
 }
