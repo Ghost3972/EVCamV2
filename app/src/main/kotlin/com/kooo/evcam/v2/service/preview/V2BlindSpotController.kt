@@ -7,6 +7,7 @@ import android.view.Surface
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.settings.V2SettingsRepository
 import com.kooo.evcam.v2.settings.V2SettingsSnapshot
+import com.kooo.evcam.v2.ui.blindspot.V2BlindSpotSecondaryDisplayOverlay
 
 class V2BlindSpotController(
     private val context: Context,
@@ -25,8 +26,12 @@ class V2BlindSpotController(
     hideFisheyePreview: () -> Unit,
     hideUi: () -> Unit,
     showToast: (String) -> Unit,
+    private val attachSecondaryPreview: (Int, Surface) -> Boolean,
+    private val detachSecondaryPreview: (Int) -> Boolean,
 ) {
     @Volatile private var config: V2SettingsSnapshot.BlindSpot = V2SettingsRepository.blindSpotConfig(context)
+    private val secondaryOverlay = V2BlindSpotSecondaryDisplayOverlay(context.applicationContext)
+    private var secondaryCameraIndex: Int = -1
     private val windowCoordinator = V2BlindSpotWindowCoordinator(
         context = context,
         handler = handler,
@@ -45,6 +50,9 @@ class V2BlindSpotController(
         hideFisheyePreview = hideFisheyePreview,
         hideUi = hideUi,
         showToast = showToast,
+        showSecondaryOverlay = { side -> showSecondaryDisplay(side) },
+        hideSecondaryOverlay = { hideSecondaryDisplay() },
+        hideDelayMs = { config.hideDelayMs },
     )
     private val signalObserver = V2BlindSpotSignalObserver { side, on -> handleTurnSignal(side, on) }
 
@@ -59,8 +67,9 @@ class V2BlindSpotController(
         val old = config
         config = next
         if (!next.enabled) hide()
+        if (!next.enabled || !next.secondaryDisplay.enabled) hideSecondaryDisplay()
         if (old != next) {
-            V2AppLog.i(TAG, "blind spot config updated enabled=${next.enabled} propId=${next.turnSignalPropId} correction=${next.correctionEnabled} windowMode=${next.windowMode}")
+            V2AppLog.i(TAG, "blind spot config updated enabled=${next.enabled} propId=${next.turnSignalPropId} correction=${next.correctionEnabled} windowMode=${next.windowMode} secondaryDisplay=${next.secondaryDisplay.enabled}")
         }
     }
 
@@ -86,6 +95,51 @@ class V2BlindSpotController(
 
     fun cancelAndHideForAvoidance() {
         windowCoordinator.cancelAndHideForAvoidance()
+    }
+
+    private fun showSecondaryDisplay(side: String) {
+        val sd = config.secondaryDisplay
+        if (!sd.enabled || sd.displayId < 0) return
+        val cameraIndex = windowCoordinator.activeCameraIndex
+        if (cameraIndex < 0) return
+        secondaryCameraIndex = cameraIndex
+        secondaryOverlay.show(
+            displayId = sd.displayId,
+            x = sd.x,
+            y = sd.y,
+            width = sd.width,
+            height = sd.height,
+            rotation = sd.rotation,
+            showBorder = sd.showBorder,
+            onSurfaceReady = { surface ->
+                handler.post {
+                    val idx = secondaryCameraIndex
+                    if (idx >= 0 && secondaryOverlay.isShowing()) {
+                        attachSecondaryPreview(idx, surface)
+                        V2AppLog.i(TAG, "secondary preview attached index=$idx")
+                    }
+                }
+            },
+            onSurfaceDestroyed = {
+                handler.post {
+                    val idx = secondaryCameraIndex
+                    if (idx >= 0) {
+                        detachSecondaryPreview(idx)
+                        V2AppLog.i(TAG, "secondary preview detached index=$idx")
+                    }
+                }
+            },
+        )
+        V2AppLog.i(TAG, "secondary display shown side=$side displayId=${sd.displayId} cameraIndex=$cameraIndex")
+    }
+
+    private fun hideSecondaryDisplay() {
+        val idx = secondaryCameraIndex
+        if (idx >= 0) {
+            detachSecondaryPreview(idx)
+            secondaryCameraIndex = -1
+        }
+        secondaryOverlay.hide()
     }
 
     private fun handleTurnSignal(side: String, on: Boolean) {

@@ -107,6 +107,24 @@ internal class V2CameraPreviewSurfaceController(
         publishStatus()
     }
 
+    fun attachSecondaryPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true, useBlindSpotFisheye: Boolean = false): Boolean {
+        if (released() || pipelineHandle == 0L) return false
+        V2AppLog.d(TAG, "attach secondary preview index=$index")
+        if (!nativeCompositor.attachSecondaryPreview(index, surface, applyFisheye, applyNativeTransform, useBlindSpotFisheye)) {
+            V2AppLog.e(TAG, "attach secondary preview failed index=$index: ${nativeCompositor.lastError()}")
+            return false
+        }
+        startPreviewWorkerIfNeeded()
+        return true
+    }
+
+    fun detachSecondaryPreviewSurface(index: Int): Boolean {
+        if (pipelineHandle == 0L) return false
+        V2AppLog.d(TAG, "detach secondary preview index=$index")
+        nativeCompositor.detachSecondaryPreview(index)
+        return true
+    }
+
     fun detachAttachedPreviewsForCameraStop() {
         val attachedPreviewIndexes = slots.filter { it.previewAttached }.map { it.index }.toIntArray()
         if (attachedPreviewIndexes.isNotEmpty()) {

@@ -171,6 +171,14 @@ internal class V2CameraEngineComponentGraph(
         previewSurfaceController.detachPreviewSurface(index)
     }
 
+    fun attachSecondaryPreviewSurface(index: Int, surface: Surface, applyFisheye: Boolean = true, applyNativeTransform: Boolean = true, useBlindSpotFisheye: Boolean = false): Boolean {
+        return previewSurfaceController.attachSecondaryPreviewSurface(index, surface, applyFisheye, applyNativeTransform, useBlindSpotFisheye)
+    }
+
+    fun detachSecondaryPreviewSurface(index: Int): Boolean {
+        return previewSurfaceController.detachSecondaryPreviewSurface(index)
+    }
+
     fun previewIndexForPosition(position: String): Int? = statusController.previewIndexForPosition(position)
 
     fun previewDescription(index: Int): String = statusController.previewDescription(index)
