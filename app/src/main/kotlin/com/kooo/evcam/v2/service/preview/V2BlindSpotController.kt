@@ -124,21 +124,21 @@ class V2BlindSpotController(
             showBorder = sd.showBorder,
             onSurfaceReady = { surface ->
                 handler.post {
-                    val idx = secondaryCameraIndex
-                    if (idx >= 0 && secondaryOverlay.isShowing()) {
-                        attachSecondaryPreview(idx, surface, sd.rotation)
-                        applySecondaryCorrectionIfNeeded(idx, side)
-                        V2AppLog.i(TAG, "secondary preview attached index=$idx rotation=${sd.rotation}")
+                    if (secondaryCameraIndex == cameraIndex && secondaryActiveSide == side && secondaryOverlay.isShowing()) {
+                        val attached = attachSecondaryPreview(cameraIndex, surface, sd.rotation)
+                        if (attached) {
+                            applySecondaryCorrectionIfNeeded(cameraIndex, side)
+                            V2AppLog.i(TAG, "secondary preview attached index=$cameraIndex rotation=${sd.rotation}")
+                        } else {
+                            V2AppLog.w(TAG, "secondary preview attach failed index=$cameraIndex rotation=${sd.rotation}")
+                        }
                     }
                 }
             },
             onSurfaceDestroyed = {
                 handler.post {
-                    val idx = secondaryCameraIndex
-                    if (idx >= 0) {
-                        detachSecondaryPreview(idx)
-                        V2AppLog.i(TAG, "secondary preview detached index=$idx")
-                    }
+                    detachSecondaryPreview(cameraIndex)
+                    V2AppLog.i(TAG, "secondary preview detached index=$cameraIndex")
                 }
             },
         )

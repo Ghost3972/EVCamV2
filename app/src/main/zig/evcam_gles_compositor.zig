@@ -1474,7 +1474,8 @@ fn renderPreviewLocked(env: [*c]c.JNIEnv, p: *Pipe, index: i32) bool {
     }
     // Fan-out: render to secondary target [1] using already-latched OES texture
     if (has_secondary) {
-        _ = renderPreviewTargetLocked(p, i, 1);
+        const secondary_ok = renderPreviewTargetLocked(p, i, 1);
+        if (!secondary_ok and !has_primary) return false;
     }
     const end = nowMs();
     const elapsed = end - start;
@@ -1533,7 +1534,8 @@ fn renderPreviewFromLatchedLocked(p: *Pipe, index: i32) bool {
     }
     // Fan-out: render to secondary target [1] using already-latched OES texture
     if (has_secondary) {
-        _ = renderPreviewTargetLocked(p, i, 1);
+        const secondary_ok = renderPreviewTargetLocked(p, i, 1);
+        if (!secondary_ok and !has_primary) return false;
     }
     const end = nowMs();
     const elapsed = end - start;

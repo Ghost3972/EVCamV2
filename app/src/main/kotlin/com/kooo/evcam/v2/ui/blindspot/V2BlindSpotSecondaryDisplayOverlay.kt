@@ -64,6 +64,7 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
         val display = displayManager.getDisplay(displayId)
         if (display == null) {
             V2AppLog.w(TAG, "secondary display not found id=$displayId")
+            clearState()
             return
         }
 
@@ -144,6 +145,7 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
 
         runCatching { wm.addView(container, params) }.onFailure {
             V2AppLog.w(TAG, "failed to add secondary display overlay", it)
+            clearState()
             return
         }
 
@@ -154,19 +156,26 @@ class V2BlindSpotSecondaryDisplayOverlay(private val appContext: Context) {
     }
 
     private fun tearDown() {
-        val wm = windowManager ?: return
-        val view = rootView ?: return
-        // Detach native preview for the old surface
-        onSurfaceDestroyed?.invoke()
+        val wm = windowManager
+        val view = rootView
+        val destroyCallback = onSurfaceDestroyed
+        clearState()
+        if (wm == null || view == null) return
+
+        // Detach native preview for the old surface before the view is removed.
+        destroyCallback?.invoke()
         runCatching { wm.removeViewImmediate(view) }.onFailure {
             V2AppLog.w(TAG, "failed to remove secondary display overlay", it)
         }
+        V2AppLog.i(TAG, "secondary display overlay hidden")
+    }
+
+    private fun clearState() {
         rootView = null
         windowManager = null
         onSurfaceReady = null
         onSurfaceDestroyed = null
         showing = false
-        V2AppLog.i(TAG, "secondary display overlay hidden")
     }
 
     private companion object {

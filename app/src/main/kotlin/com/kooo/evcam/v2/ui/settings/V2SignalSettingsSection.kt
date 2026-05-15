@@ -25,7 +25,6 @@ class V2SignalSettingsSection(
     private val blindSpotFisheye = V2FisheyeSettingsSection(activity, cards)
     private val blindSpotCorrection = V2BlindSpotCorrectionSettingsSection(activity, cards)
     private val secondaryDisplay = V2BlindSpotSecondaryDisplaySettingsSection(activity, cards)
-    private val testOverlay = V2BlindSpotTestSettingsSection(activity, cards)
 
     fun blindSpotCard(): View {
         val hideSeconds = V2BlindSpotSettings.hideDelaySeconds(activity)
@@ -49,7 +48,6 @@ class V2SignalSettingsSection(
                 addView(blindSpotFisheye.createBlindSpot(enabled))
                 addView(blindSpotCorrection.create(enabled))
                 addView(secondaryDisplay.create(enabled))
-                addView(testOverlay.create(enabled))
             }
         }
         return card
