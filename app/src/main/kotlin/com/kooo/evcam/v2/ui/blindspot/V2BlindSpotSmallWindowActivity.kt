@@ -13,8 +13,6 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import com.kooo.evcam.v2.log.V2AppLog
 import com.kooo.evcam.v2.service.commands.V2CameraServiceCommands
 import com.kooo.evcam.v2.settings.V2BlindSpotCorrection
@@ -42,7 +40,7 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
     private var target = V2BlindSpotSmallWindowTarget(side = "left", cameraIndex = -1)
     private var transform = V2BlindSpotSmallWindowTransform(0, V2BlindSpotCorrection())
     private var finishRequestedByService = false
-    private val flymeChrome = V2BlindSpotFlymeWindowChromeController(this) { reason -> closeFromUser(reason) }
+    private val flymeChrome = V2BlindSpotFlymeWindowChromeController(this)
 
     private val metricsRunnable = object : Runnable {
         override fun run() {
@@ -120,12 +118,14 @@ class V2BlindSpotSmallWindowActivity : AppCompatActivity(), TextureView.SurfaceT
     }
 
     private fun configureWindow() {
+        window.statusBarColor = Color.TRANSPARENT
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            hide(WindowInsetsCompat.Type.systemBars())
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = true
+        window.attributes = window.attributes.apply {
+            width = ViewGroup.LayoutParams.MATCH_PARENT
+            height = ViewGroup.LayoutParams.MATCH_PARENT
+            alpha = 0f
         }
-        window.attributes = window.attributes.apply { alpha = 0f }
     }
 
     private fun buildContent() {
