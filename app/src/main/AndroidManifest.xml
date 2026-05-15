@@ -71,6 +71,14 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Cam">
 
+        <!-- Match the stock AVM mini-window sizing metadata on Flyme Auto. -->
+        <meta-data
+            android:name="com.android.app.windowmode.resolution.width"
+            android:value="728" />
+        <meta-data
+            android:name="com.android.app.windowmode.dpi"
+            android:value="160" />
+
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
